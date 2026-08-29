@@ -1,0 +1,113 @@
+name: Сборка APK и публикация в Releases
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+  workflow_dispatch: {}
+
+# Нужно для публикации релиза: GITHUB_TOKEN по умолчанию бывает только на чтение.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Один job вместо двух специально: между job'ами файлы передаются только через
+    # артефакты, а квота на них исчерпана. Здесь и тесты, и APK, и предпросмотр карты
+    # делаются в одном месте, а результат уезжает сразу в Release.
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # нужна история: в описание релиза идёт список коммитов
+
+      # ---------- Проверки на хосте: они быстрые и ловят большинство ошибок ----------
+      - name: Собрать сервер, утилиты и тесты
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Прогнать тесты
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Нарисовать карту мира для релиза
+        run: |
+          ./build/bin/osil_mapgen +world.seed osil --out build/map --meters-per-pixel 6
+          ls -la build/map_*
+
+      # ---------- Android ----------
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: NDK и CMake для NDK
+        run: sdkmanager --install "ndk;26.3.11579264" "cmake;3.22.1"
+
+      - name: Забрать Java-обвязку SDL2
+        # SDLActivity и её классы не хранятся в репозитории: это чужой код, который
+        # обязан совпадать по версии с нативной SDL (её тянет FetchContent). Берём их из
+        # того же тега, что указан в android/app/src/main/cpp/CMakeLists.txt.
+        run: |
+          git clone --depth 1 --branch release-2.30.6 --filter=blob:none --sparse \
+            https://github.com/libsdl-org/SDL.git /tmp/sdl2
+          cd /tmp/sdl2
+          git sparse-checkout set android-project/app/src/main/java/org/libsdl/app
+          mkdir -p "$GITHUB_WORKSPACE/android/app/src/main/java/org/libsdl/app"
+          cp android-project/app/src/main/java/org/libsdl/app/*.java \
+             "$GITHUB_WORKSPACE/android/app/src/main/java/org/libsdl/app/"
+          ls "$GITHUB_WORKSPACE/android/app/src/main/java/org/libsdl/app/"
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Собрать APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace -PbuildNumber=${{ github.run_number }}
+
+      - name: Подготовить файлы релиза
+        run: |
+          mkdir -p release
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+             "release/osil-survival-build-${{ github.run_number }}.apk"
+          cp build/map_biomes.png release/map_biomes.png
+          cp build/map_height.png release/map_height.png
+          cp build/map_report.txt release/map_report.txt
+          ls -la release
+
+      - name: Опубликовать сборку в Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Сборка #${{ github.run_number }}"
+          body: |
+            **OSIL Survival — сборка #${{ github.run_number }}**
+
+            Хардкорное выживание в открытом мире. Клиент на Android (SDL2 + OpenGL ES 3.0),
+            мир 4000×4000 м генерируется на устройстве из сида — карта не скачивается.
+
+            **Установка:** скачайте `osil-survival-build-${{ github.run_number }}.apk`,
+            разрешите установку из неизвестных источников, откройте файл.
+            Требуется Android 7.0+ и поддержка OpenGL ES 3.0.
+
+            **Управление (сенсор):**
+            левая половина экрана — джойстик движения (появляется под пальцем),
+            правая — обзор перетаскиванием;
+            кнопки справа: УДАР (добыча), E (действие/попить), ПРЫЖОК, БЕГ, СЕСТЬ;
+            сверху справа: ИНВ, КРАФТ, КАРТА. Кнопка «назад» закрывает открытое окно.
+
+            В комплекте: карта мира этого сида (`map_biomes.png`, `map_height.png`)
+            и отчёт по биомам, ресурсам и монументам (`map_report.txt`).
+
+            Коммит: ${{ github.sha }}
+          files: |
+            release/osil-survival-build-${{ github.run_number }}.apk
+            release/map_biomes.png
+            release/map_height.png
+            release/map_report.txt

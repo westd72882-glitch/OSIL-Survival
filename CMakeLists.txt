@@ -38,6 +38,7 @@ add_library(osil_core STATIC
     src/Core/Log.cpp
     src/Core/Math.cpp
     src/Core/Noise.cpp
+    src/Core/PngWriter.cpp
     src/Core/Random.cpp
     src/Core/Text.cpp
     src/Core/Time.cpp
@@ -63,10 +64,51 @@ target_link_libraries(osil_server PRIVATE osil_core)
 
 # ---------------- Утилита предпросмотра карты ----------------
 add_executable(osil_mapgen
-    src/Tools/mapgen/PngWriter.cpp
     src/Tools/mapgen/main.cpp
 )
 target_link_libraries(osil_mapgen PRIVATE osil_core)
+
+# ---------------- Клиент (настольная сборка для отладки) ----------------
+# Боевая платформа — Android: там клиент собирается Gradle+NDK по android/app/src/main/cpp/
+# CMakeLists.txt, который тянет SDL2 через FetchContent. Здесь же — сборка того же кода на
+# настольной Linux, чтобы ошибки компиляции ловились локально за секунды, а не за 10 минут
+# в CI. Если SDL2 в системе нет, цель просто не создаётся и остальной проект собирается.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(SDL2 QUIET sdl2)
+    pkg_check_modules(SDL2_IMAGE QUIET SDL2_image)
+    pkg_check_modules(SDL2_TTF QUIET SDL2_ttf)
+    pkg_check_modules(SDL2_MIXER QUIET SDL2_mixer)
+endif()
+
+if(SDL2_FOUND AND SDL2_IMAGE_FOUND AND SDL2_TTF_FOUND AND SDL2_MIXER_FOUND)
+    add_executable(osil_client
+        src/Engine/Core/Audio.cpp
+        src/Engine/Core/Console.cpp
+        src/Engine/Core/Paths.cpp
+        src/Engine/Core/Settings.cpp
+        src/Engine/Core/Window.cpp
+        src/Engine/Render/AssetLoader.cpp
+        src/Engine/Render/Framebuffer.cpp
+        src/Engine/Render/Mesh.cpp
+        src/Engine/Render/Primitives.cpp
+        src/Engine/Render/Shaders.cpp
+        src/Engine/Render/Terrain.cpp
+        src/Engine/Render/UIDraw.cpp
+        src/Engine/Render/UIStyle.cpp
+        src/Client/GameClient.cpp
+        src/Client/Survivor.cpp
+        src/Client/TouchControls.cpp
+        src/Client/main.cpp
+    )
+    target_include_directories(osil_client PRIVATE
+        ${SDL2_INCLUDE_DIRS} ${SDL2_IMAGE_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS} ${SDL2_MIXER_INCLUDE_DIRS})
+    target_link_libraries(osil_client PRIVATE osil_core
+        ${SDL2_LIBRARIES} ${SDL2_IMAGE_LIBRARIES} ${SDL2_TTF_LIBRARIES} ${SDL2_MIXER_LIBRARIES} GLESv2)
+    message(STATUS "OSIL: настольная сборка клиента включена")
+else()
+    message(STATUS "OSIL: SDL2 не найдена — цель osil_client пропущена (Android-сборка не затронута)")
+endif()
 
 # ---------------- Тесты ----------------
 enable_testing()

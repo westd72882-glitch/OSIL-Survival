@@ -8,7 +8,7 @@
 //
 // Пример:
 //   ./osil_mapgen +world.seed osil +world.size 4000 --out build/map --meters-per-pixel 4
-#include "PngWriter.h"
+#include "../../Core/PngWriter.h"
 #include "../../Core/Config.h"
 #include "../../Core/Log.h"
 #include "../../Core/Text.h"
