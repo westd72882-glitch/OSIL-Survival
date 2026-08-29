@@ -1,0 +1,21 @@
+# Сборка
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+
+# Данные сервера
+world.db
+world.db-journal
+logs/
+*.log
+
+# Предпросмотр карты (osil_mapgen)
+map_*.png
+map_*.txt
+
+# Редакторы
+.vscode/
+.idea/
+*.swp

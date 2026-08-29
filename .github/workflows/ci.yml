@@ -1,0 +1,42 @@
+name: Сборка и тесты
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Конфигурация
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Сборка
+        run: cmake --build build --config Release -j 4
+
+      - name: Тесты
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # Проверка «на глаз» в артефактах: карта обязана генерироваться и на чистой машине.
+      - name: Предпросмотр карты
+        if: matrix.os == 'ubuntu-latest'
+        run: ./build/bin/osil_mapgen +world.seed ci --out build/map --meters-per-pixel 8
+
+      - name: Выгрузить карту
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-preview
+          path: |
+            build/map_biomes.png
+            build/map_height.png
+            build/map_report.txt
