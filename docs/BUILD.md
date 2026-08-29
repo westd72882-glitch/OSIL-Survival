@@ -1,11 +1,21 @@
 # Сборка и запуск
 
+Этот документ — про сервер и утилиты. Android-клиент и сборка APK описаны отдельно:
+[docs/ANDROID.md](ANDROID.md).
+
 ## Требования
 
 - CMake 3.16+
-- Компилятор C++17 (GCC 9+, Clang 10+, MSVC 2019+)
+- Компилятор C++17 (GCC 9+, Clang 10+)
 - Больше ничего: сервер, утилиты и тесты не зависят от внешних библиотек.
-  SDL2 и OpenGL понадобятся только клиенту (этап 5).
+
+Для отладочной сборки клиента на настольной машине дополнительно нужны SDL2,
+SDL2_image, SDL2_ttf, SDL2_mixer и заголовки GLES3; если их нет, цель `osil_client`
+просто не создаётся и остальное собирается как обычно:
+
+```bash
+sudo apt install libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsdl2-mixer-dev libgles-dev
+```
 
 ## Сборка
 
@@ -16,7 +26,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-Результат — в `build/bin/`: `osil_server`, `osil_mapgen`, `osil_tests`.
+Результат — в `build/bin/`: `osil_server`, `osil_mapgen`, `osil_tests` и, если нашлась
+SDL2, `osil_client`.
 
 ## Тесты
 

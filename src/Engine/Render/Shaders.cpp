@@ -106,8 +106,8 @@ void main(){
     float hemi = n.y * 0.5 + 0.5;
     // Свет затянутого неба — тусклый и холодный; отсвет от земли — совсем слабый.
     // Ночью остаётся холодный лунный подсвет, днём — яркое небо.
-    vec3 skyAmbient = vec3(0.225, 0.245, 0.260) * (0.35 + 1.15 * uLightAmount);
-    vec3 groundAmbient = vec3(0.105, 0.095, 0.075) * (0.30 + 1.10 * uLightAmount);
+    vec3 skyAmbient = vec3(0.225, 0.245, 0.260) * (0.22 + 1.25 * uLightAmount);
+    vec3 groundAmbient = vec3(0.105, 0.095, 0.075) * (0.20 + 1.20 * uLightAmount);
     vec3 ambient = mix(groundAmbient, skyAmbient, hemi);
 
     // --- Направленный свет с мягким переходом на теневой стороне (wrap lighting):
@@ -619,8 +619,8 @@ void main(){
 
     float hemi = n.y * 0.5 + 0.5;
     // Ночью остаётся холодный лунный подсвет, днём — яркое небо.
-    vec3 skyAmbient = vec3(0.225, 0.245, 0.260) * (0.35 + 1.15 * uLightAmount);
-    vec3 groundAmbient = vec3(0.105, 0.095, 0.075) * (0.30 + 1.10 * uLightAmount);
+    vec3 skyAmbient = vec3(0.225, 0.245, 0.260) * (0.22 + 1.25 * uLightAmount);
+    vec3 groundAmbient = vec3(0.105, 0.095, 0.075) * (0.20 + 1.20 * uLightAmount);
     vec3 ambient = mix(groundAmbient, skyAmbient, hemi);
 
     float ndl = dot(n, L);

@@ -398,7 +398,7 @@ void GameClient::renderScene(){
     // Цвет неба и тумана ведёт освещённость: в грозу и ночью мир буквально темнеет.
     // lightLevel() держит ночной минимум 0.06, чтобы игра не превращалась в чёрный экран;
     // для картинки этого мало — растягиваем в «яркость сцены», где полдень даёт единицу.
-    float light = clampf(env_->lightLevel() * 1.45f + 0.06f, 0.10f, 1.15f);
+    float light = clampf(env_->lightLevel() * 1.45f + 0.02f, 0.07f, 1.15f);
     Vec3 fog{ 0.52f * light + 0.03f, 0.60f * light + 0.04f, 0.72f * light + 0.06f };
     switch(env_->weather()){
         case Weather::Fog:   fog = Vec3{ 0.62f*light+0.10f, 0.63f*light+0.10f, 0.64f*light+0.10f }; break;
