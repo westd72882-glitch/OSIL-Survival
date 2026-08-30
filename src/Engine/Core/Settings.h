@@ -21,6 +21,9 @@ struct Settings {
     // меньше, чем 60 рваных. 0 — без ограничения.
     int  fpsLimit = 60;
     Quality quality = Quality::HIGH;
+    // Дальность прорисовки в метрах (она же в блоках). Отдельно от качества: на одном
+    // телефоне хочется видеть далеко и терпеть 30 кадров, на другом наоборот.
+    int viewDistance = 112;
     bool showDebugInfo = false;
     float lookSensitivity = 1.0f;
 
@@ -50,6 +53,9 @@ float qualityRenderScale();     // множитель разрешения offsc
 int   qualityTextureLimit();    // предел стороны текстуры при загрузке (0 — как есть)
 float qualityViewDistanceScale();
 const char* qualityLabel();
+
+const int VIEW_DISTANCE_OPTIONS[] = { 48, 80, 112, 160, 208 };
+const int VIEW_DISTANCE_OPTION_COUNT = (int)(sizeof(VIEW_DISTANCE_OPTIONS)/sizeof(VIEW_DISTANCE_OPTIONS[0]));
 
 const int FPS_LIMIT_OPTIONS[] = { 30, 60, 120, 0 };
 const int FPS_LIMIT_OPTION_COUNT = (int)(sizeof(FPS_LIMIT_OPTIONS)/sizeof(FPS_LIMIT_OPTIONS[0]));

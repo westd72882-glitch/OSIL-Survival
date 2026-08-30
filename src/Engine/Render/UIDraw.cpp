@@ -18,6 +18,29 @@ void initUIQuad(){
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
 }
+void drawUIRectUV(float x, float y, float w, float h, GLuint tex,
+                  float u0, float v0, float u1, float v1, float a){
+    float verts[6][4] = {
+        {x,   y,   u0,v0},
+        {x+w, y,   u1,v0},
+        {x+w, y+h, u1,v1},
+        {x,   y,   u0,v0},
+        {x+w, y+h, u1,v1},
+        {x,   y+h, u0,v1},
+    };
+    glBindVertexArray(uiVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, uiVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+    glUseProgram(uiProg);
+    glUniform4f(uiColorLoc, 1,1,1,a);
+    glUniform1i(uiUseTextureLoc, 1);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(uiTexLoc, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}
+
 void drawUIRect(float x, float y, float w, float h, GLuint tex, float r, float g, float b, float a, bool useTexture){
     float verts[6][4] = {
         {x,   y,   0,0},

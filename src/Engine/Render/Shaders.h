@@ -43,6 +43,10 @@ extern GLint uOpacityLoc, uUnlitLoc;
 extern GLint uLightAmountLoc;
 extern GLint uiProjLoc, uiTexLoc, uiColorLoc, uiUseTextureLoc;
 extern GLint skyViewLoc, skyProjLoc, skyTimeLoc, skySunDirLoc, skyLightAmountLoc;
+// Небо рисуется полноэкранным треугольником: вместо матриц ему нужны векторы
+// камеры и раствор объектива — по ним пиксель сам восстанавливает направление луча.
+extern GLint skyCamRightLoc, skyCamUpLoc, skyCamForwardLoc,
+             skyTanHalfFovLoc, skyAspectLoc, skyFogColorLoc;
 extern GLint postProjLoc, postTexLoc, postTimeLoc, postResLoc;
 extern GLint grassViewLoc, grassProjLoc, grassTimeLoc, grassLightDirLoc, grassFogColorLoc, grassFogDensityLoc;
 extern GLint grassCentreLoc, grassRadiusLoc;

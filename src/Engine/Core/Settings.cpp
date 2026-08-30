@@ -54,6 +54,7 @@ void loadSettings(){
         if(key == "music"){ int v; iss >> v; settings.musicOn = (v != 0); }
         else if(key == "sfx"){ int v; iss >> v; settings.sfxOn = (v != 0); }
         else if(key == "fps_limit"){ iss >> settings.fpsLimit; }
+        else if(key == "view_distance"){ iss >> settings.viewDistance; }
         else if(key == "quality"){ int v; iss >> v; if(v < 0) v = 0; if(v > 3) v = 3; settings.quality = (Quality)v; }
         else if(key == "debug_info"){ int v; iss >> v; settings.showDebugInfo = (v != 0); }
         else if(key == "look_sens"){ iss >> settings.lookSensitivity; }
@@ -95,6 +96,7 @@ void saveSettings(){
     f << "sfx " << (settings.sfxOn ? 1 : 0) << "\n";
     f << "fps_limit " << settings.fpsLimit << "\n";
     f << "quality " << (int)settings.quality << "\n";
+    f << "view_distance " << settings.viewDistance << "\n";
     f << "debug_info " << (settings.showDebugInfo ? 1 : 0) << "\n";
     f << "look_sens " << settings.lookSensitivity << "\n";
     f << "layout_version " << CONTROL_LAYOUT_VERSION << "\n";

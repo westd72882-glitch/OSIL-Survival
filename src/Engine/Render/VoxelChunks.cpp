@@ -160,6 +160,12 @@ void VoxelRenderer::buildChunk(int cx, int cz){
 
     float minYUsed = 1e9f, maxYUsed = -1e9f;
 
+    // Правки игрока расширяют диапазон высот чанка: выкопанная яма уходит ниже
+    // «естественного» дна колонки, а построенная башня — выше кроны деревьев.
+    int editMinY = 0, editMaxY = 0;
+    world_->editYRange(cx, cz, editMinY, editMaxY);
+    bool hasEdits = (editMinY <= editMaxY);
+
     for(int lx = 0; lx < CHUNK_SIZE; ++lx){
         for(int lz = 0; lz < CHUNK_SIZE; ++lz){
             int wx = x0 + lx, wz = z0 + lz;
@@ -175,6 +181,10 @@ void VoxelRenderer::buildChunk(int cx, int cz){
             int yStart = std::max(0, lowest - 1);
             // Сверху — запас на деревья (до 12 блоков) и на уровень воды.
             int yEnd = std::max(s + 14, world_->waterLevelBlocks() + 1);
+            if(hasEdits){
+                yStart = std::max(0, std::min(yStart, editMinY - 1));
+                yEnd = std::max(yEnd, editMaxY + 1);
+            }
 
             for(int y = yStart; y <= yEnd; ++y){
                 Block b = world_->blockAt(wx, y, wz);
@@ -201,12 +211,14 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                     float shade = blockShade(wx, y, wz);
                     std::vector<VoxelVertex>& out = isWater ? water : solid;
                     VoxelVertex quad[4];
+                    float aoLevels[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                     for(int k = 0; k < 4; ++k){
                         // У воды затенения по углам нет: она прозрачная, и тёмные углы
                         // на ней читаются как грязь, а не как объём.
                         float ao = isWater ? 1.0f
                                            : vertexAO(*world_, wx, y, wz, face,
                                                       face.verts[k][0], face.verts[k][1], face.verts[k][2]);
+                        aoLevels[k] = ao;
                         float k2 = shade * ao;
                         quad[k] = VoxelVertex{
                             (float)wx + face.verts[k][0],
@@ -216,8 +228,18 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                             r * k2, g * k2, bl * k2
                         };
                     }
-                    out.push_back(quad[0]); out.push_back(quad[1]); out.push_back(quad[2]);
-                    out.push_back(quad[0]); out.push_back(quad[2]); out.push_back(quad[3]);
+                    // Разворот разбиения квада по затенению. Квад режется на два
+                    // треугольника, и если затемнённые углы попали на разные половины,
+                    // на грани появляется чёткая диагональная полоса — тот самый «рубец».
+                    // Разворачиваем разрез так, чтобы он шёл между похожими по яркости
+                    // углами, и полоса исчезает.
+                    if(aoLevels[0] + aoLevels[2] < aoLevels[1] + aoLevels[3]){
+                        out.push_back(quad[1]); out.push_back(quad[2]); out.push_back(quad[3]);
+                        out.push_back(quad[1]); out.push_back(quad[3]); out.push_back(quad[0]);
+                    } else {
+                        out.push_back(quad[0]); out.push_back(quad[1]); out.push_back(quad[2]);
+                        out.push_back(quad[0]); out.push_back(quad[2]); out.push_back(quad[3]);
+                    }
 
                     minYUsed = std::min(minYUsed, (float)y);
                     maxYUsed = std::max(maxYUsed, (float)y + 1.0f);
@@ -225,6 +247,8 @@ void VoxelRenderer::buildChunk(int cx, int cz){
             }
         }
     }
+
+    if(hasEdits) LOG_DEBUG("чанк %d,%d: правки %d..%d, вершин %zu", cx, cz, editMinY, editMaxY, solid.size());
 
     ChunkMesh mesh;
     mesh.centerX = (float)x0 + CHUNK_SIZE * 0.5f;

@@ -174,3 +174,38 @@ TEST(в_мире_есть_деревья_из_блоков){
     CHECK_MSG(wood > 0, "в лесу не нашлось ни одного блока ствола");
     CHECK_MSG(leaves > wood, "листвы должно быть больше, чем стволов");
 }
+
+TEST(глубокая_яма_расширяет_диапазон_чанка){
+    // Регрессия: копая глубже пары блоков, игрок видел «прозрачные» стены — сборщик
+    // меша не знал, что колонка стала глубже естественного дна, и не строил их грани.
+    // Диапазон правок обязан это учитывать, в том числе для соседнего чанка.
+    WorldConfig cfg = voxelTestConfig(31337);
+    World w(cfg); w.generate();
+    ResourceMap res(w); res.generate();
+    VoxelWorld v(w, res);
+
+    int x = 0, z = 0;
+    CHECK(findLandColumn(w, v, x, z));
+    int s = v.surfaceY(x, z);
+
+    int cx = x / CHUNK_SIZE, cz = z / CHUNK_SIZE;
+    int minY = 0, maxY = 0;
+    v.editYRange(cx, cz, minY, maxY);
+    CHECK_MSG(minY > maxY, "до правок диапазон должен быть пустым");
+
+    for(int i = 0; i < 6; ++i) v.setBlock(x, s - i, z, Block::Air);
+    v.editYRange(cx, cz, minY, maxY);
+    CHECK(minY <= s - 5);
+    CHECK(maxY >= s);
+
+    // Башня вверх тоже расширяет диапазон — иначе у построенной колонны пропадали бы
+    // верхние грани.
+    v.setBlock(x, s + 9, z, Block::Planks);
+    v.editYRange(cx, cz, minY, maxY);
+    CHECK(maxY >= s + 9);
+
+    // Соседний чанк должен видеть эти правки: стенка ямы у границы принадлежит ему.
+    int nMin = 0, nMax = 0;
+    v.editYRange(cx + 1, cz, nMin, nMax);
+    CHECK_MSG(nMin <= s - 5, "соседний чанк не узнал о яме у своей границы");
+}

@@ -48,6 +48,10 @@ public:
     // ---- Правки игрока
     void  setBlock(int x, int y, int z, Block b);
     size_t editCount() const { return edits_.size(); }
+    // Диапазон высот, затронутых правками игрока в этом чанке. Нужен сборщику меша:
+    // без него выкопанная яма глубже пары блоков остаётся без стенок — их грани просто
+    // не попадают в геометрию, и сквозь них видно пустоту.
+    void editYRange(int cx, int cz, int& outMinY, int& outMaxY) const;
 
     // ---- Луч из глаз игрока: что он сейчас видит перед собой (добыча/установка).
     RayHit raycast(Vec3 origin, Vec3 dir, float maxDistance) const;
@@ -73,6 +77,9 @@ private:
 
     // Правки игрока: ключ — упакованные координаты блока.
     std::unordered_map<uint64_t, Block> edits_;
+    // По чанку: самая нижняя и самая верхняя правка. Обновляется при каждой правке.
+    struct EditRange { int minY = 1 << 30; int maxY = -(1 << 30); };
+    std::unordered_map<uint64_t, EditRange> editRange_;
     // Декор по чанкам: ключ чанка -> (ключ блока -> блок). mutable, потому что
     // достраивается лениво при чтении — снаружи мир остаётся логически неизменным.
     mutable std::unordered_map<uint64_t, std::unordered_map<uint64_t, Block>> decor_;

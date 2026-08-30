@@ -152,101 +152,121 @@ void main(){
 // куба, нет проблем с фильтрацией на гранях). Палитра — мрачная, "зона": тёмно-серо-
 // зелёный зенит, грязная жёлто-серая дымка у горизонта, тусклая процедурная луна,
 // hash-звёзды, медленно плывущие fbm-облака (анимация по uTime).
+// ==================== НЕБО ====================
+// Небо рисуется ПОЛНОЭКРАННЫМ треугольником, а не кубом вокруг камеры. Куб давал
+// видимый шов: на его рёбрах ломалась интерполяция направления, и по небу шла заметная
+// линия. Здесь направление луча считается прямо из положения пикселя на экране и трёх
+// векторов камеры, поэтому поле направлений непрерывно по построению — швов нет и быть
+// не может, а геометрии не нужно вовсе (три вершины без единого атрибута).
 const char* skyVS = R"(#version 300 es
-layout(location=0) in vec3 aPos;
-uniform mat4 uView;
-uniform mat4 uProj;
-out vec3 vDir;
+out vec2 vNdc;
 void main(){
-    vDir = aPos;
-    // убираем перенос (translation) из view, чтобы куб всегда был вокруг камеры
-    mat4 viewNoTrans = uView;
-    viewNoTrans[3][0] = 0.0;
-    viewNoTrans[3][1] = 0.0;
-    viewNoTrans[3][2] = 0.0;
-    vec4 pos = uProj * viewNoTrans * vec4(aPos, 1.0);
-    gl_Position = pos.xyww; // глубина = 1.0, скайбокс всегда позади всего
+    // Треугольник, накрывающий весь экран: вершины (-1,-1), (3,-1), (-1,3).
+    vec2 p = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+    vNdc = p;
+    // z = w: глубина ровно 1.0, небо всегда позади всей сцены.
+    gl_Position = vec4(p, 1.0, 1.0);
 }
 )";
+
 const char* skyFS = R"(#version 300 es
-// ==================== НЕБО OSIL ====================
-// В A.N.O.D.E небо было «Зоной»: вечно пасмурный серо-зелёный купол без солнца. Для
-// выживания с суточным циклом это не годится — по небу игрок читает время: скоро ли
-// ночь, успеет ли он дойти до базы. Поэтому небо переписано и зависит от положения
-// солнца, которое передаёт клиент (uSunDir) и от освещённости (uLightAmount).
-//
-// highp обязателен: fbm ниже перемножает координаты на большие константы, а mediump на
-// мобильных GPU 16-битный — шум вырождается в полосы, а при переполнении даёт NaN.
+// highp обязателен: шум ниже перемножает координаты на большие константы, а mediump на
+// мобильных GPU 16-битный — там шум вырождается в полосы, а при переполнении даёт NaN.
 precision highp float;
-in vec3 vDir;
+in vec2 vNdc;
+uniform vec3  uCamRight;
+uniform vec3  uCamUp;
+uniform vec3  uCamForward;
+uniform float uTanHalfFov;
+uniform float uAspect;
 uniform float uTime;
-uniform vec3  uSunDir;      // направление НА солнце
-uniform float uLightAmount; // 0 — ночь, 1 — полдень
+uniform vec3  uSunDir;       // направление НА солнце
+uniform float uLightAmount;  // 0 — ночь, 1 — полдень
+uniform vec3  uFogColor;     // дымка у горизонта — та же, что у мира
 out vec4 FragColor;
 
-float hash3(vec3 p){
-    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
-    p += dot(p, p.yxz + 33.33);
+float hash13(vec3 p){
+    p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+    p += dot(p, p.yzx + 19.19);
     return fract((p.x + p.y) * p.z);
 }
 
 float noise3(vec3 p){
     vec3 i = floor(p), f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    float n000 = hash3(i + vec3(0,0,0)), n100 = hash3(i + vec3(1,0,0));
-    float n010 = hash3(i + vec3(0,1,0)), n110 = hash3(i + vec3(1,1,0));
-    float n001 = hash3(i + vec3(0,0,1)), n101 = hash3(i + vec3(1,0,1));
-    float n011 = hash3(i + vec3(0,1,1)), n111 = hash3(i + vec3(1,1,1));
+    float n000 = hash13(i), n100 = hash13(i + vec3(1,0,0));
+    float n010 = hash13(i + vec3(0,1,0)), n110 = hash13(i + vec3(1,1,0));
+    float n001 = hash13(i + vec3(0,0,1)), n101 = hash13(i + vec3(1,0,1));
+    float n011 = hash13(i + vec3(0,1,1)), n111 = hash13(i + vec3(1,1,1));
     return mix(mix(mix(n000,n100,f.x), mix(n010,n110,f.x), f.y),
                mix(mix(n001,n101,f.x), mix(n011,n111,f.x), f.y), f.z);
 }
 
 float fbm3(vec3 p){
     float v = 0.0, a = 0.5;
-    for(int i = 0; i < 4; i++){ v += a * noise3(p); p *= 2.03; a *= 0.5; }
+    for(int i = 0; i < 5; i++){ v += a * noise3(p); p *= 2.02; a *= 0.5; }
     return v;
 }
 
 void main(){
-    vec3 dir = normalize(vDir);
-    float up = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-    float sunDot = clamp(dot(dir, normalize(uSunDir)), 0.0, 1.0);
-    float day = clamp(uLightAmount, 0.0, 1.0);
+    // Луч через пиксель: непрерывен по всему экрану, поэтому небо бесшовно.
+    vec3 dir = normalize(uCamForward
+                       + uCamRight * (vNdc.x * uTanHalfFov * uAspect)
+                       + uCamUp    * (vNdc.y * uTanHalfFov));
 
-    // Дневная палитра: голубой зенит, светлая дымка у горизонта.
-    vec3 dayZenith  = vec3(0.24, 0.45, 0.78);
-    vec3 dayHorizon = vec3(0.72, 0.80, 0.88);
-    // Ночная: почти чёрный верх, чуть синеющий низ.
-    vec3 nightZenith  = vec3(0.02, 0.03, 0.07);
-    vec3 nightHorizon = vec3(0.06, 0.08, 0.13);
-    // Закатная подмешивается тем сильнее, чем ниже солнце.
-    float duskAmount = (1.0 - abs(uSunDir.y)) * day;
-    vec3 duskTint = vec3(0.92, 0.48, 0.24);
+    float up = clamp(dir.y, -1.0, 1.0);
+    float day = clamp(uLightAmount, 0.0, 1.0);
+    vec3 sun = normalize(uSunDir);
+    float sunDot = clamp(dot(dir, sun), 0.0, 1.0);
+
+    // Палитра. Зенит и горизонт разведены по высоте плавной степенной кривой — резкой
+    // границы между «верхом» и «низом» неба не остаётся.
+    vec3 dayZenith   = vec3(0.16, 0.38, 0.78);
+    vec3 dayHorizon  = vec3(0.68, 0.80, 0.92);
+    vec3 nightZenith = vec3(0.015, 0.025, 0.06);
+    vec3 nightHorizon= vec3(0.05, 0.07, 0.13);
 
     vec3 zenith  = mix(nightZenith,  dayZenith,  day);
     vec3 horizon = mix(nightHorizon, dayHorizon, day);
-    horizon = mix(horizon, duskTint, duskAmount * 0.55 * pow(sunDot, 1.5));
 
-    vec3 col = mix(horizon, zenith, pow(up, 0.75));
+    // Заря: чем ниже солнце, тем шире тёплая полоса вокруг него у горизонта.
+    float dusk = (1.0 - abs(sun.y)) * day;
+    vec3 duskTint = vec3(0.98, 0.52, 0.24);
+    horizon = mix(horizon, duskTint, dusk * 0.65 * pow(sunDot, 1.2));
 
-    // Диск солнца и мягкое гало вокруг него.
-    float disc = smoothstep(0.9994, 0.9997, sunDot);
-    float glow = pow(sunDot, 220.0) * 0.6 + pow(sunDot, 12.0) * 0.12;
-    col += (disc * 2.2 + glow) * mix(vec3(0.5,0.35,0.25), vec3(1.0,0.95,0.85), day) * day;
+    float t = pow(clamp(up * 0.5 + 0.5, 0.0, 1.0), 0.65);
+    vec3 col = mix(horizon, zenith, t);
 
-    // Звёзды: видны только ночью, зато сразу дают понять, что стемнело всерьёз.
-    float starField = hash3(floor(dir * 260.0));
-    float stars = smoothstep(0.9975, 1.0, starField) * (1.0 - day);
-    col += vec3(stars) * 0.9;
+    // Дымка у самого горизонта — той же краской, что туман мира: небо и земля сходятся
+    // без видимой линии стыка.
+    col = mix(col, uFogColor, smoothstep(0.10, -0.06, up));
 
-    // Облака: медленно плывущий fbm, спроецированный на купол. Ниже горизонта не считаем.
-    if(dir.y > 0.02){
-        vec3 cp = dir / max(dir.y, 0.15);
-        float clouds = fbm3(vec3(cp.x * 0.9 + uTime * 0.010, cp.z * 0.9 + uTime * 0.006, uTime * 0.02));
-        clouds = smoothstep(0.52, 0.85, clouds) * smoothstep(0.02, 0.25, dir.y);
-        vec3 cloudColor = mix(vec3(0.10, 0.11, 0.14), vec3(0.96, 0.95, 0.93), day);
-        col = mix(col, cloudColor, clouds * 0.75);
-    }
+    // Солнце: диск с мягким краем и два гало разной ширины.
+    float disc = smoothstep(0.9992, 0.9997, sunDot);
+    float glow = pow(sunDot, 300.0) * 0.55 + pow(sunDot, 14.0) * 0.14;
+    vec3 sunColor = mix(vec3(0.95, 0.55, 0.30), vec3(1.0, 0.97, 0.88), clamp(sun.y * 2.0, 0.0, 1.0));
+    col += (disc * 2.4 + glow) * sunColor * day;
+
+    // Луна с обратной стороны от солнца — ночью небо не остаётся пустым.
+    vec3 moon = -sun;
+    float moonDot = clamp(dot(dir, moon), 0.0, 1.0);
+    float moonDisc = smoothstep(0.9993, 0.99975, moonDot);
+    col += (moonDisc * 1.6 + pow(moonDot, 400.0) * 0.4) * vec3(0.85, 0.88, 0.95) * (1.0 - day);
+
+    // Звёзды: редкие яркие точки, привязанные к направлению, поэтому не «плывут» при
+    // повороте камеры и не собираются в сетку.
+    float stars = pow(hash13(floor(dir * 300.0)), 42.0) * 3.0;
+    col += vec3(stars) * (1.0 - day) * smoothstep(-0.05, 0.25, up);
+
+    // Облака: слой, спроецированный на купол. Знаменатель со сдвигом (dir.y + 0.28)
+    // убирает разрыв у горизонта, который давало деление на dir.y.
+    vec2 cp = dir.xz / (dir.y + 0.28);
+    float clouds = fbm3(vec3(cp * 0.55 + vec2(uTime * 0.004, uTime * 0.0025), uTime * 0.01));
+    clouds = smoothstep(0.48, 0.86, clouds) * smoothstep(-0.02, 0.28, up);
+    vec3 cloudLit = mix(vec3(0.12, 0.13, 0.16), vec3(0.98, 0.97, 0.95), day);
+    // Облака подсвечиваются со стороны солнца — плоско-белые выглядят наклейкой.
+    cloudLit = mix(cloudLit, sunColor, pow(sunDot, 6.0) * 0.5 * day);
+    col = mix(col, cloudLit, clouds * 0.8);
 
     FragColor = vec4(col, 1.0);
 }
@@ -532,6 +552,8 @@ GLint uLightAmountLoc = -1;
 GLint uiProjLoc, uiTexLoc, uiColorLoc, uiUseTextureLoc;
 GLint skyViewLoc, skyProjLoc, skyTimeLoc;
 GLint skySunDirLoc = -1, skyLightAmountLoc = -1;
+GLint skyCamRightLoc = -1, skyCamUpLoc = -1, skyCamForwardLoc = -1;
+GLint skyTanHalfFovLoc = -1, skyAspectLoc = -1, skyFogColorLoc = -1;
 GLuint voxelProg = 0;
 GLint voxelViewLoc = -1, voxelProjLoc = -1, voxelLightDirLoc = -1, voxelLightAmountLoc = -1;
 GLint voxelFogColorLoc = -1, voxelFogDensityLoc = -1, voxelCamPosLoc = -1, voxelAlphaLoc = -1;

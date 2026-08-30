@@ -217,6 +217,27 @@ bool VoxelWorld::isSolidAt(int x, int y, int z) const {
 void VoxelWorld::setBlock(int x, int y, int z, Block b){
     if(y < 0 || y > maxY_) return;
     edits_[packKey(x, y, z)] = b;
+
+    int cx = (int)floorf((float)x / CHUNK_SIZE);
+    int cz = (int)floorf((float)z / CHUNK_SIZE);
+    EditRange& r = editRange_[packChunk(cx, cz)];
+    if(y < r.minY) r.minY = y;
+    if(y > r.maxY) r.maxY = y;
+}
+
+void VoxelWorld::editYRange(int cx, int cz, int& outMinY, int& outMaxY) const {
+    outMinY = 1 << 30;
+    outMaxY = -(1 << 30);
+    // Смотрим не только свой чанк, но и соседние: стенка ямы, выкопанной у самой
+    // границы, принадлежит соседу и тоже должна попасть в его геометрию.
+    for(int dz = -1; dz <= 1; ++dz){
+        for(int dx = -1; dx <= 1; ++dx){
+            auto it = editRange_.find(packChunk(cx + dx, cz + dz));
+            if(it == editRange_.end()) continue;
+            if(it->second.minY < outMinY) outMinY = it->second.minY;
+            if(it->second.maxY > outMaxY) outMaxY = it->second.maxY;
+        }
+    }
 }
 
 RayHit VoxelWorld::raycast(Vec3 origin, Vec3 dir, float maxDistance) const {

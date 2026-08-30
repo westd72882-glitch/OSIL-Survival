@@ -9,6 +9,11 @@
 extern GLuint uiVAO, uiVBO;
 void initUIQuad();
 void drawUIRect(float x, float y, float w, float h, GLuint tex, float r, float g, float b, float a, bool useTexture);
+// То же, но с явным куском текстуры. Нужен карте с приближением: она показывает не всю
+// картинку мира, а её часть, и растягивать этот кусок надо самой выборкой, а не
+// геометрией — иначе при зуме карта уезжает за края своей рамки.
+void drawUIRectUV(float x, float y, float w, float h, GLuint tex,
+                  float u0, float v0, float u1, float v1, float a);
 
 extern GLuint uiCircleVAO, uiCircleVBO;
 extern const int UI_CIRCLE_SEGS;
