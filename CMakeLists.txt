@@ -43,11 +43,13 @@ add_library(osil_core STATIC
     src/Core/Text.cpp
     src/Core/Time.cpp
     src/World/Biome.cpp
+    src/World/Blocks.cpp
     src/World/Environment.cpp
     src/World/Monuments.cpp
     src/World/Resources.cpp
     src/World/World.cpp
     src/World/WorldConfig.cpp
+    src/World/VoxelWorld.cpp
 )
 target_include_directories(osil_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
@@ -93,10 +95,11 @@ if(SDL2_FOUND AND SDL2_IMAGE_FOUND AND SDL2_TTF_FOUND AND SDL2_MIXER_FOUND)
         src/Engine/Render/Mesh.cpp
         src/Engine/Render/Primitives.cpp
         src/Engine/Render/Shaders.cpp
-        src/Engine/Render/Terrain.cpp
+        src/Engine/Render/VoxelChunks.cpp
         src/Engine/Render/UIDraw.cpp
         src/Engine/Render/UIStyle.cpp
         src/Client/GameClient.cpp
+        src/Client/Inventory.cpp
         src/Client/Survivor.cpp
         src/Client/TouchControls.cpp
         src/Client/main.cpp
@@ -116,6 +119,7 @@ add_executable(osil_tests
     tests/TestHarness.cpp
     tests/test_core.cpp
     tests/test_world.cpp
+    tests/test_voxels.cpp
 )
 target_link_libraries(osil_tests PRIVATE osil_core)
 add_test(NAME osil_tests COMMAND osil_tests)

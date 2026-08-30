@@ -5,44 +5,67 @@
 #include <cstdio>
 
 namespace {
-// Скорости из расчёта «Rust-подобное выживание»: шаг заметно медленнее бега, присед
-// вдвое медленнее шага, в воде — как присед.
-const float SPEED_WALK   = 3.6f;
-const float SPEED_SPRINT = 6.4f;
-const float SPEED_CROUCH = 1.7f;
-const float SPEED_SWIM   = 2.0f;
+// Размеры игрока в блоках: 0.6 в поперечнике и 1.8 в высоту — те же пропорции, что в
+// кубических играх, и они не случайны: с шириной 0.6 игрок проходит в проём в один блок,
+// а с высотой 1.8 не проходит под потолком в один блок, но проходит в два.
+const float HALF_WIDTH  = 0.30f;
+const float HEIGHT      = 1.80f;
+const float CROUCH_HEIGHT = 1.30f;
+const float EYE_OFFSET  = 1.62f;
+const float EYE_CROUCH  = 1.15f;
 
-const float GRAVITY      = 20.0f;   // м/с² — «игровая» гравитация, вдвое сильнее реальной
-const float JUMP_SPEED   = 6.2f;    // даёт прыжок примерно на 1 м
-const float EYE_HEIGHT   = 1.68f;
-const float EYE_CROUCH   = 1.05f;
+const float SPEED_WALK   = 4.2f;
+const float SPEED_SPRINT = 6.6f;
+const float SPEED_CROUCH = 1.9f;
+const float SPEED_SWIM   = 2.6f;
+const float GRAVITY      = 24.0f;
+const float JUMP_SPEED   = 8.0f;   // прыжок ровно на один блок с запасом
+const float STEP_HEIGHT  = 1.02f;  // автоматический шаг на блок вверх
 
-// Метаболизм: полная шкала голода уходит за ~90 минут, жажды — за ~55.
 const float HUNGER_PER_SEC = 100.0f / (90.0f * 60.0f);
 const float THIRST_PER_SEC = 100.0f / (55.0f * 60.0f);
-const float STAMINA_DRAIN  = 14.0f; // в секунду при беге
+const float STAMINA_DRAIN  = 14.0f;
 const float STAMINA_REGEN  = 9.0f;
 
-const float GATHER_RANGE   = 3.2f;  // на каком расстоянии можно ударить по объекту
-const float HIT_INTERVAL   = 0.55f; // темп ударов: примерно как замах топором
+const float REACH = 5.0f;          // на сколько метров дотягивается рука
+const float PLACE_COOLDOWN = 0.18f;
 } // namespace
 
-Survivor::Survivor(const World& world, ResourceMap& resources, const Environment& env)
-    : world_(world), resources_(resources), env_(env) {}
+Survivor::Survivor(VoxelWorld& voxels, const Environment& env, Inventory& inventory)
+    : voxels_(voxels), env_(env), inventory_(inventory) {}
 
 void Survivor::spawn(Vec3 position){
-    pos_ = position;
-    pos_.y = world_.heightAt(position.x, position.z);
+    int x = (int)floorf(position.x), z = (int)floorf(position.z);
+    int y = voxels_.surfaceY(x, z) + 1;
+    // Если точка оказалась внутри дерева или валуна — поднимаемся до свободного места.
+    while(y < voxels_.maxHeightBlocks() && (voxels_.isSolidAt(x, y, z) || voxels_.isSolidAt(x, y + 1, z))) ++y;
+    pos_ = Vec3{ (float)x + 0.5f, (float)y, (float)z + 0.5f };
     velY_ = 0.0f;
     fallStartY_ = pos_.y;
     health_ = hunger_ = thirst_ = stamina_ = 100.0f;
     radiation_ = 0.0f;
-    loot_ = Gathered{};
-    say("Вы очнулись на берегу. Соберите дерево и камень.");
+    miningProgress_ = 0.0f;
+    say("Вы очнулись на острове. Ломайте блоки — из них всё и строится.");
 }
 
 Vec3 Survivor::eyePosition() const {
-    return Vec3{ pos_.x, pos_.y + (crouch_ ? EYE_CROUCH : EYE_HEIGHT), pos_.z };
+    return Vec3{ pos_.x, pos_.y + (crouch_ ? EYE_CROUCH : EYE_OFFSET), pos_.z };
+}
+
+Vec3 Survivor::lookDirection() const {
+    return Vec3{ -sinf(yaw_) * cosf(pitch_), sinf(pitch_), -cosf(yaw_) * cosf(pitch_) };
+}
+
+bool Survivor::collides(Vec3 p) const {
+    float height = crouch_ ? CROUCH_HEIGHT : HEIGHT;
+    int minX = (int)floorf(p.x - HALF_WIDTH), maxX = (int)floorf(p.x + HALF_WIDTH);
+    int minZ = (int)floorf(p.z - HALF_WIDTH), maxZ = (int)floorf(p.z + HALF_WIDTH);
+    int minY = (int)floorf(p.y), maxY = (int)floorf(p.y + height - 0.02f);
+    for(int y = minY; y <= maxY; ++y)
+        for(int x = minX; x <= maxX; ++x)
+            for(int z = minZ; z <= maxZ; ++z)
+                if(voxels_.isSolidAt(x, y, z)) return true;
+    return false;
 }
 
 void Survivor::update(const SurvivorInput& in, float dt){
@@ -51,198 +74,231 @@ void Survivor::update(const SurvivorInput& in, float dt){
     pitch_ = in.pitch;
     updateMovement(in, dt);
     updateMetabolism(dt);
-    updateGathering(in, dt);
+    updateInteraction(in, dt);
     messageAge_ += dt;
 }
 
 void Survivor::updateMovement(const SurvivorInput& in, float dt){
-    const WorldConfig& cfg = world_.config();
-    float groundY = world_.heightAt(pos_.x, pos_.z);
-    float waterDepth = cfg.waterLevel - groundY;
-    inWater_ = (pos_.y < cfg.waterLevel - 0.4f) && waterDepth > 0.5f;
+    // Присед отменяется, если над головой блок: иначе игрок встал бы внутрь потолка.
+    bool wantCrouch = in.crouch;
+    if(!wantCrouch && crouch_){
+        Vec3 test = pos_;
+        bool wasCrouch = crouch_;
+        const_cast<Survivor*>(this)->crouch_ = false;
+        if(collides(test)) const_cast<Survivor*>(this)->crouch_ = wasCrouch;
+    } else {
+        crouch_ = wantCrouch;
+    }
 
-    crouch_ = in.crouch && !inWater_;
-    // Бежать можно, только если есть выносливость и игрок реально движется вперёд.
-    bool wantsSprint = in.sprint && !crouch_ && stamina_ > 1.0f && (fabsf(in.moveX) + fabsf(in.moveY)) > 0.1f;
-    sprinting_ = wantsSprint;
+    // В воде: голова ниже уровня воды — плывём.
+    Block feet = voxels_.blockAt((int)floorf(pos_.x), (int)floorf(pos_.y), (int)floorf(pos_.z));
+    Block head = voxels_.blockAt((int)floorf(pos_.x), (int)floorf(pos_.y + 1.5f), (int)floorf(pos_.z));
+    inWater_ = (feet == Block::Water || head == Block::Water);
+
+    sprinting_ = in.sprint && !crouch_ && stamina_ > 1.0f &&
+                 (fabsf(in.moveX) + fabsf(in.moveY)) > 0.1f && !inWater_;
 
     float speed = inWater_ ? SPEED_SWIM : (crouch_ ? SPEED_CROUCH : (sprinting_ ? SPEED_SPRINT : SPEED_WALK));
-    // Голодный и обезвоженный персонаж двигается медленнее — это первый сигнал игроку,
-    // что пора искать еду, раньше, чем начнёт капать здоровье.
     if(hunger_ < 20.0f || thirst_ < 20.0f) speed *= 0.75f;
 
-    // Направление: вперёд по взгляду (без наклона), вправо — перпендикуляр.
     float sinY = sinf(yaw_), cosY = cosf(yaw_);
     Vec3 forward{ -sinY, 0.0f, -cosY };
     Vec3 right{ cosY, 0.0f, -sinY };
-
-    Vec3 wish{
-        forward.x * in.moveY + right.x * in.moveX,
-        0.0f,
-        forward.z * in.moveY + right.z * in.moveX
-    };
+    Vec3 wish{ forward.x * in.moveY + right.x * in.moveX, 0.0f, forward.z * in.moveY + right.z * in.moveX };
     float wishLen = sqrtf(wish.x*wish.x + wish.z*wish.z);
     if(wishLen > 1.0f){ wish.x /= wishLen; wish.z /= wishLen; wishLen = 1.0f; }
-
-    float nextX = pos_.x + wish.x * speed * dt;
-    float nextZ = pos_.z + wish.z * speed * dt;
-    // Границы карты: за краем только океан и «стена мира».
-    nextX = clampf(nextX, 1.0f, cfg.size - 1.0f);
-    nextZ = clampf(nextZ, 1.0f, cfg.size - 1.0f);
-
-    // Крутой склон не пускает: иначе по горам можно ходить как по лестнице, и любая
-    // скала становится дорогой. Порог тот же, что у строительства.
-    float nextGround = world_.heightAt(nextX, nextZ);
-    float climb = nextGround - groundY;
-    float horizontal = sqrtf((nextX-pos_.x)*(nextX-pos_.x) + (nextZ-pos_.z)*(nextZ-pos_.z));
-    bool tooSteep = horizontal > 0.0001f && (climb / horizontal) > 1.4f; // ~54°
-    if(!tooSteep || inWater_){
-        pos_.x = nextX;
-        pos_.z = nextZ;
-        groundY = nextGround;
-    }
     currentSpeed_ = wishLen * speed;
 
-    if(inWater_){
-        // В воде барахтаемся: тонуть некуда, но и прыгать нельзя.
-        float targetY = cfg.waterLevel - 0.9f;
-        pos_.y += (targetY - pos_.y) * clampf(dt * 3.0f, 0.0f, 1.0f);
-        velY_ = 0.0f;
-        onGround_ = false;
-        fallStartY_ = pos_.y;
-        stamina_ = clampf(stamina_ - dt * 4.0f, 0.0f, 100.0f);
-        return;
-    }
+    // Движение по осям ПО ОЧЕРЕДИ. Двигать сразу по диагонали нельзя: упёршись в угол,
+    // игрок залипал бы, вместо того чтобы скользить вдоль стены.
+    Vec3 next = pos_;
+    float dx = wish.x * speed * dt;
+    float dz = wish.z * speed * dt;
 
-    // Гравитация и приземление.
-    velY_ -= GRAVITY * dt;
-    pos_.y += velY_ * dt;
-    if(pos_.y <= groundY){
-        if(!onGround_){
-            // Урон падения: безопасны первые 4 метра, дальше примерно по 12 HP на метр.
-            float fallen = fallStartY_ - groundY;
-            if(fallen > 4.0f){
-                float damage = (fallen - 4.0f) * 12.0f;
-                health_ = clampf(health_ - damage, 0.0f, 100.0f);
-                char buf[96];
-                snprintf(buf, sizeof(buf), "Падение с %.0f м: -%.0f HP", (double)fallen, (double)damage);
-                say(buf);
-            }
-        }
-        pos_.y = groundY;
-        velY_ = 0.0f;
-        onGround_ = true;
+    Vec3 tryX = next; tryX.x += dx;
+    if(!collides(tryX)) next = tryX;
+    else {
+        // Автоматический шаг на блок вверх: на телефоне заставлять жать «прыжок» перед
+        // каждой ступенькой — верный способ бросить игру.
+        Vec3 stepUp = tryX; stepUp.y += STEP_HEIGHT;
+        if(onGround_ && !collides(stepUp)){ next = stepUp; }
+    }
+    Vec3 tryZ = next; tryZ.z += dz;
+    if(!collides(tryZ)) next = tryZ;
+    else {
+        Vec3 stepUp = tryZ; stepUp.y += STEP_HEIGHT;
+        if(onGround_ && !collides(stepUp)){ next = stepUp; }
+    }
+    pos_.x = next.x; pos_.y = next.y; pos_.z = next.z;
+
+    // Границы карты.
+    float size = voxels_.world().config().size;
+    pos_.x = clampf(pos_.x, 1.0f, size - 1.0f);
+    pos_.z = clampf(pos_.z, 1.0f, size - 1.0f);
+
+    if(inWater_){
+        // В воде барахтаемся: тонем медленно, прыжок работает как гребок вверх.
+        velY_ += (in.jump ? 12.0f : -3.0f) * dt;
+        velY_ = clampf(velY_, -2.5f, 3.5f);
+        stamina_ = clampf(stamina_ - dt * 3.0f, 0.0f, 100.0f);
         fallStartY_ = pos_.y;
     } else {
-        onGround_ = false;
+        if(in.jump && onGround_ && stamina_ > 6.0f){
+            velY_ = JUMP_SPEED;
+            onGround_ = false;
+            fallStartY_ = pos_.y;
+            stamina_ = clampf(stamina_ - 6.0f, 0.0f, 100.0f);
+        }
+        velY_ -= GRAVITY * dt;
+        if(velY_ < -60.0f) velY_ = -60.0f;
     }
 
-    if(in.jump && onGround_ && stamina_ > 8.0f){
-        velY_ = JUMP_SPEED;
-        onGround_ = false;
-        fallStartY_ = pos_.y;
-        stamina_ = clampf(stamina_ - 8.0f, 0.0f, 100.0f);
+    Vec3 tryY = pos_;
+    tryY.y += velY_ * dt;
+    if(!collides(tryY)){
+        pos_.y = tryY.y;
+        if(velY_ < 0.0f) onGround_ = false;
+    } else {
+        if(velY_ < 0.0f){
+            // Приземление: доводим до верхней грани блока и считаем урон падения.
+            pos_.y = floorf(pos_.y) ;
+            if(!onGround_){
+                float fallen = fallStartY_ - pos_.y;
+                if(fallen > 4.0f && !inWater_){
+                    float damage = (fallen - 4.0f) * 12.0f;
+                    health_ = clampf(health_ - damage, 0.0f, 100.0f);
+                    char buf[96];
+                    snprintf(buf, sizeof(buf), "Падение с %.0f блоков: -%.0f HP", (double)fallen, (double)damage);
+                    say(buf);
+                }
+            }
+            onGround_ = true;
+            fallStartY_ = pos_.y;
+        }
+        velY_ = 0.0f;
     }
+    if(!onGround_ && velY_ > 0.0f) fallStartY_ = pos_.y;
 
     if(sprinting_) stamina_ = clampf(stamina_ - STAMINA_DRAIN * dt, 0.0f, 100.0f);
     else           stamina_ = clampf(stamina_ + STAMINA_REGEN * dt, 0.0f, 100.0f);
 }
 
 void Survivor::updateMetabolism(float dt){
-    // Голод и жажда. В пустыне пить хочется заметно чаще — множитель берётся из биома.
-    const BiomeInfo& bi = biomeInfo(world_.biomeAt(pos_.x, pos_.z));
+    const BiomeInfo& bi = biomeInfo(voxels_.world().biomeAt(pos_.x, pos_.z));
     float effort = 1.0f + (sprinting_ ? 0.8f : 0.0f);
     hunger_ = clampf(hunger_ - HUNGER_PER_SEC * effort * dt, 0.0f, 100.0f);
     thirst_ = clampf(thirst_ - THIRST_PER_SEC * effort * bi.thirstRate * dt, 0.0f, 100.0f);
 
-    // Температура тела: биом + время суток и погода. Ниже 34° и выше 39° — урон.
     float ambient = bi.ambientTemp + env_.temperatureModifier();
     if(inWater_) ambient -= 8.0f;
     float target = 36.6f + (ambient - 20.0f) * 0.10f;
     bodyTemp_ += (target - bodyTemp_) * clampf(dt * 0.05f, 0.0f, 1.0f);
 
-    // Радиация копится в зоне и медленно спадает вне её.
     if(ambientRadiation_ > 0.0f) radiation_ = clampf(radiation_ + ambientRadiation_ * dt, 0.0f, 100.0f);
     else                         radiation_ = clampf(radiation_ - dt * 0.35f, 0.0f, 100.0f);
 
-    // Урон от голода, жажды, холода, жары и радиации.
     float damage = 0.0f;
     if(hunger_ <= 0.0f) damage += 0.6f;
-    if(thirst_ <= 0.0f) damage += 1.0f;   // без воды умирают быстрее, чем без еды
+    if(thirst_ <= 0.0f) damage += 1.0f;
     if(bodyTemp_ < 34.0f) damage += (34.0f - bodyTemp_) * 0.9f;
     if(bodyTemp_ > 39.0f) damage += (bodyTemp_ - 39.0f) * 0.9f;
     if(radiation_ > 25.0f) damage += (radiation_ - 25.0f) * 0.05f;
     if(damage > 0.0f) health_ = clampf(health_ - damage * dt, 0.0f, 100.0f);
 
-    // Регенерация ровно по ТЗ: 1 HP/с при сытости и питье выше 80.
+    // Регенерация по ТЗ: 1 HP/с при сытости и жажде выше 80.
     if(damage <= 0.0f && hunger_ > 80.0f && thirst_ > 80.0f)
         health_ = clampf(health_ + 1.0f * dt, 0.0f, 100.0f);
 }
 
-void Survivor::updateGathering(const SurvivorInput& in, float dt){
-    // Цель — ближайший объект добычи перед игроком. Полноценный рейкаст по хитбоксам —
-    // 3-й этап; здесь достаточно проверки расстояния и угла.
-    std::vector<const ResourceNode*> near = resources_.query(pos_.x, pos_.z, GATHER_RANGE);
-    const ResourceNode* best = nullptr;
-    float bestDist = 1e9f;
-    float sinY = sinf(yaw_), cosY = cosf(yaw_);
-    Vec3 forward{ -sinY, 0.0f, -cosY };
-    for(const ResourceNode* n : near){
-        float dx = n->pos.x - pos_.x, dz = n->pos.z - pos_.z;
-        float d = sqrtf(dx*dx + dz*dz);
-        if(d < 0.01f) continue;
-        float dot = (dx/d) * forward.x + (dz/d) * forward.z;
-        if(dot < 0.4f) continue;      // объект должен быть примерно перед игроком
-        if(d < bestDist){ bestDist = d; best = n; }
-    }
+void Survivor::updateInteraction(const SurvivorInput& in, float dt){
+    if(placeCooldown_ > 0.0f) placeCooldown_ -= dt;
 
-    target_ = best;
-    targetName_ = best ? resourceInfo(best->kind).nameRu : std::string();
+    target_ = voxels_.raycast(eyePosition(), lookDirection(), REACH);
 
-    if(gatherCooldown_ > 0.0f) gatherCooldown_ -= dt;
+    // ---- Добыча
+    if(in.attack && target_.hit){
+        if(target_.x != miningX_ || target_.y != miningY_ || target_.z != miningZ_){
+            // Перевели прицел на другой блок — прогресс начинается заново.
+            miningX_ = target_.x; miningY_ = target_.y; miningZ_ = target_.z;
+            miningProgress_ = 0.0f;
+        }
+        const BlockInfo& info = blockInfo(target_.block);
+        float hardness = info.hardness > 0.01f ? info.hardness : 0.2f;
+        // Инструментов пока нет (этап 3): голыми руками камень идёт втрое дольше дерева.
+        miningProgress_ += dt / hardness;
+        stamina_ = clampf(stamina_ - dt * 2.5f, 0.0f, 100.0f);
 
-    if(!best || !in.attack){
-        gatherProgress_ = 0.0f;
-        return;
-    }
+        if(miningProgress_ >= 1.0f){
+            miningProgress_ = 0.0f;
+            Block broken = target_.block;
+            voxels_.setBlock(target_.x, target_.y, target_.z, Block::Air);
+            if(onBlockChanged) onBlockChanged(target_.x, target_.y, target_.z);
 
-    // Мелочь (ягоды, куст, камни) собирается руками сразу, крупное требует ударов.
-    const ResourceInfo& info = resourceInfo(best->kind);
-    if(gatherCooldown_ > 0.0f) return;
-    gatherCooldown_ = HIT_INTERVAL;
-
-    // Пока инструментов нет (3-й этап), удар голыми руками даёт малую долю выхода.
-    int yield = info.requiresTool ? (info.yieldAmount / 24) : info.yieldAmount;
-    if(yield < 1) yield = 1;
-    gatherProgress_ = clampf(gatherProgress_ + 0.12f, 0.0f, 1.0f);
-    stamina_ = clampf(stamina_ - 2.0f, 0.0f, 100.0f);
-
-    const char* item = info.yieldItem;
-    char buf[128];
-    if(std::string(item) == "wood"){ loot_.wood += yield; snprintf(buf, sizeof(buf), "+%d дерево (%s)", yield, info.nameRu); }
-    else if(std::string(item) == "stone"){ loot_.stone += yield; snprintf(buf, sizeof(buf), "+%d камень (%s)", yield, info.nameRu); }
-    else if(std::string(item) == "metal_ore"){ loot_.metalOre += yield; snprintf(buf, sizeof(buf), "+%d руда", yield); }
-    else if(std::string(item) == "sulfur_ore"){ loot_.sulfurOre += yield; snprintf(buf, sizeof(buf), "+%d сера", yield); }
-    else if(std::string(item) == "cloth"){ loot_.cloth += yield; snprintf(buf, sizeof(buf), "+%d ткань", yield); }
-    else {
-        loot_.food += yield;
-        hunger_ = clampf(hunger_ + 8.0f, 0.0f, 100.0f);
-        thirst_ = clampf(thirst_ + 4.0f, 0.0f, 100.0f);
-        snprintf(buf, sizeof(buf), "Съедено: %s (+8 сытость)", info.nameRu);
-    }
-    say(buf);
-}
-
-void Survivor::drinkWater(){
-    if(thirst_ >= 99.0f){ say("Пить больше не хочется"); return; }
-    thirst_ = clampf(thirst_ + 25.0f, 0.0f, 100.0f);
-    // Грязная вода: примерно каждый четвёртый глоток стоит здоровья. Числа условные —
-    // на 3-м этапе это станет полноценным отравлением с эффектом и лечением.
-    if(((int)(thirst_ * 7.0f) % 4) == 0){
-        health_ = clampf(health_ - 3.0f, 0.0f, 100.0f);
-        say("Вы напились грязной воды: +25 жажда, -3 HP");
+            ItemType drop = itemFromBlock(broken);
+            if(drop != ItemType::None){
+                int left = inventory_.add(drop, blockInfo(broken).dropCount);
+                char buf[128];
+                if(left > 0) snprintf(buf, sizeof(buf), "Инвентарь полон: %s не влез", itemDef(drop).nameRu);
+                else         snprintf(buf, sizeof(buf), "+1 %s", itemDef(drop).nameRu);
+                say(buf);
+            }
+            // С листвы иногда падают ягоды — еда на первое время.
+            if(broken == Block::Leaves && ((target_.x * 7 + target_.z * 13 + target_.y) % 5) == 0)
+                inventory_.add(ItemType::Berry, 1);
+        }
     } else {
-        say("Вы напились: +25 жажда");
+        miningProgress_ = 0.0f;
+    }
+
+    // ---- Строительство
+    if(in.place && placeCooldown_ <= 0.0f && target_.hit){
+        ItemStack& stack = inventory_.selectedStack();
+        if(!stack.empty()){
+            Block toPlace = itemDef(stack.type).placeable;
+            if(toPlace != Block::Air){
+                int px = target_.prevX, py = target_.prevY, pz = target_.prevZ;
+                // Нельзя ставить блок внутрь себя — иначе игрок замуровывается на месте.
+                Vec3 test = pos_;
+                voxels_.setBlock(px, py, pz, toPlace);
+                bool blocksPlayer = collides(test);
+                if(blocksPlayer){
+                    voxels_.setBlock(px, py, pz, Block::Air);
+                    say("Здесь стоите вы");
+                } else {
+                    inventory_.consumeSelected();
+                    if(onBlockChanged) onBlockChanged(px, py, pz);
+                    placeCooldown_ = PLACE_COOLDOWN;
+                }
+            } else {
+                say(std::string(itemDef(stack.type).nameRu) + " нельзя поставить блоком");
+            }
+        }
+    }
+
+    // ---- Действие: съесть выбранное или напиться, если стоишь в воде
+    if(in.action){
+        ItemStack& stack = inventory_.selectedStack();
+        const ItemDef& def = itemDef(stack.type);
+        if(!stack.empty() && (def.food > 0 || def.water > 0)){
+            hunger_ = clampf(hunger_ + (float)def.food, 0.0f, 100.0f);
+            thirst_ = clampf(thirst_ + (float)def.water, 0.0f, 100.0f);
+            inventory_.consumeSelected();
+            char buf[128];
+            snprintf(buf, sizeof(buf), "Съедено: %s (+%d сытость)", def.nameRu, def.food);
+            say(buf);
+        } else if(inWater_ || voxels_.blockAt((int)floorf(pos_.x), (int)floorf(pos_.y), (int)floorf(pos_.z)) == Block::Water){
+            if(thirst_ >= 99.0f){ say("Пить больше не хочется"); }
+            else {
+                thirst_ = clampf(thirst_ + 25.0f, 0.0f, 100.0f);
+                // Вода сырая: примерно каждый четвёртый глоток стоит здоровья.
+                if(((int)(thirst_ * 7.0f) % 4) == 0){
+                    health_ = clampf(health_ - 3.0f, 0.0f, 100.0f);
+                    say("Вы напились грязной воды: +25 жажда, -3 HP");
+                } else {
+                    say("Вы напились: +25 жажда");
+                }
+            }
+        }
     }
 }
 

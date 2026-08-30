@@ -27,6 +27,13 @@ extern const char* skinVS;
 extern const char* skinFS;
 
 extern GLuint mainProg, uiProg, skyProg, postProg, grassProg, treeProg, skinProg;
+// Кубический мир: своя программа с цветом в вершине (текстур у блоков нет — цвет грани
+// и затенение по нормали дают узнаваемую «кубическую» подачу и стоят дёшево).
+extern const char* voxelVS;
+extern const char* voxelFS;
+extern GLuint voxelProg;
+extern GLint voxelViewLoc, voxelProjLoc, voxelLightDirLoc, voxelLightAmountLoc,
+             voxelFogColorLoc, voxelFogDensityLoc, voxelCamPosLoc, voxelAlphaLoc;
 extern GLint uModelLoc, uViewLoc, uProjLoc, uNormalMatLoc, uTexLoc, uLightDirLoc, uTintColorLoc, uUseTextureLoc;
 extern GLint uFogColorLoc, uFogDensityLoc, uCamPosLoc;
 // Полупрозрачное самосвечение основной программы: uOpacity - множитель альфы,

@@ -48,20 +48,24 @@ void TouchControls::layout(int screenW, int screenH){
         if(ny >= 0.0f){ b.cx = nx * (float)screenW; b.cy = ny * (float)screenH; }
     };
 
-    // Правая нижняя зона — основные действия под большой палец правой руки.
+    // Правая нижняя зона — основные действия под большой палец правой руки. Копать и
+    // ставить рядом и крупные: это две самые частые операции в кубическом мире.
     attack_.cx = rightX;                 attack_.cy = bottomY;
-    place(attack_, settings.attackNormX, settings.attackNormY, rBig, "УДАР", false);
+    place(attack_, settings.attackNormX, settings.attackNormY, rBig, "КОПАТЬ", false);
 
-    jump_.cx = rightX;                   jump_.cy = bottomY - rBig * 2.3f;
+    place_.cx = rightX - rBig * 2.15f;   place_.cy = bottomY;
+    place(place_, settings.placeNormX, settings.placeNormY, rBig * 0.82f, "СТАВИТЬ", false);
+
+    jump_.cx = rightX;                   jump_.cy = bottomY - rBig * 2.2f;
     place(jump_, settings.jumpNormX, settings.jumpNormY, r, "ПРЫЖОК", false);
 
-    action_.cx = rightX - rBig * 2.2f;   action_.cy = bottomY;
+    action_.cx = rightX - rBig * 2.15f;  action_.cy = bottomY - rBig * 2.0f;
     place(action_, settings.actionNormX, settings.actionNormY, r, "E", false);
 
-    sprint_.cx = rightX - rBig * 2.2f;   sprint_.cy = bottomY - rBig * 2.0f;
+    sprint_.cx = rightX - rBig * 3.8f;   sprint_.cy = bottomY;
     place(sprint_, settings.sprintNormX, settings.sprintNormY, r, "БЕГ", true);
 
-    crouch_.cx = rightX - rBig * 3.9f;   crouch_.cy = bottomY;
+    crouch_.cx = rightX - rBig * 3.8f;   crouch_.cy = bottomY - rBig * 2.0f;
     place(crouch_, settings.crouchNormX, settings.crouchNormY, r, "СЕСТЬ", true);
 
     // Правый верх — окна (инвентарь, крафт, карта).
@@ -72,10 +76,12 @@ void TouchControls::layout(int screenW, int screenH){
     place(craft_, settings.craftNormX, settings.craftNormY, r * 0.8f, "КРАФТ", false);
     map_.cx = (float)screenW - r * 5.0f - pad;     map_.cy = topY;
     place(map_, settings.mapNormX, settings.mapNormY, r * 0.8f, "КАРТА", false);
+    options_.cx = (float)screenW - r * 7.0f - pad;  options_.cy = topY;
+    place(options_, settings.optionsNormX, settings.optionsNormY, r * 0.8f, "НАСТР", false);
 }
 
 TouchButton* TouchControls::buttonAt(float x, float y){
-    TouchButton* all[] = { &attack_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_ };
+    TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
     for(TouchButton* b : all){
         if(!b->visible) continue;
         float dx = x - b->cx, dy = y - b->cy;
@@ -88,6 +94,29 @@ TouchButton* TouchControls::buttonAt(float x, float y){
 }
 
 bool TouchControls::handleEvent(const SDL_Event& e){
+    // ---- Режим редактора раскладки: пальцем двигаем кнопки, игра при этом стоит.
+    if(editMode_){
+        float x = -1, y = -1;
+        bool down = false, motion = false, up = false;
+        if(e.type == SDL_FINGERDOWN){ x = e.tfinger.x * screenW_; y = e.tfinger.y * screenH_; down = true; }
+        else if(e.type == SDL_FINGERMOTION){ x = e.tfinger.x * screenW_; y = e.tfinger.y * screenH_; motion = true; }
+        else if(e.type == SDL_FINGERUP){ up = true; }
+        else if(e.type == SDL_MOUSEBUTTONDOWN){ x = (float)e.button.x; y = (float)e.button.y; down = true; }
+        else if(e.type == SDL_MOUSEMOTION && (e.motion.state & SDL_BUTTON_LMASK)){ x = (float)e.motion.x; y = (float)e.motion.y; motion = true; }
+        else if(e.type == SDL_MOUSEBUTTONUP){ up = true; }
+        else return false;
+
+        if(down){ dragged_ = buttonAt(x, y); return dragged_ != nullptr; }
+        if(motion && dragged_){
+            // Кнопку нельзя утащить за край экрана — иначе её не вернуть обратно.
+            dragged_->cx = clampf(x, dragged_->radius, (float)screenW_ - dragged_->radius);
+            dragged_->cy = clampf(y, dragged_->radius, (float)screenH_ - dragged_->radius);
+            return true;
+        }
+        if(up && dragged_){ dragged_ = nullptr; return true; }
+        return false;
+    }
+
     switch(e.type){
         // ---------- Сенсор ----------
         case SDL_FINGERDOWN: {
@@ -100,9 +129,11 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 else { b->active = true; b->justPressed = true; }
                 if(b == &jump_) jumpQueued_ = true;
                 if(b == &action_) actionQueued_ = true;
+                if(b == &place_) placeQueued_ = true;
                 if(b == &inventory_) invQueued_ = true;
                 if(b == &craft_) craftQueued_ = true;
                 if(b == &map_) mapQueued_ = true;
+                if(b == &options_) optionsQueued_ = true;
                 return true;
             }
             if(x < (float)screenW_ * 0.5f && !stickActive_){
@@ -144,7 +175,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 lookActive_ = false; lookFinger_ = -1;
                 return true;
             }
-            TouchButton* all[] = { &attack_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_ };
+            TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
             for(TouchButton* b : all){
                 if(b->finger == e.tfinger.fingerId){
                     b->finger = -1;
@@ -163,9 +194,11 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 if(b->toggle) b->active = !b->active; else b->active = true;
                 if(b == &jump_) jumpQueued_ = true;
                 if(b == &action_) actionQueued_ = true;
+                if(b == &place_) placeQueued_ = true;
                 if(b == &inventory_) invQueued_ = true;
                 if(b == &craft_) craftQueued_ = true;
                 if(b == &map_) mapQueued_ = true;
+                if(b == &options_) optionsQueued_ = true;
                 return true;
             }
             if(e.button.button == SDL_BUTTON_LEFT){ keyAttack_ = true; mouseLook_ = true; }
@@ -174,6 +207,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
         }
         case SDL_MOUSEBUTTONUP:
             if(e.button.button == SDL_BUTTON_LEFT){ keyAttack_ = false; attack_.active = false; }
+            if(e.button.button == SDL_BUTTON_RIGHT) placeQueued_ = true; // ПКМ — поставить блок
             mouseLook_ = false;
             return true;
         case SDL_MOUSEMOTION:
@@ -191,6 +225,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 case SDLK_LCTRL:              keyCrouch_ = down; return true;
                 case SDLK_SPACE:              if(down) jumpQueued_ = true; return true;
                 case SDLK_e:                  if(down) actionQueued_ = true; return true;
+                case SDLK_q: case SDLK_f:     if(down) placeQueued_ = true; return true;
                 case SDLK_TAB:                if(down) invQueued_ = true; return true;
                 case SDLK_c:                  if(down) craftQueued_ = true; return true;
                 case SDLK_m:                  if(down) mapQueued_ = true; return true;
@@ -203,7 +238,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
 
 void TouchControls::endFrame(){
     lookDX = 0; lookDY = 0;
-    attack_.justPressed = jump_.justPressed = action_.justPressed = false;
+    attack_.justPressed = jump_.justPressed = action_.justPressed = place_.justPressed = false;
 }
 
 float TouchControls::moveX() const {
@@ -229,12 +264,48 @@ float TouchControls::moveY() const {
 
 bool TouchControls::jumpPressed(){ bool v = jumpQueued_; jumpQueued_ = false; return v; }
 bool TouchControls::actionPressed(){ bool v = actionQueued_; actionQueued_ = false; return v; }
+bool TouchControls::placePressed(){ bool v = placeQueued_; placeQueued_ = false; return v; }
 bool TouchControls::inventoryPressed(){ bool v = invQueued_; invQueued_ = false; return v; }
 bool TouchControls::craftPressed(){ bool v = craftQueued_; craftQueued_ = false; return v; }
 bool TouchControls::mapPressed(){ bool v = mapQueued_; mapQueued_ = false; return v; }
+bool TouchControls::settingsPressed(){ bool v = optionsQueued_; optionsQueued_ = false; return v; }
+
+void TouchControls::setEditMode(bool on){
+    editMode_ = on;
+    dragged_ = nullptr;
+    if(!on) saveLayout();
+}
+
+void TouchControls::resetLayout(){
+    // Сентинел -1 по Y означает «позиция не задана»: layout() тогда берёт стандартную.
+    settings.stickNormY = settings.jumpNormY = settings.sprintNormY = -1.0f;
+    settings.crouchNormY = settings.actionNormY = settings.attackNormY = -1.0f;
+    settings.placeNormY = settings.invNormY = settings.craftNormY = -1.0f;
+    settings.mapNormY = settings.optionsNormY = -1.0f;
+    layout(screenW_, screenH_);
+    saveSettings();
+}
+
+void TouchControls::saveLayout() const {
+    auto store = [&](const TouchButton& b, float& nx, float& ny){
+        nx = b.cx / (float)screenW_;
+        ny = b.cy / (float)screenH_;
+    };
+    store(attack_, settings.attackNormX, settings.attackNormY);
+    store(place_,  settings.placeNormX,  settings.placeNormY);
+    store(jump_,   settings.jumpNormX,   settings.jumpNormY);
+    store(action_, settings.actionNormX, settings.actionNormY);
+    store(sprint_, settings.sprintNormX, settings.sprintNormY);
+    store(crouch_, settings.crouchNormX, settings.crouchNormY);
+    store(inventory_, settings.invNormX, settings.invNormY);
+    store(craft_,  settings.craftNormX,  settings.craftNormY);
+    store(map_,    settings.mapNormX,    settings.mapNormY);
+    store(options_, settings.optionsNormX, settings.optionsNormY);
+    saveSettings();
+}
 
 std::vector<TouchControls::ButtonView> TouchControls::buttonViews() const {
-    const TouchButton* all[] = { &attack_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_ };
+    const TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
     std::vector<ButtonView> out;
     for(const TouchButton* b : all){
         if(!b->visible) continue;
@@ -254,7 +325,7 @@ void TouchControls::render(){
                      UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.45f);
     }
 
-    TouchButton* all[] = { &attack_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_ };
+    TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
     for(TouchButton* b : all){
         if(!b->visible) continue;
         bool on = b->active;

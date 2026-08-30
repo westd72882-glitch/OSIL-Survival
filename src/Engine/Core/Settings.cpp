@@ -64,9 +64,11 @@ void loadSettings(){
         else if(key == "crouch"){ iss >> settings.crouchNormX >> settings.crouchNormY; }
         else if(key == "action"){ iss >> settings.actionNormX >> settings.actionNormY; }
         else if(key == "attack"){ iss >> settings.attackNormX >> settings.attackNormY; }
+        else if(key == "place"){ iss >> settings.placeNormX >> settings.placeNormY; }
         else if(key == "inventory"){ iss >> settings.invNormX >> settings.invNormY; }
         else if(key == "craft"){ iss >> settings.craftNormX >> settings.craftNormY; }
         else if(key == "map"){ iss >> settings.mapNormX >> settings.mapNormY; }
+        else if(key == "options"){ iss >> settings.optionsNormX >> settings.optionsNormY; }
     }
 
     // Сохранённая раскладка от прошлой версии интерфейса сбрасывается один раз —
@@ -75,7 +77,9 @@ void loadSettings(){
     if(settings.layoutVersion != CONTROL_LAYOUT_VERSION){
         settings.stickNormY = settings.jumpNormY = settings.sprintNormY = -1.0f;
         settings.crouchNormY = settings.actionNormY = settings.attackNormY = -1.0f;
+        settings.placeNormY = -1.0f;
         settings.invNormY = settings.craftNormY = settings.mapNormY = -1.0f;
+        settings.optionsNormY = -1.0f;
         settings.layoutVersion = CONTROL_LAYOUT_VERSION;
     }
 }
@@ -100,8 +104,10 @@ void saveSettings(){
     f << "crouch "    << settings.crouchNormX << " " << settings.crouchNormY << "\n";
     f << "action "    << settings.actionNormX << " " << settings.actionNormY << "\n";
     f << "attack "    << settings.attackNormX << " " << settings.attackNormY << "\n";
+    f << "place "     << settings.placeNormX  << " " << settings.placeNormY  << "\n";
     f << "inventory " << settings.invNormX    << " " << settings.invNormY    << "\n";
     f << "craft "     << settings.craftNormX  << " " << settings.craftNormY  << "\n";
     f << "map "       << settings.mapNormX    << " " << settings.mapNormY    << "\n";
+    f << "options "   << settings.optionsNormX << " " << settings.optionsNormY << "\n";
     f.close();
 }

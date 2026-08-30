@@ -32,10 +32,12 @@ struct Settings {
     float sprintNormX= 0.76f,  sprintNormY= -1.0f;   // бег
     float crouchNormX= 0.62f,  crouchNormY= -1.0f;   // присед
     float actionNormX= 0.90f,  actionNormY= -1.0f;   // действие (E): подобрать, открыть
-    float attackNormX= 0.76f,  attackNormY= -1.0f;   // удар / выстрел
+    float attackNormX= 0.76f,  attackNormY= -1.0f;   // удар / добыча
+    float placeNormX = 0.62f,  placeNormY = -1.0f;   // поставить блок
     float invNormX   = 0.94f,  invNormY   = -1.0f;   // инвентарь
     float craftNormX = 0.86f,  craftNormY = -1.0f;   // крафт
     float mapNormX   = 0.78f,  mapNormY   = -1.0f;   // карта
+    float optionsNormX = 0.70f, optionsNormY = -1.0f; // настройки
 };
 extern Settings settings;
 

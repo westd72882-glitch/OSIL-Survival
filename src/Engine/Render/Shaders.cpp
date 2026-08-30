@@ -532,6 +532,9 @@ GLint uLightAmountLoc = -1;
 GLint uiProjLoc, uiTexLoc, uiColorLoc, uiUseTextureLoc;
 GLint skyViewLoc, skyProjLoc, skyTimeLoc;
 GLint skySunDirLoc = -1, skyLightAmountLoc = -1;
+GLuint voxelProg = 0;
+GLint voxelViewLoc = -1, voxelProjLoc = -1, voxelLightDirLoc = -1, voxelLightAmountLoc = -1;
+GLint voxelFogColorLoc = -1, voxelFogDensityLoc = -1, voxelCamPosLoc = -1, voxelAlphaLoc = -1;
 GLint postProjLoc, postTexLoc, postTimeLoc, postResLoc;
 GLint grassViewLoc, grassProjLoc, grassTimeLoc, grassLightDirLoc, grassFogColorLoc, grassFogDensityLoc;
 GLint grassCentreLoc, grassRadiusLoc;
@@ -654,3 +657,63 @@ GLint treeViewLoc=-1, treeProjLoc=-1, treeTimeLoc=-1, treeLightDirLoc=-1,
       treeFogColorLoc=-1, treeFogDensityLoc=-1, treeCamPosLoc=-1;
 GLuint skinBoneUBO = 0;
 const int SKIN_BONE_BINDING = 0;
+
+// ==================== ШЕЙДЕР КУБИЧЕСКОГО МИРА ====================
+// Отличия от основной программы и зачем они:
+//   * цвет приходит В ВЕРШИНЕ, а не uniform'ом: в одном меше чанка сотни блоков разных
+//     типов, и рисовать их одним вызовом можно только так;
+//   * матрицы модели нет вовсе — геометрия чанка сразу в мировых координатах, значит
+//     на кадр уходит один uniform-набор на все чанки;
+//   * освещение простое и «плоское»: свет зависит только от нормали грани, поэтому
+//     верх кубов светлее боков, а бока — темнее, и форма читается без текстур.
+const char* voxelVS = R"(#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec3 aColor;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform vec3 uCamPos;
+out vec3 vNormal;
+out vec3 vColor;
+out float vFogDist;
+void main(){
+    vNormal = aNormal;
+    vColor = aColor;
+    vFogDist = length(aPos - uCamPos);
+    gl_Position = uProj * uView * vec4(aPos, 1.0);
+}
+)";
+
+const char* voxelFS = R"(#version 300 es
+precision mediump float;
+in vec3 vNormal;
+in vec3 vColor;
+in float vFogDist;
+uniform vec3 uLightDir;
+uniform float uLightAmount;   // 0 — ночь, 1 — полдень
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform float uAlpha;         // 1 — камень и земля, <1 — вода
+out vec4 FragColor;
+void main(){
+    vec3 n = normalize(vNormal);
+    // Ступенчатое затенение по направлению грани — именно оно даёт «кубическую»
+    // картинку: верх ярче всего, север/юг чуть темнее, запад/восток ещё темнее, низ
+    // самый тёмный. Плавного освещения здесь не нужно: грани и должны быть плоскими.
+    float face = 0.62;
+    if(n.y > 0.5)       face = 1.00;
+    else if(n.y < -0.5) face = 0.45;
+    else if(abs(n.x) > 0.5) face = 0.72;
+    else                face = 0.86;
+
+    // Солнце добавляет направленности, но не ломает ступенчатость: половина света —
+    // постоянная «небесная», половина — от солнца.
+    float ndl = max(dot(n, normalize(uLightDir)), 0.0);
+    float light = (0.55 + 0.45 * ndl) * (0.18 + 0.92 * clamp(uLightAmount, 0.0, 1.2));
+
+    vec3 col = vColor * face * light;
+    float fog = 1.0 - exp(-uFogDensity * vFogDist * uFogDensity * vFogDist);
+    col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
+    FragColor = vec4(col, uAlpha);
+}
+)";

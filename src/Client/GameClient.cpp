@@ -13,7 +13,6 @@
 #include "../Engine/Render/Framebuffer.h"
 #include "../Engine/Render/Primitives.h"
 #include "../Engine/Render/Shaders.h"
-#include "../Engine/Render/Terrain.h"
 #include "../Engine/Render/UIStyle.h"
 
 #include <SDL2/SDL.h>
@@ -24,20 +23,26 @@
 #include <cstdlib>
 
 namespace {
-// Сид мира. Одиночный режим играет ту же карту, что и сервер с этим сидом, — так игрок
-// может сначала изучить остров в одиночку, а потом зайти на сервер и узнать местность.
+// Сид мира: одиночная игра идёт на той же карте, что и сервер с этим сидом.
 const char* WORLD_SEED_TEXT = "osil";
 
-// Дальность прорисовки. На телефоне это главный расход: террейн, деревья и туман.
-// 260 м — компромисс, при котором видно соседний холм, но кадр не проседает.
-const float VIEW_DISTANCE = 260.0f;
+// Дальность прорисовки в метрах (она же в блоках). В кубическом мире это главный
+// расход: каждый метр дальности — ещё кольцо чанков, которое надо собрать и нарисовать.
+const float VIEW_DISTANCE = 112.0f;
 
-GameClient* g_instance = nullptr;
+// Рецепты: минимальный набор, чтобы добытое сырьё уже приносило пользу.
+const Recipe kRecipes[] = {
+    { ItemType::Planks,     4, ItemType::Wood,      1, ItemType::None,  0, "Из дерева" },
+    { ItemType::StoneBrick, 1, ItemType::Stone,     2, ItemType::None,  0, "Прочнее досок" },
+    { ItemType::MetalFrag,  1, ItemType::OreMetal,  2, ItemType::None,  0, "Переплавка руды" },
+    { ItemType::Sulfur,     1, ItemType::OreSulfur, 2, ItemType::None,  0, "Для пороха (этап 4)" },
+    { ItemType::Cloth,      2, ItemType::Leaves,    3, ItemType::None,  0, "Из листвы" },
+};
+const int kRecipeCount = (int)(sizeof(kRecipes)/sizeof(kRecipes[0]));
 
-// Шрифт: своего в репозитории нет (лицензии), поэтому берём системный. На Android это
-// Roboto, на настольной Linux — DejaVu. Если ничего не нашлось, игра всё равно
-// запускается, просто без надписей.
 TTF_Font* openAnyFont(int size){
+    // Своего шрифта в репозитории нет (лицензии), берём системный: на Android это
+    // Roboto, на настольной Linux — DejaVu. Нет ни одного — игра идёт без надписей.
     const char* candidates[] = {
         "font.ttf", "font.otf",
         "/system/fonts/Roboto-Regular.ttf",
@@ -53,12 +58,6 @@ TTF_Font* openAnyFont(int size){
     return nullptr;
 }
 } // namespace
-
-float GameClient::terrainHeightBridge(float x, float z){
-    // Мост между движком (ему нужна простая функция высоты) и игрой (у неё карта мира).
-    if(!g_instance || !g_instance->world_) return 0.0f;
-    return g_instance->world_->heightAt(x, z);
-}
 
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
@@ -84,14 +83,12 @@ bool GameClient::initPlatform(){
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
 
-    // На телефоне окно всегда во весь экран; на настольной машине — окно для отладки.
 #ifdef __ANDROID__
     Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_ALLOW_HIGHDPI;
-    SCR_W = 1280; SCR_H = 720;
 #else
     Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
-    SCR_W = 1280; SCR_H = 720;
 #endif
+    SCR_W = 1280; SCR_H = 720;
     win = SDL_CreateWindow("OSIL Survival", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                            SCR_W, SCR_H, flags);
     if(!win){ SDL_Log("SDL_CreateWindow: %s", SDL_GetError()); return false; }
@@ -99,7 +96,12 @@ bool GameClient::initPlatform(){
     glCtx = SDL_GL_CreateContext(win);
     if(!glCtx){ SDL_Log("SDL_GL_CreateContext: %s", SDL_GetError()); return false; }
     SDL_GL_GetDrawableSize(win, &SCR_W, &SCR_H);
-    SDL_GL_SetSwapInterval(1);
+
+    // Вертикальная синхронизация ВЫКЛЮЧЕНА: она привязывает кадр к развёртке экрана и
+    // прячет настоящую производительность — по счётчику в углу видно ровно 60, даже
+    // если запас втрое больше или, наоборот, кадр не успевает. Темп задаёт свой
+    // ограничитель (settings.fpsLimit), он же экономит батарею.
+    SDL_GL_SetSwapInterval(0);
 
     uiFont = openAnyFont(28);
     return true;
@@ -107,30 +109,25 @@ bool GameClient::initPlatform(){
 
 bool GameClient::initGraphics(){
     glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    mainProg = linkProgram(mainVS, mainFS);
-    uModelLoc     = glGetUniformLocation(mainProg, "uModel");
-    uViewLoc      = glGetUniformLocation(mainProg, "uView");
-    uProjLoc      = glGetUniformLocation(mainProg, "uProj");
-    uNormalMatLoc = glGetUniformLocation(mainProg, "uNormalMat");
-    uTexLoc       = glGetUniformLocation(mainProg, "uTex");
-    uLightDirLoc  = glGetUniformLocation(mainProg, "uLightDir");
-    uTintColorLoc = glGetUniformLocation(mainProg, "uTintColor");
-    uUseTextureLoc= glGetUniformLocation(mainProg, "uUseTexture");
-    uFogColorLoc  = glGetUniformLocation(mainProg, "uFogColor");
-    uFogDensityLoc= glGetUniformLocation(mainProg, "uFogDensity");
-    uCamPosLoc    = glGetUniformLocation(mainProg, "uCamPos");
-    uOpacityLoc   = glGetUniformLocation(mainProg, "uOpacity");
-    uUnlitLoc     = glGetUniformLocation(mainProg, "uUnlit");
-    uLightAmountLoc = glGetUniformLocation(mainProg, "uLightAmount");
+    voxelProg = linkProgram(voxelVS, voxelFS);
+    voxelViewLoc        = glGetUniformLocation(voxelProg, "uView");
+    voxelProjLoc        = glGetUniformLocation(voxelProg, "uProj");
+    voxelLightDirLoc    = glGetUniformLocation(voxelProg, "uLightDir");
+    voxelLightAmountLoc = glGetUniformLocation(voxelProg, "uLightAmount");
+    voxelFogColorLoc    = glGetUniformLocation(voxelProg, "uFogColor");
+    voxelFogDensityLoc  = glGetUniformLocation(voxelProg, "uFogDensity");
+    voxelCamPosLoc      = glGetUniformLocation(voxelProg, "uCamPos");
+    voxelAlphaLoc       = glGetUniformLocation(voxelProg, "uAlpha");
 
     skyProg = linkProgram(skyVS, skyFS);
-    skyViewLoc = glGetUniformLocation(skyProg, "uView");
-    skyProjLoc = glGetUniformLocation(skyProg, "uProj");
-    skyTimeLoc = glGetUniformLocation(skyProg, "uTime");
-    skySunDirLoc = glGetUniformLocation(skyProg, "uSunDir");
+    skyViewLoc        = glGetUniformLocation(skyProg, "uView");
+    skyProjLoc        = glGetUniformLocation(skyProg, "uProj");
+    skyTimeLoc        = glGetUniformLocation(skyProg, "uTime");
+    skySunDirLoc      = glGetUniformLocation(skyProg, "uSunDir");
     skyLightAmountLoc = glGetUniformLocation(skyProg, "uLightAmount");
 
     uiProg = linkProgram(uiVS, uiFS);
@@ -147,140 +144,69 @@ bool GameClient::initGraphics(){
     GLint linked = GL_FALSE;
     glGetProgramiv(postProg, GL_LINK_STATUS, &linked);
     postProgOk_ = (linked == GL_TRUE);
-    if(!postProgOk_) SDL_Log("postProg не слинковался — сцена пойдёт на экран без цветокоррекции");
 
     initUIQuad();
     initUICircle();
     skyMesh_ = buildSkyCube(1.0f);
 
-    // Текстура земли необязательна: без неё рельеф красится тинтом биома.
-    groundTex_ = loadTextureFromFile("ground.png");
+    // Рамка выделенного блока: 12 рёбер куба, обновляются каждый кадр.
+    glGenVertexArrays(1, &highlightVao_);
+    glGenBuffers(1, &highlightVbo_);
+    glBindVertexArray(highlightVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, highlightVbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(VoxelVertex) * 24, nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(6*sizeof(float)));
+    glBindVertexArray(0);
     return true;
 }
 
 void GameClient::initWorld(){
     WorldConfig cfg;
     cfg.seed = seedFromString(WORLD_SEED_TEXT);
-    // На телефоне шаг сетки 8 м вместо 4: карта высот вчетверо легче и строится вдвое
-    // быстрее, а разница в детализации рельефа на глаз незаметна — мелкие неровности всё
-    // равно ниже роста игрока. Сервер держит шаг 4 м, потому что по нему считает попадания.
-    cfg.heightGridStep = 8.0f;
+    // Шаг сетки высот 4 м — как на сервере. В кубическом мире это важнее, чем в
+    // сглаженном: при шаге 8 м рельеф превращался в широкие плоские террасы, и остров
+    // выглядел столом. Лишние 0.3 с генерации того стоят.
+    cfg.heightGridStep = 4.0f;
     cfg.sanitize();
 
     world_.reset(new World(cfg));
     world_->generate();
-
     resources_.reset(new ResourceMap(*world_));
-    // Полный рассев по всей карте на телефоне не нужен: ResourceMap умеет отдавать
-    // содержимое отдельных ячеек, но для добычи и отрисовки нам нужен пространственный
-    // индекс, поэтому строим его один раз (около 200 тыс. объектов, ~10 МБ).
     resources_->generate();
-
     monuments_.reset(new MonumentMap(*world_));
     monuments_->generate();
-
     env_.reset(new Environment(cfg));
     if(startTimeOverride_ >= 0.0f) env_->setTimeOfDay(startTimeOverride_);
-    player_.reset(new Survivor(*world_, *resources_, *env_));
+
+    voxels_.reset(new VoxelWorld(*world_, *resources_));
+    chunks_.init(voxels_.get());
+
+    player_.reset(new Survivor(*voxels_, *env_, inventory_));
+    player_->onBlockChanged = [this](int x, int y, int z){ chunks_.markDirty(x, y, z); };
 
     Rng rng(splitMix64(cfg.seed ^ 0x5350ULL));
     Vec3 spawn = world_->findSpawnPoint(rng);
     for(int i = 0; i < 24 && !monuments_->isSafeSpawn(spawn.x, spawn.z); ++i)
         spawn = world_->findSpawnPoint(rng);
     player_->spawn(spawn);
-    yaw_ = 0.0f; pitch_ = -0.1f;
+    yaw_ = (yawOverride_ > -100.0f) ? yawOverride_ : 0.0f;
+    pitch_ = (pitchOverride_ > -100.0f) ? pitchOverride_ : -0.15f;
 
-    TerrainStreamConfig tcfg;
-    tcfg.worldSize = cfg.size;
-    tcfg.chunkSize = 64.0f;
-    tcfg.chunkRes  = (settings.quality == Quality::TURBO) ? 12 : 20;
-    tcfg.buildsPerFrame = 2;
-    terrainInit(tcfg, &GameClient::terrainHeightBridge);
+    // Стартовый набор: пара блоков, чтобы было чем строить с первой минуты.
+    inventory_.add(ItemType::Planks, 16);
+    inventory_.add(ItemType::Stone, 8);
 
-    // Вода — одна плоскость на всю карту: под ней рельеф уходит в океан, а сверху она
-    // рисуется полупрозрачной. Отдельная сетка волн — 5-й этап.
-    {
-        std::vector<Vertex> v;
-        float s = cfg.size;
-        float y = cfg.waterLevel;
-        float uv = s * 0.02f;
-        v.push_back({0,y,0, 0,0, 0,1,0});
-        v.push_back({s,y,0, uv,0, 0,1,0});
-        v.push_back({s,y,s, uv,uv, 0,1,0});
-        v.push_back({0,y,0, 0,0, 0,1,0});
-        v.push_back({s,y,s, uv,uv, 0,1,0});
-        v.push_back({0,y,s, 0,uv, 0,1,0});
-        waterMesh_ = uploadMesh(v, 0);
-    }
-
-    buildPropModels();
     buildMinimapTexture();
-    LOG_INFO("мир клиента готов: сид %llu", (unsigned long long)cfg.seed);
-}
-
-void GameClient::buildPropModels(){
-    // Модели процедурные: внешних .obj у проекта нет, а деревья и камни нужны уже сейчас.
-    // Формы намеренно простые — на экране их сотни, и каждая лишняя тысяча треугольников
-    // умножается на это количество.
-    auto makeMesh = [](const std::vector<Vertex>& v){ return uploadMesh(v, 0); };
-
-    { // Сосна: узкий ствол и конус кроны
-        std::vector<Vertex> trunk, crown;
-        appendTaperedVerts(trunk, mat4Translate(Vec3{0, 3.0f, 0}), 0.35f, 0.18f, 3.0f, 8, true);
-        appendTaperedVerts(crown, mat4Translate(Vec3{0, 7.5f, 0}), 2.2f, 0.05f, 3.6f, 9, false);
-        appendTaperedVerts(crown, mat4Translate(Vec3{0, 5.2f, 0}), 2.9f, 0.9f, 1.8f, 9, false);
-        propTree_.base = makeMesh(trunk);
-        propTree_.top  = makeMesh(crown);
-        propTree_.baseTint = Vec3{0.32f, 0.22f, 0.15f};
-        propTree_.topTint  = Vec3{0.13f, 0.33f, 0.16f};
-    }
-    { // Дуб/берёза: толстый ствол и шар кроны
-        std::vector<Vertex> trunk, crown;
-        appendTaperedVerts(trunk, mat4Translate(Vec3{0, 2.4f, 0}), 0.5f, 0.35f, 2.4f, 8, true);
-        appendEllipsoidVerts(crown, mat4Translate(Vec3{0, 6.2f, 0}), Vec3{3.0f, 2.4f, 3.0f}, 10, 6);
-        propOak_.base = makeMesh(trunk);
-        propOak_.top  = makeMesh(crown);
-        propOak_.baseTint = Vec3{0.38f, 0.28f, 0.18f};
-        propOak_.topTint  = Vec3{0.22f, 0.42f, 0.18f};
-    }
-    { // Сухостой: только ствол с обрубками веток
-        std::vector<Vertex> trunk;
-        appendTaperedVerts(trunk, mat4Translate(Vec3{0, 2.6f, 0}), 0.4f, 0.12f, 2.6f, 7, true);
-        appendBoxXformVerts(trunk, mat4Multiply(mat4Translate(Vec3{0.7f, 4.0f, 0}), mat4RotateZ(0.7f)),
-                            Vec3{0.9f, 0.08f, 0.08f});
-        propDead_.base = makeMesh(trunk);
-        propDead_.top  = Mesh{};
-        propDead_.baseTint = Vec3{0.42f, 0.36f, 0.28f};
-    }
-    { // Валун
-        std::vector<Vertex> rock;
-        appendEllipsoidVerts(rock, mat4Translate(Vec3{0, 0.7f, 0}), Vec3{1.5f, 1.0f, 1.3f}, 9, 5);
-        appendEllipsoidVerts(rock, mat4Translate(Vec3{0.9f, 0.4f, 0.5f}), Vec3{0.7f, 0.5f, 0.6f}, 7, 4);
-        propRock_.base = makeMesh(rock);
-        propRock_.top = Mesh{};
-        propRock_.baseTint = Vec3{0.48f, 0.47f, 0.45f};
-    }
-    { // Рудная жила: камень с яркими вкраплениями сверху
-        std::vector<Vertex> rock, ore;
-        appendEllipsoidVerts(rock, mat4Translate(Vec3{0, 0.6f, 0}), Vec3{1.2f, 0.9f, 1.2f}, 9, 5);
-        appendSphereVerts(ore, mat4Translate(Vec3{0.2f, 1.3f, 0.1f}), 0.42f, 7, 4);
-        propOre_.base = makeMesh(rock);
-        propOre_.top  = makeMesh(ore);
-        propOre_.baseTint = Vec3{0.42f, 0.40f, 0.38f};
-        propOre_.topTint  = Vec3{0.72f, 0.55f, 0.25f};
-    }
-    { // Куст / ягоды / трава — низкий шар
-        std::vector<Vertex> bush;
-        appendEllipsoidVerts(bush, mat4Translate(Vec3{0, 0.45f, 0}), Vec3{0.7f, 0.5f, 0.7f}, 8, 4);
-        propBush_.base = makeMesh(bush);
-        propBush_.top = Mesh{};
-        propBush_.baseTint = Vec3{0.25f, 0.40f, 0.20f};
-    }
+    LOG_INFO("мир клиента готов: сид %llu, кубический слой включён",
+             (unsigned long long)cfg.seed);
 }
 
 void GameClient::buildMinimapTexture(){
-    // Мини-карта — заранее посчитанная картинка биомов: строить её каждый кадр из мира
-    // нельзя (это сотни тысяч выборок), а один раз при старте — 256x256 и меньше 50 мс.
     const int N = 256;
     std::vector<unsigned char> pixels((size_t)N * N * 4);
     const WorldConfig& cfg = world_->config();
@@ -289,8 +215,7 @@ void GameClient::buildMinimapTexture(){
             float wx = ((float)x + 0.5f) / (float)N * cfg.size;
             float wz = ((float)y + 0.5f) / (float)N * cfg.size;
             float h = world_->heightAt(wx, wz);
-            Biome b = world_->biomeAt(wx, wz);
-            const BiomeInfo& bi = biomeInfo(b);
+            const BiomeInfo& bi = biomeInfo(world_->biomeAt(wx, wz));
             float shade = 0.75f + clampf(h / cfg.maxHeight, 0.0f, 1.0f) * 0.5f;
             size_t i = ((size_t)y * N + x) * 4;
             pixels[i+0] = (unsigned char)clampf(bi.r * shade, 0, 255);
@@ -308,7 +233,147 @@ void GameClient::buildMinimapTexture(){
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-// ==================== ЦИКЛ ====================
+// ==================== ГЕОМЕТРИЯ ИНТЕРФЕЙСА ====================
+// Приём перенесён из A.N.O.D.E: геометрия слотов считается ОДНОЙ функцией, которой
+// пользуются и отрисовка, и проверка попадания пальца. Иначе нарисованная ячейка и
+// нажимаемая зона неизбежно расходятся после первой же правки интерфейса.
+
+void GameClient::hotbarGeometry(float& x, float& y, float& slot, float& gap) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    slot = clampf(fminf((float)SCR_W, (float)SCR_H) * 0.085f, 44.0f, 96.0f * s);
+    gap = slot * 0.10f;
+    float total = slot * Inventory::HOTBAR + gap * (Inventory::HOTBAR - 1);
+    x = ((float)SCR_W - total) * 0.5f;
+    y = (float)SCR_H - slot - 14.0f * s;
+}
+
+void GameClient::inventoryGeometry(float& x, float& y, float& slot, float& gap) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    slot = clampf(fminf((float)SCR_W, (float)SCR_H) * 0.095f, 44.0f, 104.0f * s);
+    gap = slot * 0.12f;
+    float totalW = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
+    float totalH = slot * Inventory::ROWS + gap * (Inventory::ROWS - 1);
+    x = ((float)SCR_W - totalW) * 0.5f;
+    y = ((float)SCR_H - totalH) * 0.5f + 10.0f * s;
+}
+
+// ==================== ВВОД ====================
+
+bool GameClient::handleHotbarTouch(float x, float y){
+    float hx, hy, slot, gap;
+    hotbarGeometry(hx, hy, slot, gap);
+    if(y < hy - gap || y > hy + slot + gap) return false;
+    for(int i = 0; i < Inventory::HOTBAR; ++i){
+        float sx = hx + i * (slot + gap);
+        if(x >= sx && x <= sx + slot){
+            inventory_.select(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Строки окна настроек считаются одной функцией и для отрисовки, и для попаданий.
+namespace {
+const int SETTINGS_ROWS = 8;
+float settingsRowY(int i, int screenH){
+    float s = clampf((float)screenH / 720.0f, 0.7f, 2.2f);
+    return (float)screenH * 0.5f - (SETTINGS_ROWS * 46.0f * s) * 0.5f + i * 46.0f * s;
+}
+} // namespace
+
+bool GameClient::handleSettingsTouch(float x, float y){
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float w = (float)SCR_W * 0.62f;
+    float px = ((float)SCR_W - w) * 0.5f;
+    float rowH = 42.0f * s;
+    for(int i = 0; i < SETTINGS_ROWS; ++i){
+        float ry = settingsRowY(i, SCR_H);
+        if(x < px || x > px + w || y < ry || y > ry + rowH) continue;
+        switch(i){
+            case 0: { // качество по кругу
+                int q = ((int)settings.quality + 1) % 4;
+                settings.quality = (Quality)q;
+                destroySceneFBO();   // изменился масштаб рендера
+                break;
+            }
+            case 1: { // потолок кадров
+                int cur = 0;
+                for(int k = 0; k < FPS_LIMIT_OPTION_COUNT; ++k)
+                    if(FPS_LIMIT_OPTIONS[k] == settings.fpsLimit) cur = k;
+                settings.fpsLimit = FPS_LIMIT_OPTIONS[(cur + 1) % FPS_LIMIT_OPTION_COUNT];
+                break;
+            }
+            case 2: settings.musicOn = !settings.musicOn; audioApplySettings(); break;
+            case 3: settings.sfxOn = !settings.sfxOn; break;
+            case 4: {
+                float next = settings.lookSensitivity + 0.5f;
+                if(next > 2.01f) next = 0.5f;
+                settings.lookSensitivity = next;
+                break;
+            }
+            case 5: settings.showDebugInfo = !settings.showDebugInfo; break;
+            case 6: // редактор раскладки кнопок
+                controls_.setEditMode(true);
+                overlay_ = Overlay::None;
+                break;
+            case 7: // сброс раскладки
+                controls_.resetLayout();
+                break;
+        }
+        saveSettings();
+        return true;
+    }
+    return true;   // касание внутри окна, но мимо строк — окно не закрываем
+}
+
+bool GameClient::handleOverlayTouch(float x, float y){
+    if(overlay_ == Overlay::Settings) return handleSettingsTouch(x, y);
+    if(overlay_ != Overlay::Inventory && overlay_ != Overlay::Craft) return false;
+
+    if(overlay_ == Overlay::Inventory){
+        float gx, gy, slot, gap;
+        inventoryGeometry(gx, gy, slot, gap);
+        for(int i = 0; i < Inventory::SIZE; ++i){
+            int col = i % Inventory::COLS, row = i / Inventory::COLS;
+            float sx = gx + col * (slot + gap);
+            float sy = gy + row * (slot + gap);
+            if(x < sx || x > sx + slot || y < sy || y > sy + slot) continue;
+            // Перенос в ДВА касания вместо перетаскивания: на телефоне палец закрывает
+            // собой ячейку, и классический drag&drop промахивается мимо цели.
+            if(dragSlot_ < 0){
+                if(!inventory_.slot(i).empty()) dragSlot_ = i;
+            } else {
+                inventory_.moveOrSwap(dragSlot_, i);
+                dragSlot_ = -1;
+            }
+            return true;
+        }
+        dragSlot_ = -1;
+        return true;
+    }
+
+    // Крафт: строки рецептов, нажатие — сделать одну штуку.
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float w = (float)SCR_W * 0.7f, h = (float)SCR_H * 0.7f;
+    float px = ((float)SCR_W - w) * 0.5f, py = ((float)SCR_H - h) * 0.5f;
+    float lineH = 44.0f * s;
+    float top = py + 60.0f * s;
+    for(int i = 0; i < kRecipeCount; ++i){
+        float ly = top + i * lineH;
+        if(x < px || x > px + w || y < ly || y > ly + lineH) continue;
+        const Recipe& r = kRecipes[i];
+        bool okA = inventory_.countOf(r.costA) >= r.costACount;
+        bool okB = (r.costB == ItemType::None) || inventory_.countOf(r.costB) >= r.costBCount;
+        if(okA && okB){
+            inventory_.remove(r.costA, r.costACount);
+            if(r.costB != ItemType::None) inventory_.remove(r.costB, r.costBCount);
+            inventory_.add(r.result, r.resultCount);
+        }
+        return true;
+    }
+    return true;
+}
 
 void GameClient::handleEvents(){
     SDL_Event e;
@@ -320,13 +385,45 @@ void GameClient::handleEvents(){
             destroySceneFBO();
             continue;
         }
-        // Кнопка «назад» на Android и Escape закрывают открытое окно, а не игру:
-        // случайный выход из игры на телефоне — худшее, что может случиться в выживании.
+        // Кнопка «назад» на Android и Escape закрывают окно, а не игру: случайный выход
+        // из выживания — худшее, что может случиться на телефоне.
         if(e.type == SDL_KEYDOWN && (e.key.keysym.sym == SDLK_AC_BACK || e.key.keysym.sym == SDLK_ESCAPE)){
-            if(overlay_ != Overlay::None) overlay_ = Overlay::None;
+            if(overlay_ != Overlay::None){ overlay_ = Overlay::None; dragSlot_ = -1; }
             else running_ = false;
             continue;
         }
+        // Цифры 1-6 выбирают ячейку пояса (отладка на ПК).
+        if(e.type == SDL_KEYDOWN && e.key.keysym.sym >= SDLK_1 && e.key.keysym.sym <= SDLK_6){
+            inventory_.select(e.key.keysym.sym - SDLK_1);
+            continue;
+        }
+
+        // Касания по интерфейсу разбираются ДО управления: иначе нажатие на ячейку
+        // пояса заодно дёргало бы камеру.
+        float tx = -1, ty = -1;
+        if(e.type == SDL_FINGERDOWN){ tx = e.tfinger.x * (float)SCR_W; ty = e.tfinger.y * (float)SCR_H; }
+        else if(e.type == SDL_MOUSEBUTTONDOWN){ tx = (float)e.button.x; ty = (float)e.button.y; }
+        if(tx >= 0.0f && controls_.editMode()){
+            // Кнопка «ГОТОВО» в подсказке редактора: её геометрия повторяет отрисовку.
+            float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+            float w = (float)SCR_W * 0.5f;
+            float px = ((float)SCR_W - w) * 0.5f, py = 24.0f * s;
+            if(tx >= px + 16.0f * s && tx <= px + 166.0f * s &&
+               ty >= py + 48.0f * s && ty <= py + 80.0f * s){
+                controls_.setEditMode(false);
+                continue;
+            }
+        }
+        if(tx >= 0.0f && !controls_.editMode()){
+            if(overlay_ != Overlay::None){
+                if(handleOverlayTouch(tx, ty)) continue;
+                // Касание мимо панели закрывает окно.
+                overlay_ = Overlay::None; dragSlot_ = -1;
+                continue;
+            }
+            if(handleHotbarTouch(tx, ty)) continue;
+        }
+
         controls_.handleEvent(e);
     }
 }
@@ -334,26 +431,27 @@ void GameClient::handleEvents(){
 void GameClient::update(float dt){
     animTime_ += dt;
 
-    // Поворот камеры. Чувствительность нормирована на высоту экрана, иначе на планшете
-    // тот же жест поворачивает камеру заметно сильнее, чем на телефоне.
     float sens = 0.0045f * settings.lookSensitivity * (720.0f / (float)SCR_H) * 2.0f;
     yaw_   -= controls_.lookDX * sens;
     pitch_ -= controls_.lookDY * sens;
-    pitch_ = clampf(pitch_, -1.45f, 1.45f);
+    pitch_ = clampf(pitch_, -1.50f, 1.50f);
 
-    if(controls_.inventoryPressed()) overlay_ = (overlay_ == Overlay::Inventory) ? Overlay::None : Overlay::Inventory;
+    if(controls_.inventoryPressed()){ overlay_ = (overlay_ == Overlay::Inventory) ? Overlay::None : Overlay::Inventory; dragSlot_ = -1; }
     if(controls_.craftPressed())     overlay_ = (overlay_ == Overlay::Craft)     ? Overlay::None : Overlay::Craft;
     if(controls_.mapPressed())       overlay_ = (overlay_ == Overlay::Map)       ? Overlay::None : Overlay::Map;
+    if(controls_.settingsPressed())  overlay_ = (overlay_ == Overlay::Settings)  ? Overlay::None : Overlay::Settings;
 
     SurvivorInput in;
-    // Пока открыто окно, персонаж стоит: иначе игрок «убегает» в инвентаре.
-    if(overlay_ == Overlay::None){
+    // В режиме расстановки кнопок игра стоит: иначе игрок, двигая кнопку «копать»,
+    // копал бы ей же.
+    if(overlay_ == Overlay::None && !controls_.editMode()){
         in.moveX = controls_.moveX();
         in.moveY = controls_.moveY();
         in.sprint = controls_.sprint();
         in.crouch = controls_.crouch();
         in.jump = controls_.jumpPressed();
         in.attack = controls_.attackHeld();
+        in.place = controls_.placePressed();
         in.action = controls_.actionPressed();
     }
     in.yaw = yaw_;
@@ -363,28 +461,62 @@ void GameClient::update(float dt){
     player_->update(in, dt);
     env_->tick(dt);
 
-    // Действие у воды — напиться. Полная система жажды (фляги, грязная вода, диарея) —
-    // 3-й этап, здесь только сам источник.
-    if(in.action){
-        Vec3 p = player_->position();
-        if(world_->isWater(p.x, p.z) || player_->inWater()) player_->drinkWater();
-    }
-
-    // Шаги: звук привязан к скорости, а не к таймеру, иначе бег и шаг звучат одинаково.
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
         stepPhase += dt * player_->speed();
         if(stepPhase > 2.2f){ stepPhase = 0.0f; audioPlayStep(); }
     }
 
-    terrainUpdate(player_->eyePosition(), VIEW_DISTANCE * qualityViewDistanceScale());
+    // Бюджет постройки чанков: при беге разрешаем больше, стоя на месте — меньше;
+    // так мир успевает за игроком, но не тратит время впустую.
+    float viewDist = VIEW_DISTANCE * qualityViewDistanceScale();
+    int budget = (player_->speed() > 3.0f) ? 3 : 2;
+    chunks_.update(player_->eyePosition(), viewDist, budget);
     controls_.endFrame();
 }
 
-// ==================== ОТРИСОВКА ====================
+// ==================== ОТРИСОВКА СЦЕНЫ ====================
+
+void GameClient::renderBlockHighlight(const Mat4& view, const Mat4& proj, Vec3 camPos){
+    const RayHit& t = player_->target();
+    if(!t.hit) return;
+
+    // Рамка ровно по граням блока, чуть наружу — иначе линии тонут в самой грани
+    // (z-fighting) и мерцают при движении головы.
+    const float e = 0.004f;
+    float x0 = (float)t.x - e, y0 = (float)t.y - e, z0 = (float)t.z - e;
+    float x1 = (float)t.x + 1.0f + e, y1 = (float)t.y + 1.0f + e, z1 = (float)t.z + 1.0f + e;
+
+    // Цвет зависит от прогресса добычи: чёрная рамка светлеет к белой, когда блок
+    // вот-вот развалится — это единственная подсказка игроку, что удар засчитан.
+    float p = player_->miningProgress();
+    float c = 0.05f + p * 0.9f;
+
+    VoxelVertex v[24];
+    int n = 0;
+    auto line = [&](float ax, float ay, float az, float bx, float by, float bz){
+        v[n++] = VoxelVertex{ ax, ay, az, 0,1,0, c, c, c };
+        v[n++] = VoxelVertex{ bx, by, bz, 0,1,0, c, c, c };
+    };
+    line(x0,y0,z0, x1,y0,z0); line(x1,y0,z0, x1,y0,z1); line(x1,y0,z1, x0,y0,z1); line(x0,y0,z1, x0,y0,z0);
+    line(x0,y1,z0, x1,y1,z0); line(x1,y1,z0, x1,y1,z1); line(x1,y1,z1, x0,y1,z1); line(x0,y1,z1, x0,y1,z0);
+    line(x0,y0,z0, x0,y1,z0); line(x1,y0,z0, x1,y1,z0); line(x1,y0,z1, x1,y1,z1); line(x0,y0,z1, x0,y1,z1);
+
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform3f(voxelCamPosLoc, camPos.x, camPos.y, camPos.z);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    glUniform1f(voxelFogDensityLoc, 0.0f);   // рамку туман не съедает
+    glUniform1f(voxelLightAmountLoc, 1.2f);
+    glBindVertexArray(highlightVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, highlightVbo_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+    glDrawArrays(GL_LINES, 0, 24);
+    glBindVertexArray(0);
+}
 
 void GameClient::renderScene(){
-    const WorldConfig& cfg = world_->config();
     float renderScale = qualityRenderScale();
     int renderW = (int)((float)SCR_W * renderScale);
     int renderH = (int)((float)SCR_H * renderScale);
@@ -395,9 +527,6 @@ void GameClient::renderScene(){
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
     glViewport(0, 0, renderW, renderH);
 
-    // Цвет неба и тумана ведёт освещённость: в грозу и ночью мир буквально темнеет.
-    // lightLevel() держит ночной минимум 0.06, чтобы игра не превращалась в чёрный экран;
-    // для картинки этого мало — растягиваем в «яркость сцены», где полдень даёт единицу.
     float light = clampf(env_->lightLevel() * 1.45f + 0.02f, 0.07f, 1.15f);
     Vec3 fog{ 0.52f * light + 0.03f, 0.60f * light + 0.04f, 0.72f * light + 0.06f };
     switch(env_->weather()){
@@ -410,24 +539,20 @@ void GameClient::renderScene(){
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     Vec3 eye = player_->eyePosition();
-    Vec3 forward{ -sinf(yaw_) * cosf(pitch_), sinf(pitch_), -cosf(yaw_) * cosf(pitch_) };
+    Vec3 forward = player_->lookDirection();
     Mat4 view = mat4LookAt(eye, v3add(eye, forward), Vec3{0,1,0});
     float aspect = (float)renderW / (float)renderH;
     float viewDist = VIEW_DISTANCE * qualityViewDistanceScale();
-    Mat4 proj = mat4Perspective(62.0f * 3.14159265f / 180.0f, aspect, 0.15f, viewDist * 1.6f);
+    Mat4 proj = mat4Perspective(70.0f * 3.14159265f / 180.0f, aspect, 0.1f, viewDist * 2.2f);
 
-    // ---- Небо
+    // ---- Небо (без записи глубины, всегда позади всего)
     glDepthMask(GL_FALSE);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glUseProgram(skyProg);
     glUniformMatrix4fv(skyViewLoc, 1, GL_FALSE, view.m);
     glUniformMatrix4fv(skyProjLoc, 1, GL_FALSE, proj.m);
-    // Время суток передаём в шейдер как позицию по циклу: он сам разворачивает его в
-    // положение солнца и цвет зари.
     glUniform1f(skyTimeLoc, animTime_);
-    // Направление на солнце: восход на востоке (+X), закат на западе. Высота — из
-    // Environment, то есть небо и освещение сцены всегда согласованы между собой.
     float sunAngle = (env_->timeOfDay() - 6.0f) / 12.0f * 3.14159265f;
     Vec3 sunDir = v3norm(Vec3{ cosf(sunAngle), sinf(env_->sunAltitude()), 0.30f });
     glUniform3f(skySunDirLoc, sunDir.x, sunDir.y, sunDir.z);
@@ -438,123 +563,62 @@ void GameClient::renderScene(){
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
 
-    // ---- Основная программа: рельеф, объекты, вода
-    glUseProgram(mainProg);
-    glUniformMatrix4fv(uViewLoc, 1, GL_FALSE, view.m);
-    glUniformMatrix4fv(uProjLoc, 1, GL_FALSE, proj.m);
-    // Свет сцены идёт от того же солнца, что нарисовано на небе; ночью источником
-    // остаётся луна — направление то же, а сила падает до минимума.
-    Vec3 lightDir = sunDir;
-    if(lightDir.y < 0.12f) lightDir.y = 0.12f; // солнце под горизонтом не должно светить снизу
-    lightDir = v3norm(lightDir);
-    glUniform3f(uLightDirLoc, lightDir.x, lightDir.y, lightDir.z);
-    glUniform1f(uLightAmountLoc, clampf(light, 0.0f, 1.15f));
-    glUniform3f(uFogColorLoc, fog.x, fog.y, fog.z);
-    // Плотность тумана растёт в дождь и особенно в туман — это и атмосфера, и способ
-    // честно обрезать дальность прорисовки без «выныривающих» из пустоты объектов.
-    float fogDensity = 0.0035f;
-    if(env_->weather() == Weather::Fog)   fogDensity = 0.016f * (0.5f + env_->weatherIntensity());
-    if(env_->weather() == Weather::Rain)  fogDensity = 0.007f;
-    if(env_->weather() == Weather::Storm) fogDensity = 0.010f;
-    if(env_->weather() == Weather::Snow)  fogDensity = 0.009f;
-    glUniform1f(uFogDensityLoc, fogDensity);
-    glUniform3f(uCamPosLoc, eye.x, eye.y, eye.z);
-    glUniform1f(uOpacityLoc, 1.0f);
-    glUniform1f(uUnlitLoc, 0.0f);
+    // ---- Кубический мир: непрозрачные блоки.
+    // Смешивание для них ВЫКЛЮЧЕНО, а отсечение задних граней включено. Именно на этом
+    // ловится «мир видно насквозь»: с включённым смешиванием и незакрытой глубиной
+    // дальние грани просвечивают сквозь ближние.
+    glDisable(GL_BLEND);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
 
-    // Рельеф. Тинт берём у биома под игроком и мягко смешиваем с серым — так пустыня
-    // выглядит песчаной, а снежник белым, даже без текстурных карт биомов.
-    const BiomeInfo& bi = biomeInfo(world_->biomeAt(eye.x, eye.z));
-    Mat4 identity = mat4Identity();
-    float nrm[9]; mat4ToMat3(identity, nrm);
-    glUniformMatrix4fv(uModelLoc, 1, GL_FALSE, identity.m);
-    glUniformMatrix3fv(uNormalMatLoc, 1, GL_FALSE, nrm);
-    // Цвета биомов заданы для КАРТЫ, где важна различимость, а не для трёхмерной сцены:
-    // как альбедо они слишком тёмные и земля выглядит почти чёрной. Осветляем их здесь,
-    // а не в таблице биомов, чтобы предпросмотр карты остался читаемым.
-    glUniform3f(uTintColorLoc,
-                clampf(bi.r / 255.0f * 1.85f, 0.0f, 1.0f),
-                clampf(bi.g / 255.0f * 1.85f, 0.0f, 1.0f),
-                clampf(bi.b / 255.0f * 1.85f, 0.0f, 1.0f));
-    if(groundTex_){
-        glUniform1i(uUseTextureLoc, 1);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, groundTex_);
-        glUniform1i(uTexLoc, 0);
-    } else {
-        glUniform1i(uUseTextureLoc, 0);
-    }
-    chunksDrawn_ = terrainRender(eye, viewDist);
+    Vec3 lightDir = sunDir;
+    if(lightDir.y < 0.25f) lightDir.y = 0.25f;  // ночью светит луна с той же стороны
+    lightDir = v3norm(lightDir);
 
-    // ---- Объекты мира вокруг игрока
-    glUniform1i(uUseTextureLoc, 0);
-    propsDrawn_ = 0;
-    float propRadius = clampf(viewDist * 0.42f, 60.0f, 130.0f);
-    std::vector<const ResourceNode*> nearby = resources_->query(eye.x, eye.z, propRadius);
-    // Ограничение сверху: в густом лесу в радиус попадает больше тысячи объектов, а
-    // телефон столько вызовов отрисовки за кадр не вывезет. Мелочь отсекаем первой.
-    const int MAX_PROPS = (settings.quality == Quality::TURBO) ? 120 : 320;
-    for(const ResourceNode* n : nearby){
-        if(propsDrawn_ >= MAX_PROPS) break;
-        const PropModel* model = nullptr;
-        switch(n->kind){
-            case ResourceKind::TreePine:  model = &propTree_; break;
-            case ResourceKind::TreeOak:
-            case ResourceKind::TreeBirch: model = &propOak_; break;
-            case ResourceKind::TreeDead:  model = &propDead_; break;
-            case ResourceKind::Boulder:
-            case ResourceKind::RockCluster:
-            case ResourceKind::StoneNode: model = &propRock_; break;
-            case ResourceKind::MetalOre:
-            case ResourceKind::SulfurOre: model = &propOre_; break;
-            default:                      model = &propBush_; break;
-        }
-        // Мелочь видно только вблизи — иначе кусты съедают весь лимит объектов.
-        float dx = n->pos.x - eye.x, dz = n->pos.z - eye.z;
-        float dist2 = dx*dx + dz*dz;
-        if(model == &propBush_ && dist2 > 45.0f * 45.0f) continue;
+    float fogDensity = 0.0085f;
+    if(env_->weather() == Weather::Fog)   fogDensity = 0.030f * (0.5f + env_->weatherIntensity());
+    if(env_->weather() == Weather::Rain)  fogDensity = 0.014f;
+    if(env_->weather() == Weather::Storm) fogDensity = 0.020f;
+    if(env_->weather() == Weather::Snow)  fogDensity = 0.018f;
 
-        Mat4 m = mat4Multiply(mat4Translate(n->pos),
-                              mat4Multiply(mat4RotateY(n->rotationY), mat4Scale(n->scale)));
-        float nm[9]; mat4ToMat3(m, nm);
-        glUniformMatrix4fv(uModelLoc, 1, GL_FALSE, m.m);
-        glUniformMatrix3fv(uNormalMatLoc, 1, GL_FALSE, nm);
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform3f(voxelLightDirLoc, lightDir.x, lightDir.y, lightDir.z);
+    glUniform1f(voxelLightAmountLoc, light);
+    glUniform3f(voxelFogColorLoc, fog.x, fog.y, fog.z);
+    glUniform1f(voxelFogDensityLoc, fogDensity);
+    glUniform3f(voxelCamPosLoc, eye.x, eye.y, eye.z);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    chunks_.renderOpaque(view, proj, eye, viewDist);
 
-        if(model->base.vao){
-            glUniform3f(uTintColorLoc, model->baseTint.x, model->baseTint.y, model->baseTint.z);
-            glBindVertexArray(model->base.vao);
-            glDrawArrays(GL_TRIANGLES, 0, model->base.vertexCount);
-        }
-        if(model->top.vao){
-            glUniform3f(uTintColorLoc, model->topTint.x, model->topTint.y, model->topTint.z);
-            glBindVertexArray(model->top.vao);
-            glDrawArrays(GL_TRIANGLES, 0, model->top.vertexCount);
-        }
-        ++propsDrawn_;
-    }
-    glBindVertexArray(0);
+    // ---- Рамка блока под прицелом
+    renderBlockHighlight(view, proj, eye);
 
-    // ---- Вода: полупрозрачная плоскость поверх всего, что ниже уровня моря
-    glDisable(GL_CULL_FACE);
-    glUniformMatrix4fv(uModelLoc, 1, GL_FALSE, identity.m);
-    glUniformMatrix3fv(uNormalMatLoc, 1, GL_FALSE, nrm);
-    glUniform1i(uUseTextureLoc, 0);
-    glUniform3f(uTintColorLoc, 0.16f * light + 0.02f, 0.34f * light + 0.03f, 0.46f * light + 0.05f);
-    glUniform1f(uOpacityLoc, 0.72f);
+    // ---- Вода: полупрозрачная, БЕЗ записи глубины и вторым проходом — иначе она
+    // закрывает собой дно, которое сквозь неё должно быть видно.
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform3f(voxelLightDirLoc, lightDir.x, lightDir.y, lightDir.z);
+    glUniform1f(voxelLightAmountLoc, light);
+    glUniform3f(voxelFogColorLoc, fog.x, fog.y, fog.z);
+    glUniform1f(voxelFogDensityLoc, fogDensity);
+    glUniform3f(voxelCamPosLoc, eye.x, eye.y, eye.z);
+    glUniform1f(voxelAlphaLoc, 0.72f);
+    glEnable(GL_BLEND);
     glDepthMask(GL_FALSE);
-    glBindVertexArray(waterMesh_.vao);
-    glDrawArrays(GL_TRIANGLES, 0, waterMesh_.vertexCount);
-    glBindVertexArray(0);
+    glDisable(GL_CULL_FACE);   // воду видно и снизу, из-под поверхности
+    chunks_.renderWater(view, proj, eye, viewDist);
     glDepthMask(GL_TRUE);
-    glUniform1f(uOpacityLoc, 1.0f);
-    (void)cfg;
+    glEnable(GL_CULL_FACE);
 
     // ---- Перенос сцены на экран
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, SCR_W, SCR_H);
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
     Mat4 blitProj = mat4Ortho(0, (float)SCR_W, (float)SCR_H, 0, -1, 1);
     if(postProgOk_){
         glUseProgram(postProg);
@@ -567,7 +631,6 @@ void GameClient::renderScene(){
         glUniform4f(uiColorLoc, 1,1,1,1);
         glUniform1i(uiUseTextureLoc, 1);
     }
-    // Текстура FBO хранится «верх вниз» относительно UI-квада — переворачиваем по V.
     float verts[6][4] = {
         {0, 0, 0,1}, {(float)SCR_W, 0, 1,1}, {(float)SCR_W, (float)SCR_H, 1,0},
         {0, 0, 0,1}, {(float)SCR_W, (float)SCR_H, 1,0}, {0, (float)SCR_H, 0,0},
@@ -580,7 +643,10 @@ void GameClient::renderScene(){
     glUniform1i(postProgOk_ ? postTexLoc : uiTexLoc, 0);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
+    glEnable(GL_BLEND);
 }
+
+// ==================== ИНТЕРФЕЙС ====================
 
 void GameClient::drawText(float x, float y, float height, const std::string& text,
                           float r, float g, float b, float a){
@@ -602,6 +668,22 @@ void GameClient::drawBar(float x, float y, float w, float h, float value01,
     if(!caption.empty()) drawText(x + 6.0f, y + h * 0.12f, h * 0.76f, caption, UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.95f);
 }
 
+void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, bool selected){
+    drawUIRect(x, y, size, size, 0, UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.82f, false);
+    if(!stack.empty()){
+        const ItemDef& def = itemDef(stack.type);
+        // Иконка предмета — квадрат цвета блока: текстур у игры нет, а цвет однозначно
+        // читается, потому что тот же цвет у блока в мире.
+        float pad = size * 0.16f;
+        drawUIRect(x + pad, y + pad, size - pad*2.0f, size - pad*2.0f, 0, def.r, def.g, def.b, 1.0f, false);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", stack.count);
+        drawText(x + size * 0.06f, y + size * 0.62f, size * 0.30f, buf, 1.0f, 1.0f, 1.0f, 0.95f);
+    }
+    uiThinFrame(x, y, size, size, selected ? UI_ACCENT : UI_LINE, selected ? 1.0f : 0.7f);
+    if(selected) uiThinFrame(x - 2.0f, y - 2.0f, size + 4.0f, size + 4.0f, UI_ACCENT, 0.9f);
+}
+
 void GameClient::renderHud(){
     glDisable(GL_DEPTH_TEST);
     Mat4 uiProjM = mat4Ortho(0, (float)SCR_W, (float)SCR_H, 0, -1, 1);
@@ -610,12 +692,11 @@ void GameClient::renderHud(){
 
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     float pad = 14.0f * s;
-    float barW = 210.0f * s, barH = 22.0f * s, gap = 6.0f * s;
+    float barW = 200.0f * s, barH = 21.0f * s, gap = 5.0f * s;
+    char buf[128];
 
-    // ---- Полосы состояния. Порядок сверху вниз — по важности: здоровье, потом то, что
-    // это здоровье отнимает.
+    // ---- Полосы состояния
     float y = pad;
-    char buf[96];
     snprintf(buf, sizeof(buf), "HP %.0f", (double)player_->health());
     drawBar(pad, y, barW, barH, player_->health() / 100.0f, 0.62f, 0.18f, 0.16f, buf); y += barH + gap;
     snprintf(buf, sizeof(buf), "Голод %.0f", (double)player_->hunger());
@@ -630,127 +711,216 @@ void GameClient::renderHud(){
         y += barH + gap;
     }
 
-    // ---- Время, погода, биом — строка под полосами.
     Vec3 p = player_->position();
-    snprintf(buf, sizeof(buf), "%s  |  %s  |  %s", env_->timeString(), weatherName(env_->weather()),
+    snprintf(buf, sizeof(buf), "%s | %s | %s", env_->timeString(), weatherName(env_->weather()),
              biomeName(world_->biomeAt(p.x, p.z)));
-    drawText(pad, y + 2.0f * s, 20.0f * s, buf, UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+    drawText(pad, y + 2.0f * s, 19.0f * s, buf, UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
 
-    // ---- Ресурсы: то, что заменяет инвентарь до 3-го этапа.
-    const Gathered& g = player_->gathered();
-    snprintf(buf, sizeof(buf), "Дерево %d   Камень %d   Руда %d   Сера %d   Ткань %d",
-             g.wood, g.stone, g.metalOre, g.sulfurOre, g.cloth);
-    drawText(pad, y + 26.0f * s, 20.0f * s, buf, UI_GOLD.r, UI_GOLD.g, UI_GOLD.b, 0.9f);
+    // ---- Счётчик кадров в правом верхнем углу. Вертикальная синхронизация выключена,
+    // поэтому число показывает НАСТОЯЩУЮ скорость отрисовки, а не частоту экрана.
+    const VoxelRenderStats& st = chunks_.stats();
+    snprintf(buf, sizeof(buf), "%.0f FPS", (double)fps_);
+    drawText((float)SCR_W - 92.0f * s, pad, 26.0f * s, buf,
+             fps_ >= 50.0f ? 0.55f : 0.85f, fps_ >= 50.0f ? 0.85f : 0.55f, 0.45f, 0.95f);
+    snprintf(buf, sizeof(buf), "чанков %d/%d  граней %d", st.chunksDrawn, st.chunksLoaded, st.trianglesDrawn / 2);
+    drawText((float)SCR_W - 240.0f * s, pad + 28.0f * s, 16.0f * s, buf,
+             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.75f);
 
-    // ---- Подсказка по цели перед игроком.
-    if(!player_->targetName().empty()){
-        snprintf(buf, sizeof(buf), "%s — держите УДАР, чтобы добывать", player_->targetName().c_str());
-        float tw = 420.0f * s;
-        drawText((float)SCR_W * 0.5f - tw * 0.35f, (float)SCR_H * 0.62f, 22.0f * s, buf,
-                 UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f);
+    // ---- Прицел и подсказка по блоку
+    float cx = (float)SCR_W * 0.5f, cy = (float)SCR_H * 0.5f;
+    drawUIRect(cx - 1.5f, cy - 9.0f, 3.0f, 18.0f, 0, 1,1,1, 0.55f, false);
+    drawUIRect(cx - 9.0f, cy - 1.5f, 18.0f, 3.0f, 0, 1,1,1, 0.55f, false);
+
+    const RayHit& t = player_->target();
+    if(t.hit){
+        snprintf(buf, sizeof(buf), "%s", blockName(t.block));
+        drawText(cx - 40.0f * s, cy + 30.0f * s, 20.0f * s, buf, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.9f);
+        if(player_->miningProgress() > 0.01f){
+            float w = 160.0f * s;
+            drawBar(cx - w * 0.5f, cy + 56.0f * s, w, 12.0f * s, player_->miningProgress(),
+                    0.75f, 0.65f, 0.25f, "");
+        }
     }
 
-    // ---- Последнее событие (собрал, упал, напился) — гаснет через 4 секунды.
+    // ---- Пояс быстрого доступа
+    float hx, hy, slot, hgap;
+    hotbarGeometry(hx, hy, slot, hgap);
+    for(int i = 0; i < Inventory::HOTBAR; ++i){
+        float sx = hx + i * (slot + hgap);
+        drawSlot(sx, hy, slot, inventory_.slot(i), i == inventory_.selected());
+    }
+    const ItemStack& sel = inventory_.selectedStack();
+    if(!sel.empty()){
+        const char* name = itemDef(sel.type).nameRu;
+        drawText(hx, hy - 24.0f * s, 20.0f * s, name, UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.9f);
+    }
+
+    // ---- Последнее событие
     if(player_->messageAge() < 4.0f){
         float alpha = clampf(1.0f - (player_->messageAge() - 3.0f), 0.0f, 1.0f);
-        drawText(pad, (float)SCR_H - 64.0f * s, 22.0f * s, player_->lastMessage(),
+        drawText(pad, hy - 34.0f * s, 21.0f * s, player_->lastMessage(),
                  UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, alpha);
     }
 
-    // ---- Прицел-точка по центру.
-    drawUIRect((float)SCR_W * 0.5f - 2.0f, (float)SCR_H * 0.5f - 2.0f, 4.0f, 4.0f, 0,
-               UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.55f, false);
-
     if(player_->isDead()){
         drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.35f, 0.02f, 0.02f, 0.55f, false);
-        drawText((float)SCR_W * 0.5f - 120.0f * s, (float)SCR_H * 0.45f, 44.0f * s, "ВЫ ПОГИБЛИ",
-                 0.9f, 0.35f, 0.3f, 1.0f);
-        drawText((float)SCR_W * 0.5f - 190.0f * s, (float)SCR_H * 0.55f, 24.0f * s,
-                 "Нажмите ДЕЙСТВИЕ (E), чтобы возродиться", UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 1.0f);
+        drawText(cx - 120.0f * s, cy - 40.0f * s, 44.0f * s, "ВЫ ПОГИБЛИ", 0.9f, 0.35f, 0.3f, 1.0f);
+        drawText(cx - 190.0f * s, cy + 20.0f * s, 24.0f * s,
+                 "Нажмите E, чтобы возродиться", UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 1.0f);
     }
 
     if(settings.showDebugInfo){
-        snprintf(buf, sizeof(buf), "%.0f fps | чанков %d/%d | объектов %d | XZ %.0f,%.0f  Y %.1f",
-                 (double)fps_, chunksDrawn_, terrainLoadedChunks(), propsDrawn_,
-                 (double)p.x, (double)p.z, (double)p.y);
-        drawText(pad, (float)SCR_H - 30.0f * s, 18.0f * s, buf, UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.8f);
+        snprintf(buf, sizeof(buf), "XZ %.0f,%.0f Y %.1f | правок мира %zu | слотов занято %d",
+                 (double)p.x, (double)p.z, (double)p.y, voxels_->editCount(), inventory_.usedSlots());
+        drawText(pad, (float)SCR_H - 26.0f * s, 16.0f * s, buf,
+                 UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.8f);
     }
 
     controls_.render();
-
-    // Подписи на кнопках. Без них сенсорное управление превращается в угадайку: игрок не
-    // обязан помнить, какой из шести кругов — присед.
     for(const TouchControls::ButtonView& b : controls_.buttonViews()){
         std::string label = b.label;
-        float h = b.radius * 0.42f;
-        // Приблизительная ширина строки: точная считается по текстуре, но подпись надо
-        // отцентрировать ДО её создания, а ошибка в пару пикселей здесь незаметна.
-        float w = h * 0.58f * (float)label.size();
+        // Подпись подгоняется под кнопку: в русском тексте буква занимает примерно 0.55
+        // высоты, и длинное слово («СТАВИТЬ») на маленькой кнопке иначе вылезает наружу.
+        float h = b.radius * 0.34f;
+        float charW = 0.55f;
+        float maxW = b.radius * 1.7f;
+        float w = h * charW * (float)label.size();
+        if(w > maxW){ h *= maxW / w; w = maxW; }
         const UIColor& c = b.active ? UI_ACCENT : UI_TEXT_DIM;
         drawText(b.cx - w * 0.5f, b.cy - h * 0.5f, h, label, c.r, c.g, c.b, 0.95f);
     }
 }
 
-void GameClient::renderOverlay(){
-    if(overlay_ == Overlay::None) return;
+void GameClient::renderSettings(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float w = (float)SCR_W * 0.74f, h = (float)SCR_H * 0.74f;
-    float x = ((float)SCR_W - w) * 0.5f, y = ((float)SCR_H - h) * 0.5f;
-    uiPanel(x, y, w, h, 0.95f);
+    float w = (float)SCR_W * 0.62f;
+    float px = ((float)SCR_W - w) * 0.5f;
+    float top = settingsRowY(0, SCR_H);
+    float rowH = 42.0f * s;
+    uiPanel(px - 18.0f * s, top - 56.0f * s, w + 36.0f * s,
+            rowH * SETTINGS_ROWS + 118.0f * s, 0.96f);
+    drawText(px, top - 44.0f * s, 26.0f * s, "НАСТРОЙКИ", UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
 
-    float lineH = 26.0f * s;
-    float ty = y + 18.0f * s;
-    auto line = [&](const std::string& text, const UIColor& c){
-        drawText(x + 22.0f * s, ty, lineH * 0.86f, text, c.r, c.g, c.b, 0.95f);
-        ty += lineH;
-    };
-
-    const Gathered& g = player_->gathered();
     char buf[160];
-    if(overlay_ == Overlay::Inventory){
-        line("ИНВЕНТАРЬ", UI_ACCENT);
-        snprintf(buf, sizeof(buf), "Дерево: %d", g.wood);        line(buf, UI_TEXT);
-        snprintf(buf, sizeof(buf), "Камень: %d", g.stone);       line(buf, UI_TEXT);
-        snprintf(buf, sizeof(buf), "Металлическая руда: %d", g.metalOre);  line(buf, UI_TEXT);
-        snprintf(buf, sizeof(buf), "Сера: %d", g.sulfurOre);     line(buf, UI_TEXT);
-        snprintf(buf, sizeof(buf), "Ткань: %d", g.cloth);        line(buf, UI_TEXT);
-        snprintf(buf, sizeof(buf), "Еда: %d", g.food);           line(buf, UI_TEXT);
-        ty += lineH * 0.5f;
-        line("30 слотов, стаки, одежда и броня — этап 3.", UI_TEXT_DIM);
-    } else if(overlay_ == Overlay::Craft){
-        line("КРАФТ", UI_ACCENT);
-        line("Доступно без верстака:", UI_TEXT_DIM);
-        snprintf(buf, sizeof(buf), "Каменный топор — 100 дерева, 50 камня   [%s]",
-                 (g.wood >= 100 && g.stone >= 50) ? "хватает" : "не хватает");
-        line(buf, (g.wood >= 100 && g.stone >= 50) ? UI_ACCENT : UI_TEXT_DIM);
-        snprintf(buf, sizeof(buf), "Каменная кирка — 100 дерева, 100 камня  [%s]",
-                 (g.wood >= 100 && g.stone >= 100) ? "хватает" : "не хватает");
-        line(buf, (g.wood >= 100 && g.stone >= 100) ? UI_ACCENT : UI_TEXT_DIM);
-        snprintf(buf, sizeof(buf), "Спальный мешок — 30 ткани              [%s]",
-                 (g.cloth >= 30) ? "хватает" : "не хватает");
-        line(buf, (g.cloth >= 30) ? UI_ACCENT : UI_TEXT_DIM);
-        ty += lineH * 0.5f;
-        line("Очередь крафта, верстаки 1-3 и стол исследований — этап 3.", UI_TEXT_DIM);
-    } else if(overlay_ == Overlay::Map){
-        line("КАРТА ОСТРОВА", UI_ACCENT);
-        float mapSize = h - 90.0f * s;
-        float mx = x + (w - mapSize) * 0.5f, my = ty + 6.0f * s;
-        drawUIRect(mx, my, mapSize, mapSize, minimapTex_, 1, 1, 1, 1.0f, true);
-        uiThinFrame(mx, my, mapSize, mapSize, UI_LINE, 0.9f);
-        // Игрок и монументы поверх карты.
-        const WorldConfig& cfg = world_->config();
-        for(const Monument& m : monuments_->monuments()){
-            float px = mx + m.pos.x / cfg.size * mapSize;
-            float py = my + m.pos.z / cfg.size * mapSize;
-            bool hot = m.radiation > 0.0f;
-            drawUICircleOutline(px, py, 6.0f * s, hot ? UI_DANGER.r : UI_TEXT_DIM.r,
-                                hot ? UI_DANGER.g : UI_TEXT_DIM.g, hot ? UI_DANGER.b : UI_TEXT_DIM.b, 0.9f, 2.0f);
-        }
-        Vec3 p = player_->position();
-        drawUICircle(mx + p.x / cfg.size * mapSize, my + p.z / cfg.size * mapSize, 5.0f * s,
-                     UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
+    const char* fpsText = settings.fpsLimit > 0 ? nullptr : "без ограничения";
+    char fpsBuf[32];
+    if(!fpsText){ snprintf(fpsBuf, sizeof(fpsBuf), "%d", settings.fpsLimit); fpsText = fpsBuf; }
+
+    const char* rows[SETTINGS_ROWS];
+    char storage[SETTINGS_ROWS][160];
+    snprintf(storage[0], 160, "Качество графики: %s", qualityLabel());
+    snprintf(storage[1], 160, "Потолок кадров: %s", fpsText);
+    snprintf(storage[2], 160, "Музыка: %s", settings.musicOn ? "вкл" : "выкл");
+    snprintf(storage[3], 160, "Звуки: %s", settings.sfxOn ? "вкл" : "выкл");
+    snprintf(storage[4], 160, "Чувствительность обзора: %.1f", (double)settings.lookSensitivity);
+    snprintf(storage[5], 160, "Отладочная строка: %s", settings.showDebugInfo ? "вкл" : "выкл");
+    snprintf(storage[6], 160, "Расставить кнопки под свою руку");
+    snprintf(storage[7], 160, "Сбросить раскладку кнопок");
+    for(int i = 0; i < SETTINGS_ROWS; ++i) rows[i] = storage[i];
+
+    for(int i = 0; i < SETTINGS_ROWS; ++i){
+        float ry = settingsRowY(i, SCR_H);
+        bool action = (i >= 6);
+        drawUIRect(px, ry, w, rowH - 6.0f * s, 0, UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.75f, false);
+        const UIColor& c = action ? UI_ACCENT : UI_TEXT;
+        drawText(px + 14.0f * s, ry + 8.0f * s, 21.0f * s, rows[i], c.r, c.g, c.b, 0.95f);
     }
+    snprintf(buf, sizeof(buf), "Вертикальная синхронизация выключена — счётчик в углу показывает настоящую скорость");
+    drawText(px, top + rowH * SETTINGS_ROWS + 16.0f * s, 16.0f * s, buf,
+             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.8f);
 }
+
+void GameClient::renderOverlay(){
+    // Подсказка редактора раскладки поверх игры.
+    if(controls_.editMode()){
+        float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+        float w = (float)SCR_W * 0.5f, h = 92.0f * s;
+        float px = ((float)SCR_W - w) * 0.5f, py = 24.0f * s;
+        uiPanel(px, py, w, h, 0.9f);
+        drawText(px + 16.0f * s, py + 12.0f * s, 22.0f * s,
+                 "Перетащите кнопки пальцем под свою руку", UI_TEXT.r, UI_TEXT.g, UI_TEXT.b);
+        drawUIRect(px + 16.0f * s, py + 48.0f * s, 150.0f * s, 32.0f * s, 0,
+                   UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.9f, false);
+        drawText(px + 52.0f * s, py + 54.0f * s, 22.0f * s, "ГОТОВО",
+                 UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+        return;
+    }
+    if(overlay_ == Overlay::None) return;
+    if(overlay_ == Overlay::Settings){ renderSettings(); return; }
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    char buf[160];
+
+    if(overlay_ == Overlay::Inventory){
+        float gx, gy, slot, gap;
+        inventoryGeometry(gx, gy, slot, gap);
+        float w = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
+        float h = slot * Inventory::ROWS + gap * (Inventory::ROWS - 1);
+        uiPanel(gx - 20.0f * s, gy - 56.0f * s, w + 40.0f * s, h + 116.0f * s, 0.96f);
+        drawText(gx, gy - 46.0f * s, 25.0f * s, "ИНВЕНТАРЬ — 30 слотов", UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+        for(int i = 0; i < Inventory::SIZE; ++i){
+            int col = i % Inventory::COLS, row = i / Inventory::COLS;
+            float sx = gx + col * (slot + gap);
+            float sy = gy + row * (slot + gap);
+            drawSlot(sx, sy, slot, inventory_.slot(i), i == dragSlot_ || (row == 0 && col == inventory_.selected()));
+        }
+        drawText(gx, gy + h + 14.0f * s, 18.0f * s,
+                 dragSlot_ >= 0 ? "Коснитесь второй ячейки, чтобы перенести"
+                                : "Первый ряд — пояс быстрого доступа; коснитесь ячейки для переноса",
+                 UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.85f);
+        return;
+    }
+
+    if(overlay_ == Overlay::Craft){
+        float w = (float)SCR_W * 0.7f, h = (float)SCR_H * 0.7f;
+        float px = ((float)SCR_W - w) * 0.5f, py = ((float)SCR_H - h) * 0.5f;
+        uiPanel(px, py, w, h, 0.96f);
+        drawText(px + 20.0f * s, py + 18.0f * s, 26.0f * s, "КРАФТ", UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+        float lineH = 44.0f * s;
+        float top = py + 60.0f * s;
+        for(int i = 0; i < kRecipeCount; ++i){
+            const Recipe& r = kRecipes[i];
+            bool ok = inventory_.countOf(r.costA) >= r.costACount &&
+                      (r.costB == ItemType::None || inventory_.countOf(r.costB) >= r.costBCount);
+            float ly = top + i * lineH;
+            drawUIRect(px + 12.0f * s, ly, w - 24.0f * s, lineH - 6.0f * s, 0,
+                       UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, ok ? 0.75f : 0.45f, false);
+            const ItemDef& res = itemDef(r.result);
+            drawUIRect(px + 20.0f * s, ly + 6.0f * s, lineH - 18.0f * s, lineH - 18.0f * s, 0,
+                       res.r, res.g, res.b, ok ? 1.0f : 0.4f, false);
+            snprintf(buf, sizeof(buf), "%s x%d  <-  %s x%d  (%s)",
+                     res.nameRu, r.resultCount, itemDef(r.costA).nameRu, r.costACount, r.note);
+            const UIColor& c = ok ? UI_TEXT : UI_TEXT_DIM;
+            drawText(px + 20.0f * s + lineH, ly + 10.0f * s, 20.0f * s, buf, c.r, c.g, c.b, ok ? 1.0f : 0.7f);
+        }
+        drawText(px + 20.0f * s, py + h - 34.0f * s, 18.0f * s,
+                 "Верстаки 1-3, очередь крафта и стол исследований — этап 3",
+                 UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.85f);
+        return;
+    }
+
+    // Карта
+    float w = (float)SCR_W * 0.7f, h = (float)SCR_H * 0.82f;
+    float px = ((float)SCR_W - w) * 0.5f, py = ((float)SCR_H - h) * 0.5f;
+    uiPanel(px, py, w, h, 0.96f);
+    drawText(px + 20.0f * s, py + 14.0f * s, 24.0f * s, "КАРТА ОСТРОВА", UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+    float mapSize = h - 70.0f * s;
+    float mx = px + (w - mapSize) * 0.5f, my = py + 52.0f * s;
+    drawUIRect(mx, my, mapSize, mapSize, minimapTex_, 1, 1, 1, 1.0f, true);
+    uiThinFrame(mx, my, mapSize, mapSize, UI_LINE, 0.9f);
+    const WorldConfig& cfg = world_->config();
+    for(const Monument& m : monuments_->monuments()){
+        float ax = mx + m.pos.x / cfg.size * mapSize;
+        float ay = my + m.pos.z / cfg.size * mapSize;
+        bool hot = m.radiation > 0.0f;
+        drawUICircleOutline(ax, ay, 6.0f * s, hot ? UI_DANGER.r : UI_TEXT_DIM.r,
+                            hot ? UI_DANGER.g : UI_TEXT_DIM.g, hot ? UI_DANGER.b : UI_TEXT_DIM.b, 0.9f, 2.0f);
+    }
+    Vec3 p = player_->position();
+    drawUICircle(mx + p.x / cfg.size * mapSize, my + p.z / cfg.size * mapSize, 5.0f * s,
+                 UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
+}
+
+// ==================== ЗАГРУЗКА, СНИМКИ, ЦИКЛ ====================
 
 void GameClient::drawLoadingScreen(const char* text){
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -764,28 +934,9 @@ void GameClient::drawLoadingScreen(const char* text){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     drawText((float)SCR_W * 0.5f - 150.0f * s, (float)SCR_H * 0.44f, 34.0f * s, "OSIL SURVIVAL",
              UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
-    drawText((float)SCR_W * 0.5f - 140.0f * s, (float)SCR_H * 0.53f, 24.0f * s, text,
+    drawText((float)SCR_W * 0.5f - 150.0f * s, (float)SCR_H * 0.53f, 22.0f * s, text,
              UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 1.0f);
     SDL_GL_SwapWindow(win);
-}
-
-void GameClient::saveScreenshot(const std::string& path){
-    std::vector<uint8_t> pixels((size_t)SCR_W * SCR_H * 4);
-    glReadPixels(0, 0, SCR_W, SCR_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-
-    // OpenGL отдаёт строки снизу вверх, PNG хранит сверху вниз — переворачиваем.
-    std::vector<uint8_t> rgb((size_t)SCR_W * SCR_H * 3);
-    for(int y = 0; y < SCR_H; ++y){
-        const uint8_t* src = &pixels[(size_t)(SCR_H - 1 - y) * SCR_W * 4];
-        uint8_t* dst = &rgb[(size_t)y * SCR_W * 3];
-        for(int x = 0; x < SCR_W; ++x){
-            dst[x*3+0] = src[x*4+0];
-            dst[x*3+1] = src[x*4+1];
-            dst[x*3+2] = src[x*4+2];
-        }
-    }
-    if(writePng(path, SCR_W, SCR_H, rgb)) SDL_Log("Снимок экрана: %s", path.c_str());
-    else                                  SDL_Log("Не удалось записать снимок: %s", path.c_str());
 }
 
 void GameClient::render(){
@@ -795,22 +946,29 @@ void GameClient::render(){
     SDL_GL_SwapWindow(win);
 }
 
-// ==================== ТОЧКА ВХОДА КЛИЕНТА ====================
-
 int GameClient::run(int argc, char** argv){
-    g_instance = this;
-
-    // Ключи командной строки нужны только настольной отладке и проверке в CI: на телефоне
-    // их никто не передаёт, и клиент запускается без единого аргумента.
+    // Ключи нужны только настольной отладке и проверке в CI: на телефоне клиент
+    // запускается без единого аргумента.
     for(int i = 1; i < argc; ++i){
         std::string a = argv[i];
         if(a == "--screenshot" && i + 1 < argc){
             screenshotPath_ = argv[++i];
-            screenshotFrame_ = 90;   // дать миру догрузить чанки вокруг игрока
+            screenshotFrame_ = 120;   // дать миру собрать чанки вокруг игрока
         } else if(a == "--frames" && i + 1 < argc){
             screenshotFrame_ = atoi(argv[++i]);
         } else if(a == "--time" && i + 1 < argc){
-            startTimeOverride_ = (float)atof(argv[++i]);   // проверка вида в разное время суток
+            startTimeOverride_ = (float)atof(argv[++i]);
+        } else if(a == "--yaw" && i + 1 < argc){
+            yawOverride_ = (float)atof(argv[++i]) * 3.14159265f / 180.0f;
+        } else if(a == "--pitch" && i + 1 < argc){
+            pitchOverride_ = (float)atof(argv[++i]) * 3.14159265f / 180.0f;
+        } else if(a == "--overlay" && i + 1 < argc){
+            // Только для проверки интерфейса снимком: открыть окно сразу при запуске.
+            std::string what = argv[++i];
+            if(what == "inventory") overlayOverride_ = Overlay::Inventory;
+            else if(what == "craft") overlayOverride_ = Overlay::Craft;
+            else if(what == "map")   overlayOverride_ = Overlay::Map;
+            else if(what == "settings") overlayOverride_ = Overlay::Settings;
         } else if(a == "--debug"){
             settings.showDebugInfo = true;
         }
@@ -820,21 +978,31 @@ int GameClient::run(int argc, char** argv){
     if(!initGraphics()) return 1;
     controls_.layout(SCR_W, SCR_H);
 
-    // Генерация занимает секунды — сначала показываем экран загрузки, иначе Android
-    // решает, что приложение зависло, и предлагает его закрыть.
-    drawLoadingScreen("Генерация мира 4000x4000 м...");
+    drawLoadingScreen("Строим кубический мир 4000x4000...");
     initWorld();
+    overlay_ = overlayOverride_;
     audioApplySettings();
+
+    // Первые чанки собираем до входа в игру: иначе игрок появляется в пустоте и падает.
+    for(int i = 0; i < 40; ++i)
+        chunks_.update(player_->eyePosition(), VIEW_DISTANCE * qualityViewDistanceScale(), 12);
 
     int64_t last = nowMillis();
     while(running_){
         int64_t now = nowMillis();
         float dt = (float)(now - last) / 1000.0f;
         last = now;
-        // Ограничение шага: после сворачивания приложения dt может быть в минутах, и без
-        // зажима игрок «телепортируется» вперёд на всё это время.
         if(dt > 0.1f) dt = 0.1f;
-        if(dt > 0.0f) fps_ = fps_ * 0.9f + (1.0f / dt) * 0.1f;
+
+        // Счётчик кадров усредняется за полсекунды: мгновенное значение прыгает так,
+        // что прочитать его на ходу невозможно.
+        fpsAccum_ += dt;
+        ++fpsFrames_;
+        if(fpsAccum_ >= 0.5f){
+            fps_ = (float)fpsFrames_ / fpsAccum_;
+            fpsAccum_ = 0.0f;
+            fpsFrames_ = 0;
+        }
 
         handleEvents();
 
@@ -853,14 +1021,25 @@ int GameClient::run(int argc, char** argv){
         render();
         ++frameCounter_;
 
-        // Автоматический снимок: сняли кадр — и вышли. Так проверка рендера укладывается
-        // в одну команду и не требует ни экрана, ни телефона.
         if(!screenshotPath_.empty() && frameCounter_ >= screenshotFrame_){
-            saveScreenshot(screenshotPath_);
+            std::vector<uint8_t> pixels((size_t)SCR_W * SCR_H * 4);
+            glReadPixels(0, 0, SCR_W, SCR_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            std::vector<uint8_t> rgb((size_t)SCR_W * SCR_H * 3);
+            for(int y = 0; y < SCR_H; ++y){
+                const uint8_t* src = &pixels[(size_t)(SCR_H - 1 - y) * SCR_W * 4];
+                uint8_t* dst = &rgb[(size_t)y * SCR_W * 3];
+                for(int x = 0; x < SCR_W; ++x){
+                    dst[x*3+0] = src[x*4+0];
+                    dst[x*3+1] = src[x*4+1];
+                    dst[x*3+2] = src[x*4+2];
+                }
+            }
+            if(writePng(screenshotPath_, SCR_W, SCR_H, rgb)) SDL_Log("Снимок экрана: %s", screenshotPath_.c_str());
             running_ = false;
         }
 
-        // Потолок кадров: на телефоне это прямая экономия батареи и нагрева.
+        // Потолок кадров: прямая экономия батареи и нагрева на телефоне. Вертикальная
+        // синхронизация выключена, поэтому темп задаёт только он.
         if(settings.fpsLimit > 0){
             int64_t frameMs = 1000 / settings.fpsLimit;
             int64_t spent = nowMillis() - now;
@@ -869,7 +1048,7 @@ int GameClient::run(int argc, char** argv){
     }
 
     saveSettings();
-    terrainShutdown();
+    chunks_.shutdown();
     audioShutdown();
     if(uiFont) TTF_CloseFont(uiFont);
     TTF_Quit();

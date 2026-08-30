@@ -59,11 +59,21 @@ public:
     bool sprint() const { return sprint_.active || keySprint_; }
     bool crouch() const { return crouch_.active || keyCrouch_; }
     bool attackHeld() const { return attack_.active || keyAttack_; }
+    bool placePressed();      // одноразовое: поставить блок
     bool jumpPressed();       // одноразовое: прыжок
     bool actionPressed();     // одноразовое: действие (E)
     bool inventoryPressed();
     bool craftPressed();
     bool mapPressed();
+    bool settingsPressed();
+
+    // ---- Редактор раскладки (перенесён из A.N.O.D.E): кнопки можно расставить под свою
+    // руку. Разные телефоны и разный хват — единственная раскладка всем не подходит,
+    // а в выживании неудобная кнопка стоит жизни.
+    void setEditMode(bool on);
+    bool editMode() const { return editMode_; }
+    void resetLayout();          // вернуть стандартные позиции
+    void saveLayout() const;     // записать текущие позиции в настройки
 
 private:
     TouchButton* buttonAt(float x, float y);
@@ -81,8 +91,11 @@ private:
     SDL_FingerID lookFinger_ = -1;
     float lookLastX_ = 0, lookLastY_ = 0;
 
-    TouchButton jump_, sprint_, crouch_, action_, attack_, inventory_, craft_, map_;
-    bool jumpQueued_ = false, actionQueued_ = false;
+    TouchButton jump_, sprint_, crouch_, action_, attack_, place_, inventory_, craft_, map_, options_;
+    bool jumpQueued_ = false, actionQueued_ = false, placeQueued_ = false;
+    bool optionsQueued_ = false;
+    bool editMode_ = false;
+    TouchButton* dragged_ = nullptr;   // кнопка, которую сейчас тащат в редакторе
     bool invQueued_ = false, craftQueued_ = false, mapQueued_ = false;
 
     // Клавиатура (отладка на ПК)
