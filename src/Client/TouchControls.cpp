@@ -101,9 +101,9 @@ bool TouchControls::handleEvent(const SDL_Event& e){
         if(e.type == SDL_FINGERDOWN){ x = e.tfinger.x * screenW_; y = e.tfinger.y * screenH_; down = true; }
         else if(e.type == SDL_FINGERMOTION){ x = e.tfinger.x * screenW_; y = e.tfinger.y * screenH_; motion = true; }
         else if(e.type == SDL_FINGERUP){ up = true; }
-        else if(e.type == SDL_MOUSEBUTTONDOWN){ x = (float)e.button.x; y = (float)e.button.y; down = true; }
-        else if(e.type == SDL_MOUSEMOTION && (e.motion.state & SDL_BUTTON_LMASK)){ x = (float)e.motion.x; y = (float)e.motion.y; motion = true; }
-        else if(e.type == SDL_MOUSEBUTTONUP){ up = true; }
+        else if(e.type == SDL_MOUSEBUTTONDOWN && e.button.which != SDL_TOUCH_MOUSEID){ x = (float)e.button.x; y = (float)e.button.y; down = true; }
+        else if(e.type == SDL_MOUSEMOTION && e.motion.which != SDL_TOUCH_MOUSEID && (e.motion.state & SDL_BUTTON_LMASK)){ x = (float)e.motion.x; y = (float)e.motion.y; motion = true; }
+        else if(e.type == SDL_MOUSEBUTTONUP && e.button.which != SDL_TOUCH_MOUSEID){ up = true; }
         else return false;
 
         if(down){ dragged_ = buttonAt(x, y); return dragged_ != nullptr; }
@@ -136,20 +136,25 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 if(b == &options_) optionsQueued_ = true;
                 return true;
             }
-            if(x < (float)screenW_ * 0.5f && !stickActive_){
-                stickActive_ = true;
-                stickFinger_ = e.tfinger.fingerId;
-                stickBaseX_ = stickCurX_ = x;
-                stickBaseY_ = stickCurY_ = y;
+            // Половины экрана разделены строго: слева ТОЛЬКО джойстик движения,
+            // справа ТОЛЬКО обзор. Раньше палец, не попавший в джойстик, доставался
+            // обзору где угодно — и камера ехала от касания по левой половине и по
+            // интерфейсу. Кнопки проверены выше и сюда не доходят.
+            if(x < (float)screenW_ * 0.5f){
+                if(!stickActive_){
+                    stickActive_ = true;
+                    stickFinger_ = e.tfinger.fingerId;
+                    stickBaseX_ = stickCurX_ = x;
+                    stickBaseY_ = stickCurY_ = y;
+                }
                 return true;
             }
             if(!lookActive_){
                 lookActive_ = true;
                 lookFinger_ = e.tfinger.fingerId;
                 lookLastX_ = x; lookLastY_ = y;
-                return true;
             }
-            return false;
+            return true;
         }
         case SDL_FINGERMOTION: {
             float x = e.tfinger.x * (float)screenW_;
@@ -187,7 +192,12 @@ bool TouchControls::handleEvent(const SDL_Event& e){
         }
 
         // ---------- Мышь и клавиатура: отладка на ПК ----------
+        // ВАЖНО: SDL на Android по умолчанию дублирует КАЖДОЕ касание ещё и событием
+        // мыши. Если их обрабатывать, палец на экране одновременно крутит камеру
+        // (mouseLook_) и держит «удар» (keyAttack_) — ровно то, на что жаловались.
+        // Такие события помечены which == SDL_TOUCH_MOUSEID и отбрасываются.
         case SDL_MOUSEBUTTONDOWN: {
+            if(e.button.which == SDL_TOUCH_MOUSEID) return false;
             float x = (float)e.button.x, y = (float)e.button.y;
             TouchButton* b = buttonAt(x, y);
             if(b){
@@ -206,11 +216,13 @@ bool TouchControls::handleEvent(const SDL_Event& e){
             return true;
         }
         case SDL_MOUSEBUTTONUP:
+            if(e.button.which == SDL_TOUCH_MOUSEID) return false;
             if(e.button.button == SDL_BUTTON_LEFT){ keyAttack_ = false; attack_.active = false; }
             if(e.button.button == SDL_BUTTON_RIGHT) placeQueued_ = true; // ПКМ — поставить блок
             mouseLook_ = false;
             return true;
         case SDL_MOUSEMOTION:
+            if(e.motion.which == SDL_TOUCH_MOUSEID) return false;
             if(mouseLook_){ lookDX += (float)e.motion.xrel; lookDY += (float)e.motion.yrel; }
             return true;
         case SDL_KEYDOWN:
@@ -312,25 +324,4 @@ std::vector<TouchControls::ButtonView> TouchControls::buttonViews() const {
         out.push_back(ButtonView{ b->cx, b->cy, b->radius, b->label.c_str(), b->active });
     }
     return out;
-}
-
-void TouchControls::render(){
-    // Джойстик рисуется только когда палец на экране: пустой круг в углу мешает смотреть.
-    if(stickActive_){
-        drawUICircleOutline(stickBaseX_, stickBaseY_, stickRadius_, UI_LINE.r, UI_LINE.g, UI_LINE.b, 0.35f, 3.0f);
-        float dx = stickCurX_ - stickBaseX_, dy = stickCurY_ - stickBaseY_;
-        float len = sqrtf(dx*dx + dy*dy);
-        if(len > stickRadius_){ dx *= stickRadius_ / len; dy *= stickRadius_ / len; }
-        drawUICircle(stickBaseX_ + dx, stickBaseY_ + dy, stickRadius_ * 0.38f,
-                     UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.45f);
-    }
-
-    TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
-    for(TouchButton* b : all){
-        if(!b->visible) continue;
-        bool on = b->active;
-        drawUICircle(b->cx, b->cy, b->radius, UI_BG_PANEL.r, UI_BG_PANEL.g, UI_BG_PANEL.b, on ? 0.55f : 0.32f);
-        const UIColor& line = on ? UI_ACCENT : UI_LINE;
-        drawUICircleOutline(b->cx, b->cy, b->radius, line.r, line.g, line.b, 0.75f, 2.5f);
-    }
 }

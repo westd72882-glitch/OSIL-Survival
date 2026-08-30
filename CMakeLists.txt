@@ -102,6 +102,7 @@ if(SDL2_FOUND AND SDL2_IMAGE_FOUND AND SDL2_TTF_FOUND AND SDL2_MIXER_FOUND)
         src/Client/Inventory.cpp
         src/Client/Survivor.cpp
         src/Client/TouchControls.cpp
+        src/Client/TouchControlsRender.cpp
         src/Client/main.cpp
     )
     target_include_directories(osil_client PRIVATE
@@ -115,11 +116,27 @@ endif()
 
 # ---------------- Тесты ----------------
 enable_testing()
-add_executable(osil_tests
+set(OSIL_TEST_SOURCES
     tests/TestHarness.cpp
     tests/test_core.cpp
     tests/test_world.cpp
     tests/test_voxels.cpp
 )
+# Тесты сенсорного управления требуют только типы событий SDL и сами настройки —
+# ни окна, ни графики. Если SDL2 в системе есть, они собираются вместе с остальными.
+if(SDL2_FOUND)
+    list(APPEND OSIL_TEST_SOURCES
+        tests/test_input.cpp
+        src/Client/TouchControls.cpp
+        src/Engine/Core/Settings.cpp
+        src/Engine/Core/Paths.cpp
+    )
+endif()
+
+add_executable(osil_tests ${OSIL_TEST_SOURCES})
 target_link_libraries(osil_tests PRIVATE osil_core)
+if(SDL2_FOUND)
+    target_include_directories(osil_tests PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(osil_tests PRIVATE ${SDL2_LIBRARIES})
+endif()
 add_test(NAME osil_tests COMMAND osil_tests)

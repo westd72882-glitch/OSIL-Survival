@@ -62,6 +62,12 @@ TTF_Font* openAnyFont(int size){
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
 bool GameClient::initPlatform(){
+    // Отключаем превращение касаний в события мыши ДО SDL_Init: иначе каждое касание
+    // приходит дважды — как палец и как мышь, — и интерфейс срабатывает по два раза,
+    // а камера и добыча включаются от касания где угодно.
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+
     if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0){
         SDL_Log("SDL_Init: %s", SDL_GetError());
         return false;
@@ -402,7 +408,9 @@ void GameClient::handleEvents(){
         // пояса заодно дёргало бы камеру.
         float tx = -1, ty = -1;
         if(e.type == SDL_FINGERDOWN){ tx = e.tfinger.x * (float)SCR_W; ty = e.tfinger.y * (float)SCR_H; }
-        else if(e.type == SDL_MOUSEBUTTONDOWN){ tx = (float)e.button.x; ty = (float)e.button.y; }
+        else if(e.type == SDL_MOUSEBUTTONDOWN && e.button.which != SDL_TOUCH_MOUSEID){
+            tx = (float)e.button.x; ty = (float)e.button.y;
+        }
         if(tx >= 0.0f && controls_.editMode()){
             // Кнопка «ГОТОВО» в подсказке редактора: её геометрия повторяет отрисовку.
             float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
