@@ -332,6 +332,15 @@ void TouchControls::saveLayout() const {
     saveSettings();
 }
 
+TouchControls::StickView TouchControls::stickView() const {
+    StickView v{};
+    v.active = stickActive_;
+    v.baseX = stickBaseX_; v.baseY = stickBaseY_;
+    v.curX = stickCurX_;   v.curY = stickCurY_;
+    v.radius = stickRadius_;
+    return v;
+}
+
 std::vector<TouchControls::ButtonView> TouchControls::buttonViews() const {
     const TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
     std::vector<ButtonView> out;

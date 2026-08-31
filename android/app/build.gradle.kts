@@ -64,7 +64,10 @@ android {
 
     sourceSets {
         getByName("main") {
-            assets.srcDirs("src/main/assets")
+            // Текстуры и иконки лежат в общей папке assets/ в корне репозитория: их
+            // использует и настольная сборка, и APK. Подключаем её как второй источник
+            // ассетов, чтобы не держать копию файлов внутри android/.
+            assets.srcDirs("src/main/assets", rootProject.file("../assets"))
         }
     }
 }

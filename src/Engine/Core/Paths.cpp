@@ -34,3 +34,17 @@ void initWritablePaths(){
     }
 }
 
+
+std::string assetPath(const char* name){
+    if(!name || !*name) return std::string();
+    const char* prefixes[] = { "", "assets/", "../assets/", "../../assets/" };
+    for(const char* prefix : prefixes){
+        std::string candidate = std::string(prefix) + name;
+        SDL_RWops* rw = SDL_RWFromFile(candidate.c_str(), "rb");
+        if(rw){
+            SDL_RWclose(rw);
+            return candidate;
+        }
+    }
+    return std::string(name);   // пусть вызывающий сам сообщит, что файла нет
+}

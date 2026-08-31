@@ -559,6 +559,7 @@ GLint skyTanHalfFovLoc = -1, skyAspectLoc = -1, skyFogColorLoc = -1;
 GLuint voxelProg = 0;
 GLint voxelViewLoc = -1, voxelProjLoc = -1, voxelLightDirLoc = -1, voxelLightAmountLoc = -1;
 GLint voxelFogColorLoc = -1, voxelFogDensityLoc = -1, voxelCamPosLoc = -1, voxelAlphaLoc = -1;
+GLint voxelBlocksLoc = -1, voxelTexturedLoc = -1;
 GLint postProjLoc, postTexLoc, postTimeLoc, postResLoc;
 GLint grassViewLoc, grassProjLoc, grassTimeLoc, grassLightDirLoc, grassFogColorLoc, grassFogDensityLoc;
 GLint grassCentreLoc, grassRadiusLoc;
@@ -694,15 +695,18 @@ const char* voxelVS = R"(#version 300 es
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec3 aColor;
+layout(location=3) in vec3 aTex;   // xy — координаты текстуры, z — слой массива
 uniform mat4 uView;
 uniform mat4 uProj;
 uniform vec3 uCamPos;
 out vec3 vNormal;
 out vec3 vColor;
+out vec3 vTex;
 out float vFogDist;
 void main(){
     vNormal = aNormal;
     vColor = aColor;
+    vTex = aTex;
     vFogDist = length(aPos - uCamPos);
     gl_Position = uProj * uView * vec4(aPos, 1.0);
 }
@@ -710,14 +714,18 @@ void main(){
 
 const char* voxelFS = R"(#version 300 es
 precision mediump float;
+precision mediump sampler2DArray;
 in vec3 vNormal;
 in vec3 vColor;
+in vec3 vTex;
 in float vFogDist;
 uniform vec3 uLightDir;
 uniform float uLightAmount;   // 0 — ночь, 1 — полдень
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform float uAlpha;         // 1 — камень и земля, <1 — вода
+uniform sampler2DArray uBlocks;
+uniform float uTextured;      // 0 — рисуем плоским цветом (ассеты не найдены)
 out vec4 FragColor;
 void main(){
     vec3 n = normalize(vNormal);
@@ -735,7 +743,12 @@ void main(){
     float ndl = max(dot(n, normalize(uLightDir)), 0.0);
     float light = (0.55 + 0.45 * ndl) * (0.18 + 0.92 * clamp(uLightAmount, 0.0, 1.2));
 
-    vec3 col = vColor * face * light;
+    // Текстура блока: цвет вершины работает как фильтр поверх неё (в нём же затенение
+    // по углам и разброс яркости). Без ассетов остаётся прежняя плоская заливка.
+    vec3 albedo = vColor;
+    if(uTextured > 0.5) albedo = texture(uBlocks, vTex).rgb * vColor;
+
+    vec3 col = albedo * face * light;
     float fog = 1.0 - exp(-uFogDensity * vFogDist * uFogDensity * vFogDist);
     col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
     FragColor = vec4(col, uAlpha);

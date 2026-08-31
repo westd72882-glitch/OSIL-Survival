@@ -9,3 +9,9 @@ extern std::string g_writableDir;
 extern std::string SETTINGS_PATH_STR, SAVE_PATH_STR;
 
 void initWritablePaths();
+
+// Путь к ассету по имени файла. На Android ассеты лежат в корне APK и открываются по
+// голому имени; в настольной сборке они рядом с репозиторием, в assets/. Функция
+// пробует оба варианта и возвращает тот, который реально открывается, — иначе игра
+// молча запускается без текстур, и это долго ищется.
+std::string assetPath(const char* name);

@@ -33,7 +33,8 @@ extern const char* voxelVS;
 extern const char* voxelFS;
 extern GLuint voxelProg;
 extern GLint voxelViewLoc, voxelProjLoc, voxelLightDirLoc, voxelLightAmountLoc,
-             voxelFogColorLoc, voxelFogDensityLoc, voxelCamPosLoc, voxelAlphaLoc;
+             voxelFogColorLoc, voxelFogDensityLoc, voxelCamPosLoc, voxelAlphaLoc,
+             voxelBlocksLoc, voxelTexturedLoc;
 extern GLint uModelLoc, uViewLoc, uProjLoc, uNormalMatLoc, uTexLoc, uLightDirLoc, uTintColorLoc, uUseTextureLoc;
 extern GLint uFogColorLoc, uFogDensityLoc, uCamPosLoc;
 // Полупрозрачное самосвечение основной программы: uOpacity - множитель альфы,

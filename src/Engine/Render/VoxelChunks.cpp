@@ -1,4 +1,5 @@
 #include "VoxelChunks.h"
+#include "BlockTextures.h"
 #include "Shaders.h"
 #include "../../Core/Log.h"
 
@@ -92,6 +93,8 @@ GLuint uploadVoxelMesh(const std::vector<VoxelVertex>& verts, GLuint& vboOut){
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(3*sizeof(float)));
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(6*sizeof(float)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(9*sizeof(float)));
     glBindVertexArray(0);
     vboOut = vbo;
     return vao;
@@ -204,9 +207,16 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                         if(!blockIsTransparent(neighbour)) continue;
                     }
 
+                    // Цвет грани: без текстур — краска из таблицы блоков, с текстурами —
+                    // цветовой фильтр поверх картинки. Верх чуть светлее бока в обоих
+                    // случаях: так куб читается как объём.
                     float r, g, bl;
-                    if(face.dy > 0){ r = info.topR; g = info.topG; bl = info.topB; }
-                    else           { r = info.sideR; g = info.sideG; bl = info.sideB; }
+                    if(blockTexturesReady()){
+                        blockTextureTint(b, r, g, bl);
+                        if(face.dy <= 0){ r *= 0.94f; g *= 0.94f; bl *= 0.94f; }
+                    } else if(face.dy > 0){ r = info.topR; g = info.topG; bl = info.topB; }
+                    else                  { r = info.sideR; g = info.sideG; bl = info.sideB; }
+                    float layer = (float)blockTextureLayer(b);
 
                     float shade = blockShade(wx, y, wz);
                     std::vector<VoxelVertex>& out = isWater ? water : solid;
@@ -220,12 +230,21 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                                                       face.verts[k][0], face.verts[k][1], face.verts[k][2]);
                         aoLevels[k] = ao;
                         float k2 = shade * ao;
+                        // Координаты текстуры берём из двух осей грани, поперечных её
+                        // нормали: тогда рисунок не «съезжает» при повороте куба и
+                        // одинаково лежит на всех шести сторонах.
+                        float u, v;
+                        if(face.dx != 0){ u = face.verts[k][2]; v = face.verts[k][1]; }
+                        else if(face.dy != 0){ u = face.verts[k][0]; v = face.verts[k][2]; }
+                        else { u = face.verts[k][0]; v = face.verts[k][1]; }
+
                         quad[k] = VoxelVertex{
                             (float)wx + face.verts[k][0],
                             (float)y  + face.verts[k][1] - (isWater ? 0.12f : 0.0f), // вода чуть ниже края блока
                             (float)wz + face.verts[k][2],
                             face.nx, face.ny, face.nz,
-                            r * k2, g * k2, bl * k2
+                            r * k2, g * k2, bl * k2,
+                            u, v, layer
                         };
                     }
                     // Разворот разбиения квада по затенению. Квад режется на два

@@ -51,6 +51,9 @@ private:
     bool initGraphics();
     void initWorld();
     void buildMinimapTexture();
+    void loadInterfaceTextures();
+    void drawMenuBackground();
+    void bindBlockTextures();
     // Дальность прорисовки в метрах: настройка игрока, зажатая уровнем качества.
     float viewDistanceMeters() const;
 
@@ -68,12 +71,16 @@ private:
     void render();
     void renderScene();
     void renderBlockHighlight(const Mat4& view, const Mat4& proj, Vec3 camPos);
+    // Предмет в руке: каменный топорик, собранный из кубов. Рисуется в пространстве
+    // камеры, поэтому всегда перед лицом и не проваливается сквозь стены.
+    void renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, float dt);
     void renderHud();
     void renderOverlay();
     void renderSettings();
     void renderMap();
     void renderCraft();
     void renderCompass();
+    void renderTouchControls();
     void renderMainMenu();
     // Геометрия кнопок главного меню — одна на отрисовку и на попадания пальца.
     void menuButtonRect(int index, float& x, float& y, float& w, float& h) const;
@@ -119,7 +126,14 @@ private:
 
     GLuint skyVao_ = 0;   // пустой VAO для полноэкранного треугольника неба
     GLuint minimapTex_ = 0;
+    // Иконки интерфейса. 0 — файла не нашлось, рисуем как раньше.
+    GLuint texDig_ = 0, texPlace_ = 0, texInteract_ = 0, texInventory_ = 0;
+    GLuint texCraft_ = 0, texMap_ = 0, texSettings_ = 0, texClose_ = 0;
+    GLuint texJoyBase_ = 0, texJoyStick_ = 0, texPlayerMarker_ = 0, texMenuBg_ = 0;
+    int menuBgW_ = 0, menuBgH_ = 0;   // размеры фона: рисуем его без растяжения
     GLuint highlightVao_ = 0, highlightVbo_ = 0;
+    GLuint heldVao_ = 0, heldVbo_ = 0;
+    float  heldBobPhase_ = 0.0f;   // фаза покачивания при ходьбе
 
     float yaw_ = 0.0f, pitch_ = 0.0f;
     float animTime_ = 0.0f;

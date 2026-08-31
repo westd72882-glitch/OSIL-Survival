@@ -51,6 +51,11 @@ public:
     struct ButtonView { float cx, cy, radius; const char* label; bool active; };
     std::vector<ButtonView> buttonViews() const;
 
+    // Состояние джойстика для отрисовки его текстурой (движок рисовать не умеет —
+    // ему незачем знать про ассеты игры).
+    struct StickView { bool active; float baseX, baseY, curX, curY, radius; };
+    StickView stickView() const;
+
     // ---- Состояние ввода
     float moveX() const;      // -1..1 (вправо-влево)
     float moveY() const;      // -1..1 (вперёд-назад)

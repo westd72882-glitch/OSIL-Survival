@@ -91,6 +91,7 @@ if(SDL2_FOUND AND SDL2_IMAGE_FOUND AND SDL2_TTF_FOUND AND SDL2_MIXER_FOUND)
         src/Engine/Core/Settings.cpp
         src/Engine/Core/Window.cpp
         src/Engine/Render/AssetLoader.cpp
+        src/Engine/Render/BlockTextures.cpp
         src/Engine/Render/Framebuffer.cpp
         src/Engine/Render/Mesh.cpp
         src/Engine/Render/Primitives.cpp
@@ -121,7 +122,12 @@ set(OSIL_TEST_SOURCES
     tests/test_core.cpp
     tests/test_world.cpp
     tests/test_voxels.cpp
+    tests/test_assets.cpp
 )
+# Тесту набора картинок нужен путь к репозиторию: сами файлы лежат рядом с исходниками,
+# а тест запускается из каталога сборки.
+set_source_files_properties(tests/test_assets.cpp PROPERTIES
+    COMPILE_DEFINITIONS "OSIL_REPO_DIR=\"${CMAKE_SOURCE_DIR}\"")
 # Тесты сенсорного управления требуют только типы событий SDL и сами настройки —
 # ни окна, ни графики. Если SDL2 в системе есть, они собираются вместе с остальными.
 if(SDL2_FOUND)
