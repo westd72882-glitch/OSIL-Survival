@@ -335,6 +335,10 @@ void GameClient::initWorld(){
 
     Rng rng(splitMix64(cfg.seed ^ 0x5350ULL));
     Vec3 spawn = world_->findSpawnPoint(rng);
+    if(startX_ >= 0.0f && startZ_ >= 0.0f){
+        int top = voxels_->surfaceY((int)startX_, (int)startZ_);
+        spawn = Vec3{ startX_, (float)(top + 2), startZ_ };
+    }
     player_->spawn(spawn);
     yaw_ = (yawOverride_ > -100.0f) ? yawOverride_ : 0.0f;
     pitch_ = (pitchOverride_ > -100.0f) ? pitchOverride_ : -0.15f;
@@ -1734,6 +1738,11 @@ int GameClient::run(int argc, char** argv){
             startInGame_ = true;   // пропустить главное меню (отладка)
         } else if(a == "--debug"){
             settings.showDebugInfo = true;
+        } else if(a == "--pos" && i + 1 < argc){
+            // Отладка: встать в заданной точке карты, чтобы снять зиму или пустыню,
+            // не бегая туда полчаса.
+            float x = 0, z = 0;
+            if(sscanf(argv[++i], "%f,%f", &x, &z) == 2){ startX_ = x; startZ_ = z; }
         } else if(a == "--size" && i + 1 < argc){
             int w = 0, h = 0;
             if(sscanf(argv[++i], "%dx%d", &w, &h) == 2 && w > 0 && h > 0){

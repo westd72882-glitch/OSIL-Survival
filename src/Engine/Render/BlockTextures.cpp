@@ -15,6 +15,7 @@ const int LAYER_SIZE = 256;
 // различаются только фильтром (см. blockTextureTint).
 enum Layer {
     LAYER_GROUND = 0,
+    LAYER_SNOW,
     LAYER_STONE,
     LAYER_WOOD,
     LAYER_PLANKS,
@@ -27,6 +28,7 @@ enum Layer {
 
 const char* kLayerFiles[LAYER_COUNT] = {
     "block_ground.png",
+    nullptr,            // снег — тот же грунт, обесцвеченный в белый (см. makeSnowLayer)
     "block_stone.png",
     "block_wood.png",
     "block_planks.png",
@@ -52,6 +54,32 @@ void scaleInto(SDL_Surface* src, std::vector<uint8_t>& out){
             uint8_t* d = &out[((size_t)y * LAYER_SIZE + x) * 4];
             d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
         }
+    }
+}
+
+// Снег из грунта. Умножением цвета белым его не сделать: множитель поднимает яркость,
+// но оставляет тёплый песочный оттенок, и зима выглядела бледной пустыней. Поэтому
+// цвет сводится к своей яркости (обесцвечивание) и затем осветляется — это и есть
+// «тот же песок под белым фильтром», только фильтр честный.
+void makeSnowLayer(const std::vector<uint8_t>& ground, std::vector<uint8_t>& out){
+    out.assign((size_t)LAYER_SIZE * LAYER_SIZE * 4, 255);
+    for(size_t i = 0; i + 3 < ground.size(); i += 4){
+        float r = ground[i] / 255.0f, g = ground[i+1] / 255.0f, b = ground[i+2] / 255.0f;
+        float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+        // Немного исходного цвета оставляем: совсем плоский белый теряет зернистость.
+        const float KEEP = 0.12f;
+        float nr = lum + (r - lum) * KEEP;
+        float ng = lum + (g - lum) * KEEP;
+        float nb = lum + (b - lum) * KEEP;
+        // Осветление к белому: снег ярче песка, из которого он сделан.
+        const float LIFT = 0.34f;
+        nr += (1.0f - nr) * LIFT;
+        ng += (1.0f - ng) * LIFT;
+        nb += (1.0f - nb) * (LIFT + 0.06f);   // чуть холоднее, синева читается как снег
+        out[i]   = (uint8_t)(nr * 255.0f + 0.5f);
+        out[i+1] = (uint8_t)(ng * 255.0f + 0.5f);
+        out[i+2] = (uint8_t)(nb > 1.0f ? 255.0f : nb * 255.0f + 0.5f);
+        out[i+3] = ground[i+3];
     }
 }
 
@@ -85,9 +113,12 @@ bool blockTexturesInit(){
 
     int loaded = 0;
     std::vector<uint8_t> buffer;
+    std::vector<uint8_t> groundPixels;
     for(int i = 0; i < LAYER_COUNT; ++i){
-        if(!kLayerFiles[i]){
+        if(i == LAYER_WATER){
             makeWaterLayer(buffer);
+        } else if(i == LAYER_SNOW){
+            makeSnowLayer(groundPixels, buffer);
         } else {
             SDL_Surface* raw = IMG_Load(assetPath(kLayerFiles[i]).c_str());
             if(!raw){
@@ -99,6 +130,7 @@ bool blockTexturesInit(){
             if(!conv) continue;
             scaleInto(conv, buffer);
             SDL_FreeSurface(conv);
+            if(i == LAYER_GROUND) groundPixels = buffer;   // из него делается снег
             ++loaded;
         }
         glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i, LAYER_SIZE, LAYER_SIZE, 1,
@@ -112,7 +144,7 @@ bool blockTexturesInit(){
     glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 
     g_ready = (loaded > 0);
-    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 1);
+    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 2);
     return g_ready;
 }
 
@@ -134,6 +166,7 @@ int blockTextureLayer(Block b){
         case Block::OreMetal:   return LAYER_METAL;
         case Block::Leaves:     return LAYER_LEAVES;
         case Block::Water:      return LAYER_WATER;
+        case Block::Snow:       return LAYER_SNOW;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
     }
 }
@@ -143,7 +176,8 @@ void blockTextureTint(Block b, float& r, float& g, float& bl){
     // осветлённый в белый, равнина — светло-салатовый, земля — коричневатый.
     switch(b){
         case Block::Sand:       r = 1.00f; g = 0.98f; bl = 0.92f; break;
-        case Block::Snow:       r = 1.35f; g = 1.42f; bl = 1.50f; break;
+        // Снегу свой слой уже обесцвечен, поэтому здесь фильтр почти нейтральный.
+        case Block::Snow:       r = 1.00f; g = 1.01f; bl = 1.03f; break;
         case Block::Grass:      r = 0.62f; g = 1.05f; bl = 0.52f; break;
         case Block::Dirt:       r = 0.78f; g = 0.62f; bl = 0.46f; break;
         case Block::Mud:        r = 0.55f; g = 0.52f; bl = 0.40f; break;
