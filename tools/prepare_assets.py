@@ -119,7 +119,7 @@ JOBS = {
     # выглядит ровно тем, что игрок только что выбил.
     'item_iron.png':     ('tex_iron_ore.png', 128),
     'item_stone.png':    ('tex_stone.png', 128),
-    'item_wood.png':     ('Trunk.png', 128),
+    'item_wood.png':     ('Wooden Log.png', 128),
     'item_leaves.png':   ('Grass_02.png', 128),
     'item_planks.png':   ('Wall_Wood_0.png', 128),
     'item_dirt.png':     ('Dirt_01.png', 128),
