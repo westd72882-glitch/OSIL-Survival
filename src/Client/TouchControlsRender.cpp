@@ -24,6 +24,7 @@ void TouchControls::render(){
 
     TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
     for(TouchButton* b : all){
+            if(b->radius <= 0.0f) continue;
         if(!b->visible) continue;
         bool on = b->active;
         drawUICircle(b->cx, b->cy, b->radius, UI_BG_PANEL.r, UI_BG_PANEL.g, UI_BG_PANEL.b, on ? 0.55f : 0.32f);

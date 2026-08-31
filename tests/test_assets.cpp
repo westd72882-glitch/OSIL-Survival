@@ -36,14 +36,16 @@ bool readPngSize(const std::string& path, int& w, int& h){
 // см. BlockTextures.cpp.
 const char* BLOCK_TEXTURES[] = {
     "block_ground.png", "block_stone.png", "block_wood.png", "block_planks.png",
-    "block_leaves.png", "block_dirt.png", "block_sulfur.png", "block_metal.png"
+    "block_leaves.png", "block_dirt.png", "block_sulfur.png", "block_metal.png",
+    "block_road.png"
 };
 
 const char* UI_TEXTURES[] = {
     "ui_dig.png", "ui_place.png", "ui_interact.png", "ui_inventory.png",
     "ui_craft.png", "ui_map.png", "ui_settings.png", "ui_close.png",
     "ui_jump.png", "ui_run.png", "ui_crouch.png",
-    "item_torch.png",
+    "item_torch.png", "item_axe.png", "item_scrap.png", "item_wood.png",
+    "item_stone.png", "item_iron.png",
     "ui_joystick_base.png", "ui_joystick_stick.png", "ui_player_marker.png",
     "menu_bg.png"
 };

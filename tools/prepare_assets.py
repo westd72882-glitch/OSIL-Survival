@@ -88,6 +88,7 @@ def write_png(path, W, H, px):
 JOBS = {
     'block_ground.png':  ('T_Ground_Sand_02_A_Sm.png', 256),   # песок: он же зима и земля под фильтром
     'block_stone.png':   ('tex_stone.png', 256),
+    'block_road.png':    ('T_field_road_01_A_T.png', 256),
     'block_wood.png':    ('Trunk.png', 256),
     'block_sulfur.png':  ('tex_sulfur_ore.png', 256),
     'block_metal.png':   ('tex_iron_ore.png', 256),
@@ -112,7 +113,17 @@ JOBS = {
     'item_torch.png':    ('Torch_0.png', 128),
     # Значки предметов для ячеек инвентаря: те же картинки, что и у блоков жил.
     'item_sulfur.png':   ('Sulfur Ore.png', 128),
-    'item_iron.png':     ('Scrap.png', 128),
+    'item_scrap.png':    ('Scrap.png', 128),
+    'item_axe.png':      ('crafting-button.png', 128),
+    # Значки ресурсов-блоков — те же картинки, что и у самих блоков: предмет в ячейке
+    # выглядит ровно тем, что игрок только что выбил.
+    'item_iron.png':     ('tex_iron_ore.png', 128),
+    'item_stone.png':    ('tex_stone.png', 128),
+    'item_wood.png':     ('Trunk.png', 128),
+    'item_leaves.png':   ('Grass_02.png', 128),
+    'item_planks.png':   ('Wall_Wood_0.png', 128),
+    'item_dirt.png':     ('Dirt_01.png', 128),
+    'item_sand.png':     ('T_Ground_Sand_02_A_Sm.png', 128),
     'menu_bg.png':       ('menu-bg-update.png', 0),            # 0 — оставить как есть
 }
 

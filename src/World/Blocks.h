@@ -24,6 +24,8 @@ enum class Block : uint8_t {
     Planks,     // доски (крафт из дерева) — строительный блок
     StoneBrick, // каменный блок (крафт) — прочнее досок
     Mud,        // болотная жижа
+    Road,       // дорожное покрытие (полоса через карту)
+    Barrel,     // бочка у дороги: ломается, даёт скрап
     COUNT
 };
 
@@ -42,6 +44,9 @@ struct BlockInfo {
 };
 
 const BlockInfo& blockInfo(Block b);
+// Что вообще можно добывать. Рельеф (трава, земля, песок, снег, дорога) не ломается:
+// у нас Rust, а не Minecraft — игрок собирает ресурсы, а не копает землю.
+bool isHarvestable(Block b);
 inline bool blockIsSolid(Block b){ return blockInfo(b).solid; }
 inline bool blockIsTransparent(Block b){ return blockInfo(b).transparent; }
 inline bool blockIsAir(Block b){ return b == Block::Air; }

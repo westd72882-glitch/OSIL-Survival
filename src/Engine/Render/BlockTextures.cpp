@@ -23,6 +23,8 @@ enum Layer {
     LAYER_METAL,
     LAYER_LEAVES,
     LAYER_LEAVES_SNOW,
+    LAYER_ROAD,
+    LAYER_BARREL,
     LAYER_WATER,
     LAYER_COUNT
 };
@@ -37,6 +39,8 @@ const char* kLayerFiles[LAYER_COUNT] = {
     "block_metal.png",
     "block_leaves.png",
     nullptr,            // заснеженная листва — та же картинка, обесцвеченная
+    "block_road.png",
+    nullptr,            // бочка рисуется на месте: ржавый бок с обручами
     nullptr,            // вода рисуется процедурно, файла для неё нет
 };
 
@@ -86,6 +90,29 @@ void makeSnowLayer(const std::vector<uint8_t>& ground, std::vector<uint8_t>& out
     }
 }
 
+// Бочка: ржавый бок с двумя обручами. Картинки бочки в наборе нет, а рисунок ей нужен
+// узнаваемый — иначе у дороги стоят просто рыжие кубы.
+void makeBarrelLayer(std::vector<uint8_t>& out){
+    out.assign((size_t)LAYER_SIZE * LAYER_SIZE * 4, 255);
+    for(int y = 0; y < LAYER_SIZE; ++y){
+        // Два тёмных обруча по высоте и лёгкая вертикальная штриховка «жести».
+        float fy = (float)y / LAYER_SIZE;
+        bool band = (fy > 0.18f && fy < 0.28f) || (fy > 0.72f && fy < 0.82f);
+        for(int x = 0; x < LAYER_SIZE; ++x){
+            uint32_t h = (uint32_t)(x * 73856093) ^ (uint32_t)(y * 19349663);
+            h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+            float grain = 0.88f + (float)(h & 0x3F) / 63.0f * 0.22f;
+            float r = 0.62f, g = 0.30f, b = 0.17f;
+            if(band){ r = 0.34f; g = 0.20f; b = 0.14f; }
+            uint8_t* p = &out[((size_t)y * LAYER_SIZE + x) * 4];
+            p[0] = (uint8_t)(SDL_min(r * grain, 1.0f) * 255.0f);
+            p[1] = (uint8_t)(SDL_min(g * grain, 1.0f) * 255.0f);
+            p[2] = (uint8_t)(SDL_min(b * grain, 1.0f) * 255.0f);
+            p[3] = 255;
+        }
+    }
+}
+
 // Процедурная вода: спокойная рябь. Отдельной картинки для неё нет, а плоская заливка
 // на большой глади выглядит как пластик.
 void makeWaterLayer(std::vector<uint8_t>& out){
@@ -126,6 +153,8 @@ bool blockTexturesInit(){
             makeWaterLayer(buffer);
         } else if(i == LAYER_SNOW){
             makeSnowLayer(groundPixels, buffer, 0.34f);
+        } else if(i == LAYER_BARREL){
+            makeBarrelLayer(buffer);
         } else if(i == LAYER_LEAVES_SNOW){
             makeSnowLayer(leavesPixels, buffer, 0.80f);
         } else {
@@ -154,7 +183,7 @@ bool blockTexturesInit(){
     glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 
     g_ready = (loaded > 0);
-    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 3);
+    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 4);
     return g_ready;
 }
 
@@ -178,6 +207,8 @@ int blockTextureLayer(Block b){
         case Block::LeavesSnow: return LAYER_LEAVES_SNOW;
         case Block::Water:      return LAYER_WATER;
         case Block::Snow:       return LAYER_SNOW;
+        case Block::Road:       return LAYER_ROAD;
+        case Block::Barrel:     return LAYER_BARREL;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
     }
 }

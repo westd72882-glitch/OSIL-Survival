@@ -71,6 +71,14 @@ public:
     // мир поставил сам (декор) — построенное игроком не трогаем.
     // Зовётся раз в кадр с шагом времени в секундах.
     int  updateRespawn(float dtSeconds);
+
+    // ---- Валка. Дерево не разбирается по кубику: срубил — оно падает целиком.
+    // Собирает связанные блоки (ствол и крону, либо всю жилу) и убирает их сверху вниз
+    // с небольшой задержкой, чтобы это читалось как падение, а не как исчезновение.
+    // Возвращает, сколько блоков ушло в падение.
+    int  fellCluster(int x, int y, int z);
+    void updateFalling(float dtSeconds);
+    size_t fallingCount() const { return falling_.size(); }
     size_t respawnQueueSize() const { return respawn_.size(); }
     size_t waterQueueSize() const { return waterQueue_.size(); }
 
@@ -85,6 +93,11 @@ public:
 private:
     // Блок рельефа на глубине: трава/песок/снег сверху, земля, ниже камень и жилы.
     Block terrainBlock(int x, int y, int z, int surface) const;
+    // Дорога через карту и бочки вдоль неё.
+    float roadCenterZ(int x) const;
+public:
+    bool  onRoad(int x, int z) const;
+private:
     static uint64_t packKey(int x, int y, int z);
     void generateDecor(int cx, int cz) const;
 
@@ -100,6 +113,9 @@ private:
     // потерей знака, и обратный разбор был бы лишним поводом ошибиться.
     struct RespawnCell { float left; int x, y, z; };
     std::unordered_map<uint64_t, RespawnCell> respawn_;
+    // Блоки в процессе падения: убираются по очереди сверху вниз.
+    struct FallingCell { float left; int x, y, z; };
+    std::vector<FallingCell> falling_;
     // Был ли этот блок поставлен декором (деревом или жилой) в своём чанке.
     bool isDecorBlock(int x, int y, int z) const;
 

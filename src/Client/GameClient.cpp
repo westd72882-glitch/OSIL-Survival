@@ -229,8 +229,10 @@ void GameClient::initWorld(){
     pitch_ = (pitchOverride_ > -100.0f) ? pitchOverride_ : -0.15f;
 
     // Стартовый набор: пара блоков, чтобы было чем строить с первой минуты.
-    inventory_.add(ItemType::Planks, 16);
-    inventory_.add(ItemType::Stone, 8);
+    // Стартовый набор: топор и факел. Топор берётся в руки выбором в поясе — с ним
+    // добыча идёт вдвое быстрее.
+    inventory_.add(ItemType::Axe, 1);
+    inventory_.add(ItemType::Torch, 1);
 
     buildMinimapTexture();
     LOG_INFO("мир клиента готов: сид %llu, кубический слой включён",
@@ -1089,39 +1091,40 @@ void GameClient::drawBar(float x, float y, float w, float h, float value01,
     if(!caption.empty()) drawText(x + 6.0f, y + h * 0.12f, h * 0.76f, caption, UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.95f);
 }
 
-// Значок предмета для ячейки. Есть только у руды: остальное рисуется цветом блока,
-// который в мире ровно такой же, поэтому предмет узнаётся и без картинки.
 GLuint GameClient::itemIcon(ItemType t) const {
-    switch(t){
-        case ItemType::OreSulfur:
-        case ItemType::Sulfur:    return texItemSulfur_;
-        case ItemType::OreMetal:
-        case ItemType::MetalFrag: return texItemIron_;
-        default:                  return 0;
-    }
+    int i = (int)t;
+    if(i <= 0 || i >= (int)ItemType::COUNT) return 0;
+    return texItems_[i];
 }
 
 void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, bool selected){
-    drawUIRect(x, y, size, size, 0, UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.82f, false);
+    // Ячейка как в Rust: ровный тёмный квадрат, значок во всю плитку, количество в
+    // правом нижнем углу. Ни подписей, ни рамок-украшений.
+    drawUIRect(x, y, size, size, 0, 0.16f, 0.16f, 0.17f, 0.92f, false);
     if(!stack.empty()){
         const ItemDef& def = itemDef(stack.type);
         GLuint icon = itemIcon(stack.type);
         if(icon){
-            // У картинок прозрачные поля, поэтому значок рисуем почти во всю ячейку.
-            float ip = size * 0.07f;
-            drawUIRect(x + ip, y + ip, size - ip*2.0f, size - ip*2.0f, icon, 1, 1, 1, 1.0f, true);
+            float ip = size * 0.08f;
+            drawUIRect(x + ip, y + ip, size - ip * 2.0f, size - ip * 2.0f, icon, 1, 1, 1, 1.0f, true);
         } else {
-            // Без картинки — квадрат цвета блока: он в мире ровно такого же цвета.
-            float pad = size * 0.16f;
-            drawUIRect(x + pad, y + pad, size - pad*2.0f, size - pad*2.0f, 0,
+            float pad = size * 0.18f;
+            drawUIRect(x + pad, y + pad, size - pad * 2.0f, size - pad * 2.0f, 0,
                        def.r, def.g, def.b, 1.0f, false);
         }
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d", stack.count);
-        drawText(x + size * 0.06f, y + size * 0.62f, size * 0.30f, buf, 1.0f, 1.0f, 1.0f, 0.95f);
+        if(stack.count > 1){
+            char buf[16];
+            snprintf(buf, sizeof(buf), "x%d", stack.count);
+            float fh = size * 0.26f;
+            // Число прижато к правому нижнему углу: слева от него — сам предмет.
+            float tw = fh * 0.55f * (float)strlen(buf);
+            drawText(x + size - tw - size * 0.06f, y + size - fh * 1.15f, fh, buf, 1, 1, 1, 0.95f);
+        }
     }
-    uiThinFrame(x, y, size, size, selected ? UI_ACCENT : UI_LINE, selected ? 1.0f : 0.7f);
-    if(selected) uiThinFrame(x - 2.0f, y - 2.0f, size + 4.0f, size + 4.0f, UI_ACCENT, 0.9f);
+    // Выбранная ячейка помечается жёлтой полосой слева — как в Rust на поясе.
+    if(selected)
+        drawUIRect(x, y, size * 0.055f, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+    uiThinFrame(x, y, size, size, UI_LINE, 0.45f);
 }
 
 void GameClient::renderHud(){
@@ -1323,18 +1326,20 @@ void GameClient::renderOverlay(){
         inventoryGeometry(gx, gy, slot, gap);
         float w = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
         float h = slot * Inventory::ROWS + gap * (Inventory::ROWS - 1);
-        uiPanel(gx - 20.0f * s, gy - 56.0f * s, w + 40.0f * s, h + 116.0f * s, 0.96f);
-        drawText(gx, gy - 46.0f * s, 25.0f * s, "ИНВЕНТАРЬ — 30 слотов", UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+        // Экран инвентаря: затемнение на весь экран, заголовок и сплошная сетка ячеек
+        // без рамки-окна и без подсказок под ней — что делать, видно по самой сетке.
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.72f, false);
+        drawText(gx, gy - 44.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
+        // Подложка сетки одним куском: у Rust ячейки стоят вплотную, а не плитками
+        // с зазором, и сетка читается как один блок.
+        drawUIRect(gx - 3.0f * s, gy - 3.0f * s, w + 6.0f * s, h + 6.0f * s, 0,
+                   0.30f, 0.30f, 0.31f, 0.55f, false);
         for(int i = 0; i < Inventory::SIZE; ++i){
             int col = i % Inventory::COLS, row = i / Inventory::COLS;
             float sx = gx + col * (slot + gap);
             float sy = gy + row * (slot + gap);
             drawSlot(sx, sy, slot, inventory_.slot(i), i == dragSlot_ || (row == 0 && col == inventory_.selected()));
         }
-        drawText(gx, gy + h + 14.0f * s, 18.0f * s,
-                 dragSlot_ >= 0 ? "Коснитесь второй ячейки, чтобы перенести"
-                                : "Первый ряд — пояс быстрого доступа; коснитесь ячейки для переноса",
-                 UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.85f);
         return;
     }
 
@@ -1869,8 +1874,6 @@ void GameClient::loadInterfaceTextures(){
         { "ui_jump.png",           &texJump_ },
         { "ui_run.png",            &texRun_ },
         { "ui_crouch.png",         &texCrouch_ },
-        { "item_sulfur.png",       &texItemSulfur_ },
-        { "item_iron.png",         &texItemIron_ },
         { "ui_joystick_base.png",  &texJoyBase_ },
         { "ui_joystick_stick.png", &texJoyStick_ },
         { "ui_player_marker.png",  &texPlayerMarker_ },
@@ -1884,4 +1887,27 @@ void GameClient::loadInterfaceTextures(){
         if(*it.target) ++loaded;
     }
     SDL_Log("Иконки интерфейса: загружено %d из %d", loaded, (int)(sizeof(items)/sizeof(items[0])));
+
+    // Значки предметов: файл на каждый вид. Чего нет — останется нулём, и ячейка
+    // нарисуется цветом предмета.
+    struct { ItemType type; const char* file; } itemIcons[] = {
+        { ItemType::Wood,      "item_wood.png" },
+        { ItemType::Stone,     "item_stone.png" },
+        { ItemType::OreMetal,  "item_iron.png" },
+        { ItemType::OreSulfur, "item_sulfur.png" },
+        { ItemType::Scrap,     "item_scrap.png" },
+        { ItemType::Axe,       "item_axe.png" },
+        { ItemType::Torch,     "item_torch.png" },
+        { ItemType::Leaves,    "item_leaves.png" },
+        { ItemType::Planks,    "item_planks.png" },
+        { ItemType::Dirt,      "item_dirt.png" },
+        { ItemType::Sand,      "item_sand.png" },
+    };
+    int itemsLoaded = 0;
+    for(const auto& it : itemIcons){
+        texItems_[(int)it.type] = loadTextureFromFile(assetPath(it.file).c_str(), nullptr, nullptr);
+        if(texItems_[(int)it.type]) ++itemsLoaded;
+    }
+    SDL_Log("Значки предметов: загружено %d из %d", itemsLoaded,
+            (int)(sizeof(itemIcons)/sizeof(itemIcons[0])));
 }

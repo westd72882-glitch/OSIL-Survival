@@ -28,7 +28,8 @@ const float STAMINA_DRAIN  = 14.0f;
 const float STAMINA_REGEN  = 9.0f;
 
 const float REACH = 5.0f;          // на сколько метров дотягивается рука
-const float PLACE_COOLDOWN = 0.18f;
+// Время одного замаха голыми руками. С топором вдвое быстрее.
+const float SWING_TIME = 0.55f;
 } // namespace
 
 Survivor::Survivor(VoxelWorld& voxels, const Environment& env, Inventory& inventory)
@@ -47,7 +48,7 @@ void Survivor::spawn(Vec3 position){
     oxygen_ = 100.0f;
     stepSmooth_ = 0.0f;
     miningProgress_ = 0.0f;
-    say("Вы очнулись на острове. Ломайте блоки — из них всё и строится.");
+    say("Вы очнулись на острове. Возьмите топор и рубите деревья.");
 }
 
 Vec3 Survivor::eyePosition() const {
@@ -253,95 +254,73 @@ void Survivor::updateMetabolism(float dt){
         health_ = clampf(health_ + 1.0f * dt, 0.0f, 100.0f);
 }
 
+// Топор в руках ускоряет добычу. Лежит он в инвентаре с самого начала, брать в руки —
+// значит выбрать его в поясе.
+bool Survivor::hasAxe() const {
+    const ItemStack& sel = inventory_.selectedStack();
+    return !sel.empty() && sel.type == ItemType::Axe;
+}
+
+// Один удар по объекту: ресурс в инвентарь, счётчик ударов вниз, кончились — объект
+// уходит (дерево валится целиком, жила и бочка исчезают).
+void Survivor::hitTarget(Block block, int x, int y, int z){
+    ItemType drop = ItemType::None;
+    int perHit = 1;
+    int hitsTotal = 6;
+    switch(block){
+        case Block::Wood:      drop = ItemType::Wood;      perHit = 2; hitsTotal = 8;  break;
+        case Block::Stone:     drop = ItemType::Stone;     perHit = 2; hitsTotal = 8;  break;
+        case Block::OreMetal:  drop = ItemType::OreMetal;  perHit = 1; hitsTotal = 10; break;
+        case Block::OreSulfur: drop = ItemType::OreSulfur; perHit = 1; hitsTotal = 10; break;
+        case Block::Barrel:    drop = ItemType::Scrap;     perHit = 2; hitsTotal = 4;  break;
+        default: return;
+    }
+
+    // Счётчик ударов привязан к объекту, а не к блоку: бьём в одну точку — вырабатываем
+    // всё дерево целиком, а не отдельный кубик ствола.
+    if(x != hitX_ || y != hitY_ || z != hitZ_ || hitBlock_ != block){
+        hitX_ = x; hitY_ = y; hitZ_ = z; hitBlock_ = block;
+        hitsLeft_ = hitsTotal;
+    }
+
+    int left = inventory_.add(drop, perHit);
+    char buf[128];
+    if(left > 0) snprintf(buf, sizeof(buf), "Инвентарь полон: %s не влез", itemDef(drop).nameRu);
+    else         snprintf(buf, sizeof(buf), "+%d %s", perHit - left, itemDef(drop).nameRu);
+    say(buf);
+
+    if(--hitsLeft_ <= 0){
+        hitsLeft_ = 0;
+        hitBlock_ = Block::Air;
+        voxels_.fellCluster(x, y, z);
+    }
+}
+
 void Survivor::updateInteraction(const SurvivorInput& in, float dt){
-    if(placeCooldown_ > 0.0f) placeCooldown_ -= dt;
+    if(swingCooldown_ > 0.0f) swingCooldown_ -= dt;
 
     target_ = voxels_.raycast(eyePosition(), lookDirection(), REACH);
 
-    // ---- Добыча
-    if(in.attack && target_.hit){
+    // Ломать рельеф нельзя вообще: земля, песок, снег, трава и дорога — не ресурс.
+    // Добывается только то, что стоит НА земле: дерево, жила, бочка. Каждый удар даёт
+    // ресурс, а когда объект выработан — дерево падает, жила и бочка исчезают.
+    bool canHit = target_.hit && isHarvestable(target_.block);
+    if(in.attack && canHit){
         if(target_.x != miningX_ || target_.y != miningY_ || target_.z != miningZ_){
-            // Перевели прицел на другой блок — прогресс начинается заново.
             miningX_ = target_.x; miningY_ = target_.y; miningZ_ = target_.z;
             miningProgress_ = 0.0f;
         }
-        const BlockInfo& info = blockInfo(target_.block);
-        float hardness = info.hardness > 0.01f ? info.hardness : 0.2f;
-        // Инструментов пока нет (этап 3): голыми руками камень идёт втрое дольше дерева.
-        miningProgress_ += dt / hardness;
+        // Прогресс — это замах. Топор в руке бьёт вдвое быстрее, чем голыми руками.
+        float speed = hasAxe() ? 2.0f : 1.0f;
+        miningProgress_ += dt * speed / SWING_TIME;
         stamina_ = clampf(stamina_ - dt * 2.5f, 0.0f, 100.0f);
 
         if(miningProgress_ >= 1.0f){
             miningProgress_ = 0.0f;
-            Block broken = target_.block;
-            voxels_.setBlock(target_.x, target_.y, target_.z, Block::Air);
-            if(onBlockChanged) onBlockChanged(target_.x, target_.y, target_.z);
-
-            ItemType drop = itemFromBlock(broken);
-            if(drop != ItemType::None){
-                int left = inventory_.add(drop, blockInfo(broken).dropCount);
-                char buf[128];
-                if(left > 0) snprintf(buf, sizeof(buf), "Инвентарь полон: %s не влез", itemDef(drop).nameRu);
-                else         snprintf(buf, sizeof(buf), "+1 %s", itemDef(drop).nameRu);
-                say(buf);
-            }
-            // С листвы иногда падают ягоды — еда на первое время.
-            if(broken == Block::Leaves && ((target_.x * 7 + target_.z * 13 + target_.y) % 5) == 0)
-                inventory_.add(ItemType::Berry, 1);
+            hitTarget(target_.block, target_.x, target_.y, target_.z);
         }
     } else {
         miningProgress_ = 0.0f;
-    }
-
-    // ---- Строительство
-    if(in.place && placeCooldown_ <= 0.0f && target_.hit){
-        ItemStack& stack = inventory_.selectedStack();
-        if(!stack.empty()){
-            Block toPlace = itemDef(stack.type).placeable;
-            if(toPlace != Block::Air){
-                int px = target_.prevX, py = target_.prevY, pz = target_.prevZ;
-                // Нельзя ставить блок внутрь себя — иначе игрок замуровывается на месте.
-                Vec3 test = pos_;
-                voxels_.setBlock(px, py, pz, toPlace);
-                bool blocksPlayer = collides(test);
-                if(blocksPlayer){
-                    voxels_.setBlock(px, py, pz, Block::Air);
-                    say("Здесь стоите вы");
-                } else {
-                    inventory_.consumeSelected();
-                    if(onBlockChanged) onBlockChanged(px, py, pz);
-                    placeCooldown_ = PLACE_COOLDOWN;
-                }
-            } else {
-                say(std::string(itemDef(stack.type).nameRu) + " нельзя поставить блоком");
-            }
-        }
-    }
-
-    // ---- Действие: съесть выбранное или напиться, если стоишь в воде
-    if(in.action){
-        ItemStack& stack = inventory_.selectedStack();
-        const ItemDef& def = itemDef(stack.type);
-        if(!stack.empty() && (def.food > 0 || def.water > 0)){
-            hunger_ = clampf(hunger_ + (float)def.food, 0.0f, 100.0f);
-            thirst_ = clampf(thirst_ + (float)def.water, 0.0f, 100.0f);
-            inventory_.consumeSelected();
-            char buf[128];
-            snprintf(buf, sizeof(buf), "Съедено: %s (+%d сытость)", def.nameRu, def.food);
-            say(buf);
-        } else if(inWater_ || voxels_.blockAt((int)floorf(pos_.x), (int)floorf(pos_.y), (int)floorf(pos_.z)) == Block::Water){
-            if(thirst_ >= 99.0f){ say("Пить больше не хочется"); }
-            else {
-                thirst_ = clampf(thirst_ + 25.0f, 0.0f, 100.0f);
-                // Вода сырая: примерно каждый четвёртый глоток стоит здоровья.
-                if(((int)(thirst_ * 7.0f) % 4) == 0){
-                    health_ = clampf(health_ - 3.0f, 0.0f, 100.0f);
-                    say("Вы напились грязной воды: +25 жажда, -3 HP");
-                } else {
-                    say("Вы напились: +25 жажда");
-                }
-            }
-        }
     }
 }
 

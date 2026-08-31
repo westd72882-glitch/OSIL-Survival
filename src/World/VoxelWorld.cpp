@@ -3,6 +3,7 @@
 #include "../Core/Random.h"
 
 #include <cmath>
+#include <array>
 
 namespace {
 const uint64_t SALT_ORE  = 0x5001;
@@ -37,6 +38,26 @@ int VoxelWorld::surfaceY(int x, int z) const {
     return y;
 }
 
+// Дорога идёт через всю карту с запада на восток и слегка виляет — прямая линейка
+// посреди острова выглядела бы чертежом, а не дорогой. Ширина 7 блоков: по ней видно,
+// что это дорога, и она не режет карту пополам.
+float VoxelWorld::roadCenterZ(int x) const {
+    float size = world_.config().size;
+    float t = (float)x / (size > 1.0f ? size : 1.0f);
+    return size * 0.5f
+         + sinf(t * 6.2831853f * 1.5f) * size * 0.075f
+         + sinf(t * 6.2831853f * 4.0f + 1.7f) * size * 0.022f;
+}
+
+bool VoxelWorld::onRoad(int x, int z) const {
+    if(x < 0 || z < 0) return false;
+    float size = world_.config().size;
+    if((float)x >= size || (float)z >= size) return false;
+    // По воде дорога не идёт: мостов у нас пока нет.
+    if(world_.isWater((float)x + 0.5f, (float)z + 0.5f)) return false;
+    return fabsf((float)z + 0.5f - roadCenterZ(x)) <= 3.5f;
+}
+
 Block VoxelWorld::terrainBlock(int x, int y, int z, int surface) const {
     if(y > surface) return (y <= waterY_) ? Block::Water : Block::Air;
 
@@ -55,6 +76,7 @@ Block VoxelWorld::terrainBlock(int x, int y, int z, int surface) const {
 
     // Верхний слой определяется биомом: в пустыне песок, в горах снег, в болоте жижа.
     Biome b = world_.biomeAt((float)x + 0.5f, (float)z + 0.5f);
+    if(depth == 0 && onRoad(x, z)) return Block::Road;
     if(depth == 0){
         switch(b){
             case Biome::Desert: case Biome::Beach: return Block::Sand;
@@ -157,6 +179,22 @@ void VoxelWorld::generateDecor(int cx, int cz) const {
                 break;
         }
     }
+
+    // ---- Бочки вдоль дороги. Ставятся не из ResourceMap, а прямо здесь: это чисто
+    // декоративная привязка к дороге, и городить ради неё отдельный вид ресурса незачем.
+    for(int x = cx * CHUNK_SIZE; x < (cx + 1) * CHUNK_SIZE; ++x){
+        for(int z = cz * CHUNK_SIZE; z < (cz + 1) * CHUNK_SIZE; ++z){
+            // Обочина: рядом с полотном, но не на нём.
+            float d = fabsf((float)z + 0.5f - roadCenterZ(x));
+            if(d < 4.0f || d > 6.5f) continue;
+            if(world_.isWater((float)x + 0.5f, (float)z + 0.5f)) continue;
+            uint64_t h = hashCoords(x, z, world_.config().seed, SALT_TREE + 909ULL);
+            if((h & 0xFF) > 5) continue;          // примерно одна бочка на 40 метров обочины
+            int sy = surfaceY(x, z) + 1;
+            cells[packKey(x, sy, z)] = Block::Barrel;
+            if(((h >> 8) & 1) != 0) cells[packKey(x, sy + 1, z)] = Block::Barrel;
+        }
+    }
 }
 
 void VoxelWorld::ensureChunkDecor(int cx, int cz) const {
@@ -234,6 +272,64 @@ int VoxelWorld::updateRespawn(float dtSeconds){
         ++restored;
     }
     return restored;
+}
+
+int VoxelWorld::fellCluster(int startX, int startY, int startZ){
+    Block hit = blockAt(startX, startY, startZ);
+    if(!isHarvestable(hit)) return 0;
+
+    // Что считаем частью одного объекта. У дерева это ствол и крона, у жилы — только
+    // её собственная порода, иначе «жилой» окажется вся гора.
+    bool tree = (hit == Block::Wood);
+    auto sameObject = [&](Block b){
+        if(tree) return b == Block::Wood || b == Block::Leaves || b == Block::LeavesSnow;
+        return b == hit;
+    };
+
+    // Обход в ширину по 26 соседям: у дерева крона касается ствола и по диагонали.
+    const int LIMIT = tree ? 400 : 64;
+    std::vector<FallingCell> found;
+    std::unordered_map<uint64_t, bool> seen;
+    std::deque<std::array<int,3>> queue;
+    queue.push_back({ startX, startY, startZ });
+    seen[packKey(startX, startY, startZ)] = true;
+    while(!queue.empty() && (int)found.size() < LIMIT){
+        std::array<int,3> c = queue.front(); queue.pop_front();
+        found.push_back(FallingCell{ 0.0f, c[0], c[1], c[2] });
+        for(int dx = -1; dx <= 1; ++dx)
+            for(int dy = -1; dy <= 1; ++dy)
+                for(int dz = -1; dz <= 1; ++dz){
+                    if(!dx && !dy && !dz) continue;
+                    int nx = c[0] + dx, ny = c[1] + dy, nz = c[2] + dz;
+                    if(ny < 0 || ny > maxY_) continue;
+                    uint64_t key = packKey(nx, ny, nz);
+                    if(seen.count(key)) continue;
+                    if(!sameObject(blockAt(nx, ny, nz))) continue;
+                    seen[key] = true;
+                    queue.push_back({ nx, ny, nz });
+                }
+    }
+    if(found.empty()) return 0;
+
+    // Сверху вниз: чем выше блок, тем раньше он уходит — крона валится первой, комель
+    // последним, и это читается как падение дерева.
+    int maxYFound = found[0].y;
+    for(const FallingCell& c : found) if(c.y > maxYFound) maxYFound = c.y;
+    for(FallingCell& c : found) c.left = (float)(maxYFound - c.y) * 0.05f;
+    falling_.insert(falling_.end(), found.begin(), found.end());
+    return (int)found.size();
+}
+
+void VoxelWorld::updateFalling(float dtSeconds){
+    if(falling_.empty()) return;
+    for(size_t i = 0; i < falling_.size(); ){
+        falling_[i].left -= dtSeconds;
+        if(falling_[i].left > 0.0f){ ++i; continue; }
+        FallingCell c = falling_[i];
+        falling_[i] = falling_.back();
+        falling_.pop_back();
+        setBlock(c.x, c.y, c.z, Block::Air);
+    }
 }
 
 void VoxelWorld::setBlock(int x, int y, int z, Block b){

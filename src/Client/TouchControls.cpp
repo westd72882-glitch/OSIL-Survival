@@ -55,8 +55,10 @@ void TouchControls::layout(int screenW, int screenH){
     attack_.cx = rightX;                 attack_.cy = bottomY;
     place(attack_, settings.attackNormX, settings.attackNormY, rBig, "КОПАТЬ", false);
 
-    place_.cx = rightX - rBig * 2.15f;   place_.cy = bottomY;
-    place(place_, settings.placeNormX, settings.placeNormY, rBig * 0.82f, "СТАВИТЬ", false);
+    // Кнопки «Ставить» больше нет: блоки в мир не ставятся, игрок только добывает.
+    // Саму кнопку не выпиливаем из списков — просто гасим нулевым радиусом, и она
+    // перестаёт и рисоваться, и ловить касания.
+    place_.cx = -1000.0f; place_.cy = -1000.0f; place_.radius = 0.0f; place_.label = "";
 
     jump_.cx = rightX;                   jump_.cy = bottomY - rBig * 2.2f;
     place(jump_, settings.jumpNormX, settings.jumpNormY, r, "ПРЫЖОК", false);
@@ -85,6 +87,7 @@ void TouchControls::layout(int screenW, int screenH){
 TouchButton* TouchControls::buttonAt(float x, float y){
     TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
     for(TouchButton* b : all){
+            if(b->radius <= 0.0f) continue;
         if(!b->visible) continue;
         float dx = x - b->cx, dy = y - b->cy;
         // Зона попадания на 25% больше нарисованной: палец толще пикселя, и промах по
@@ -186,6 +189,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
             }
             TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
             for(TouchButton* b : all){
+            if(b->radius <= 0.0f) continue;
                 if(b->finger == e.tfinger.fingerId){
                     b->finger = -1;
                     if(!b->toggle) b->active = false;
@@ -293,6 +297,7 @@ void TouchControls::releaseAllTouches(){
     TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_,
                            &inventory_, &craft_, &map_, &options_ };
     for(TouchButton* b : all){
+            if(b->radius <= 0.0f) continue;
         b->finger = -1;
         if(!b->toggle) b->active = false;   // тумблеры (бег, присед) состояние сохраняют
     }
@@ -345,6 +350,7 @@ std::vector<TouchControls::ButtonView> TouchControls::buttonViews() const {
     const TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_, &inventory_, &craft_, &map_, &options_ };
     std::vector<ButtonView> out;
     for(const TouchButton* b : all){
+        if(b->radius <= 0.0f) continue;
         if(!b->visible) continue;
         out.push_back(ButtonView{ b->cx, b->cy, b->radius, b->label.c_str(), b->active });
     }

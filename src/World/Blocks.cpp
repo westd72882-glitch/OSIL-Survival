@@ -19,6 +19,8 @@ const BlockInfo kBlocks[(int)Block::COUNT] = {
     { "planks",     "Доски",       0.72f,0.56f,0.34f,    0.66f,0.50f,0.30f,    true,  false, 1.2f, Block::Planks,    1 },
     { "stone_brick","Каменный блок",0.62f,0.62f,0.60f,   0.55f,0.55f,0.53f,    true,  false, 3.2f, Block::StoneBrick,1 },
     { "mud",        "Жижа",        0.34f,0.32f,0.22f,    0.30f,0.28f,0.19f,    true,  false, 0.5f, Block::Mud,       1 },
+    { "road",       "Дорога",      0.46f,0.44f,0.41f,    0.40f,0.38f,0.36f,    true,  false, 0.0f, Block::Air,       0 },
+    { "barrel",     "Бочка",       0.62f,0.34f,0.20f,    0.56f,0.30f,0.17f,    true,  false, 0.8f, Block::Air,       0 },
 };
 } // namespace
 
@@ -29,3 +31,16 @@ const BlockInfo& blockInfo(Block b){
 }
 
 const char* blockName(Block b){ return blockInfo(b).nameRu; }
+
+bool isHarvestable(Block b){
+    switch(b){
+        case Block::Wood:
+        case Block::Stone:
+        case Block::OreMetal:
+        case Block::OreSulfur:
+        case Block::Barrel:
+            return true;
+        default:
+            return false;
+    }
+}

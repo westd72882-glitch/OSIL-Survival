@@ -99,7 +99,12 @@ private:
     RayHit target_;
     float miningProgress_ = 0.0f;
     int miningX_ = 0, miningY_ = 0, miningZ_ = 0;
-    float placeCooldown_ = 0.0f;
+    float swingCooldown_ = 0.0f;
+    // Сколько ударов осталось по объекту, по которому бьём сейчас.
+    int   hitX_ = 0, hitY_ = 0, hitZ_ = 0, hitsLeft_ = 0;
+    Block hitBlock_ = Block::Air;
+    bool  hasAxe() const;
+    void  hitTarget(Block block, int x, int y, int z);
 
     std::string message_;
     float messageAge_ = 999.0f;
