@@ -15,11 +15,11 @@
 #include "../Engine/Render/UIDraw.h"
 #include "../Engine/Render/VoxelChunks.h"
 #include "../World/Environment.h"
-#include "../World/Monuments.h"
 #include "../World/Resources.h"
 #include "../World/VoxelWorld.h"
 #include "../World/World.h"
 
+#include <SDL2/SDL.h>
 #include <map>
 #include <memory>
 #include <string>
@@ -59,6 +59,8 @@ private:
     void handleOverlayDrag(float x, float y, float dx, float dy);
     void handleOverlayRelease();
     bool handleHotbarTouch(float x, float y);
+    // Карта обрабатывает касания сама: ей нужны идентификаторы пальцев для щипка.
+    bool handleMapEvent(const SDL_Event& e);
     bool handleSettingsTouch(float x, float y);
     bool handleMenuTouch(float x, float y);      // главное меню
     void update(float dt);
@@ -89,7 +91,6 @@ private:
 
     std::unique_ptr<World> world_;
     std::unique_ptr<ResourceMap> resources_;
-    std::unique_ptr<MonumentMap> monuments_;
     std::unique_ptr<Environment> env_;
     std::unique_ptr<VoxelWorld> voxels_;
     std::unique_ptr<Survivor> player_;
@@ -106,6 +107,10 @@ private:
     float mapCenterZ_ = 2000.0f;
     bool  mapFollowsPlayer_ = true;   // пока карту не таскали, она следит за игроком
     bool  mapDragging_ = false;
+    // Щипок двумя пальцами: сохраняем позиции пальцев и базу масштаба.
+    std::map<SDL_FingerID, Vec2> mapFingers_;
+    float pinchBaseDist_ = 0.0f;
+    float pinchBaseZoom_ = 1.0f;
     // ---- Крафт: прокрутка списка
     float craftScroll_ = 0.0f;
     bool  craftDragging_ = false;

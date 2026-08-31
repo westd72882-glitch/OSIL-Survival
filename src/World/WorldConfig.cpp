@@ -5,6 +5,7 @@
 #include "../Core/Math.h"
 #include "../Core/Time.h"
 
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 
@@ -33,6 +34,23 @@ WorldConfig WorldConfig::fromConfig(const Config& cfg){
 }
 
 void WorldConfig::sanitize(){
+    // Частоты шума заданы в 1/метрах и подобраны под карту 4000 м. На карте меньшего
+    // размера их надо пересчитать, иначе весь остров попадает в один «холм» шума и
+    // рельеф вырождается в пологий купол без гор и без равнин.
+    if(size > 100.0f && fabsf(size - 4000.0f) > 1.0f && !frequenciesScaled){
+        float k = 4000.0f / size;
+        continentFrequency  *= k;
+        hillFrequency       *= k;
+        mountainFrequency   *= k;
+        warpFrequency       *= k;
+        moistureFrequency   *= k;
+        temperatureFrequency*= k;
+        riverFrequency      *= k;
+        warpStrength        /= k;   // искажение задано в метрах — уменьшается вместе с картой
+        riverWidth          *= 1.0f;
+        frequenciesScaled = true;
+    }
+
     // Слишком маленькая карта ломает расстановку монументов, слишком большая —
     // съедает память под сетку высот (квадратичный рост).
     if(size < 1000.0f){ LOG_WARN("world.size=%.0f мало, поднято до 1000", (double)size); size = 1000.0f; }

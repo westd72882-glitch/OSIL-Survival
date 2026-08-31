@@ -73,6 +73,10 @@ public:
     void setEditMode(bool on);
     bool editMode() const { return editMode_; }
     void resetLayout();          // вернуть стандартные позиции
+    // Сбросить все активные касания. Вызывается, когда приложение теряет фокус или
+    // открывается окно: иначе система «съедает» FINGERUP, и джойстик остаётся зажатым —
+    // игрок бежит сам по себе, пока не ткнёт в экран ещё раз.
+    void releaseAllTouches();
     void saveLayout() const;     // записать текущие позиции в настройки
 
 private:

@@ -180,31 +180,32 @@ bool GameClient::initGraphics(){
 void GameClient::initWorld(){
     WorldConfig cfg;
     cfg.seed = seedFromString(WORLD_SEED_TEXT);
-    // Шаг сетки высот 4 м — как на сервере. В кубическом мире это важнее, чем в
-    // сглаженном: при шаге 8 м рельеф превращался в широкие плоские террасы, и остров
-    // выглядел столом. Лишние 0.3 с генерации того стоят.
-    cfg.heightGridStep = 4.0f;
+    // Карта 1000x1000 метров: остров обходится за несколько минут, зоны биомов читаются
+    // целиком, а мир целиком помещается в память вместе с правками игрока.
+    cfg.size = 1000.0f;
+    // Шаг сетки высот 2 м: в кубическом мире рельеф всё равно округляется до блоков, но
+    // при более крупном шаге склоны превращались в широкие плоские террасы.
+    cfg.heightGridStep = 2.0f;
+    cfg.monumentCount = 0;   // локации отключены: пустые точки интереса только путали
     cfg.sanitize();
 
     world_.reset(new World(cfg));
     world_->generate();
     resources_.reset(new ResourceMap(*world_));
     resources_->generate();
-    monuments_.reset(new MonumentMap(*world_));
-    monuments_->generate();
     env_.reset(new Environment(cfg));
     if(startTimeOverride_ >= 0.0f) env_->setTimeOfDay(startTimeOverride_);
 
     voxels_.reset(new VoxelWorld(*world_, *resources_));
     chunks_.init(voxels_.get());
 
+    // Любая правка мира (игрок сломал блок ИЛИ вода растеклась) помечает чанк на
+    // пересборку. Подписываемся на сам мир, а не на игрока: у воды своего игрока нет.
+    voxels_->onBlockChanged = [this](int x, int y, int z){ chunks_.markDirty(x, y, z); };
     player_.reset(new Survivor(*voxels_, *env_, inventory_));
-    player_->onBlockChanged = [this](int x, int y, int z){ chunks_.markDirty(x, y, z); };
 
     Rng rng(splitMix64(cfg.seed ^ 0x5350ULL));
     Vec3 spawn = world_->findSpawnPoint(rng);
-    for(int i = 0; i < 24 && !monuments_->isSafeSpawn(spawn.x, spawn.z); ++i)
-        spawn = world_->findSpawnPoint(rng);
     player_->spawn(spawn);
     yaw_ = (yawOverride_ > -100.0f) ? yawOverride_ : 0.0f;
     pitch_ = (pitchOverride_ > -100.0f) ? pitchOverride_ : -0.15f;
@@ -430,38 +431,6 @@ void GameClient::renderSettings(){
 bool GameClient::handleOverlayTouch(float x, float y){
     if(overlay_ == Overlay::Settings) return handleSettingsTouch(x, y);
 
-    if(overlay_ == Overlay::Map){
-        float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-        float mx, my, size;
-        mapViewport(mx, my, size);
-
-        // Кнопки под картой: приблизить, отдалить, вернуться к игроку, закрыть.
-        float btn = 46.0f * s;
-        float by = my + size + 12.0f * s;
-        if(y >= by && y <= by + btn){
-            for(int i = 0; i < 4; ++i){
-                float bw = (i == 3) ? btn * 3.2f : btn;
-                float bx = mx + (i == 3 ? size - bw : (float)i * (btn + 10.0f * s));
-                if(x < bx || x > bx + bw) continue;
-                if(i == 0) mapZoom_ = clampf(mapZoom_ * 1.6f, 1.0f, 12.0f);
-                else if(i == 1) mapZoom_ = clampf(mapZoom_ / 1.6f, 1.0f, 12.0f);
-                else if(i == 2){ mapFollowsPlayer_ = true; }
-                else overlay_ = Overlay::None;
-                return true;
-            }
-            return true;
-        }
-
-        // Касание по самой карте — начало панорамы: карта перестаёт следовать за игроком.
-        if(x >= mx && x <= mx + size && y >= my && y <= my + size){
-            mapDragging_ = true;
-            mapFollowsPlayer_ = false;
-            return true;
-        }
-        overlay_ = Overlay::None;
-        return true;
-    }
-
     if(overlay_ == Overlay::Craft){
         float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
         float px, py, w, h;
@@ -514,17 +483,99 @@ bool GameClient::handleOverlayTouch(float x, float y){
     return true;
 }
 
+bool GameClient::handleMapEvent(const SDL_Event& e){
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float mx, my, size;
+    mapViewport(mx, my, size);
+    float closeW = 150.0f * s, closeH = 32.0f * s;
+    float closeX = mx + size - closeW, closeY = my + size + 4.0f * s;
+
+    auto pinchDistance = [&]() -> float {
+        if(mapFingers_.size() < 2) return 0.0f;
+        auto it = mapFingers_.begin();
+        Vec2 a = it->second; ++it;
+        Vec2 b = it->second;
+        return v2dist(a, b);
+    };
+
+    switch(e.type){
+        case SDL_FINGERDOWN: {
+            float x = e.tfinger.x * (float)SCR_W, y = e.tfinger.y * (float)SCR_H;
+            if(x >= closeX && x <= closeX + closeW && y >= closeY && y <= closeY + closeH){
+                overlay_ = Overlay::None;
+                mapFingers_.clear();
+                return true;
+            }
+            mapFingers_[e.tfinger.fingerId] = Vec2{ x, y };
+            if(mapFingers_.size() == 2){
+                // Второй палец лёг — запоминаем базу щипка, чтобы масштаб менялся
+                // от текущего, а не прыгал к какому-то абсолютному значению.
+                pinchBaseDist_ = pinchDistance();
+                pinchBaseZoom_ = mapZoom_;
+                mapDragging_ = false;
+            } else if(mapFingers_.size() == 1){
+                mapDragging_ = true;
+                mapFollowsPlayer_ = false;
+            }
+            return true;
+        }
+        case SDL_FINGERMOTION: {
+            auto it = mapFingers_.find(e.tfinger.fingerId);
+            if(it == mapFingers_.end()) return true;
+            float x = e.tfinger.x * (float)SCR_W, y = e.tfinger.y * (float)SCR_H;
+            float dx = x - it->second.x, dy = y - it->second.y;
+            it->second = Vec2{ x, y };
+
+            if(mapFingers_.size() >= 2){
+                float dist = pinchDistance();
+                if(pinchBaseDist_ > 1.0f && dist > 1.0f)
+                    mapZoom_ = clampf(pinchBaseZoom_ * (dist / pinchBaseDist_), 1.0f, 12.0f);
+                return true;
+            }
+            if(mapDragging_){
+                float span = world_->config().size / mapZoom_;
+                mapCenterX_ -= dx / size * span;
+                mapCenterZ_ -= dy / size * span;
+            }
+            return true;
+        }
+        case SDL_FINGERUP: {
+            mapFingers_.erase(e.tfinger.fingerId);
+            if(mapFingers_.size() < 2) pinchBaseDist_ = 0.0f;
+            if(mapFingers_.empty()) mapDragging_ = false;
+            return true;
+        }
+        // ---- Мышь на ПК: перетаскивание и колесо.
+        case SDL_MOUSEBUTTONDOWN: {
+            if(e.button.which == SDL_TOUCH_MOUSEID) return true;
+            float x = (float)e.button.x, y = (float)e.button.y;
+            if(x >= closeX && x <= closeX + closeW && y >= closeY && y <= closeY + closeH){
+                overlay_ = Overlay::None;
+                return true;
+            }
+            mapDragging_ = true;
+            mapFollowsPlayer_ = false;
+            return true;
+        }
+        case SDL_MOUSEMOTION: {
+            if(e.motion.which == SDL_TOUCH_MOUSEID) return true;
+            if(mapDragging_ && (e.motion.state & SDL_BUTTON_LMASK)){
+                float span = world_->config().size / mapZoom_;
+                mapCenterX_ -= (float)e.motion.xrel / size * span;
+                mapCenterZ_ -= (float)e.motion.yrel / size * span;
+            }
+            return true;
+        }
+        case SDL_MOUSEBUTTONUP: mapDragging_ = false; return true;
+        case SDL_MOUSEWHEEL:
+            mapZoom_ = clampf(mapZoom_ * (e.wheel.y > 0 ? 1.25f : 0.8f), 1.0f, 12.0f);
+            return true;
+        default: return false;
+    }
+}
+
 void GameClient::handleOverlayDrag(float x, float y, float dx, float dy){
     (void)x; (void)y;
-    if(overlay_ == Overlay::Map && mapDragging_){
-        // Тянем карту «за бумагу»: содержимое едет вслед за пальцем, а не наоборот.
-        float mx, my, size;
-        mapViewport(mx, my, size);
-        float span = world_->config().size / mapZoom_;
-        mapCenterX_ -= dx / size * span;
-        mapCenterZ_ -= dy / size * span;
-        return;
-    }
     if(overlay_ == Overlay::Craft && craftDragging_){
         craftScroll_ -= dy;
         return;
@@ -540,6 +591,14 @@ void GameClient::handleEvents(){
     SDL_Event e;
     while(SDL_PollEvent(&e)){
         if(e.type == SDL_QUIT){ running_ = false; continue; }
+        // Свернули игру или потеряли фокус — система не пришлёт FINGERUP, и управление
+        // залипло бы в последнем состоянии.
+        if(e.type == SDL_APP_WILLENTERBACKGROUND || e.type == SDL_APP_DIDENTERBACKGROUND ||
+           (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_FOCUS_LOST)){
+            controls_.releaseAllTouches();
+            mapFingers_.clear();
+            continue;
+        }
         if(e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED){
             SDL_GL_GetDrawableSize(win, &SCR_W, &SCR_H);
             controls_.layout(SCR_W, SCR_H);
@@ -606,6 +665,11 @@ void GameClient::handleEvents(){
 
         // ---- Открытое окно забирает касания себе: иначе палец на списке рецептов
         // одновременно листал бы его и крутил камеру.
+        if(overlay_ == Overlay::Map){
+            // Карте нужны идентификаторы пальцев (щипок), поэтому она разбирает
+            // события сама, без общего приведения к «нажали в точке».
+            if(handleMapEvent(e)) continue;
+        }
         if(overlay_ != Overlay::None){
             if(down){ handleOverlayTouch(tx, ty); continue; }
             if(motion){ handleOverlayDrag(tx, ty, mdx, mdy); continue; }
@@ -637,6 +701,9 @@ void GameClient::update(float dt){
     pitch_ = clampf(pitch_, -1.50f, 1.50f);
 
     if(controls_.inventoryPressed()){ overlay_ = (overlay_ == Overlay::Inventory) ? Overlay::None : Overlay::Inventory; dragSlot_ = -1; }
+    // Открывая окно, отпускаем все касания: палец, лежавший на джойстике, иначе
+    // остаётся «нажатым» и игрок продолжает идти, пока окно открыто.
+    if(overlay_ != Overlay::None) controls_.releaseAllTouches();
     if(controls_.craftPressed())     overlay_ = (overlay_ == Overlay::Craft)     ? Overlay::None : Overlay::Craft;
     if(controls_.mapPressed())       overlay_ = (overlay_ == Overlay::Map)       ? Overlay::None : Overlay::Map;
     if(controls_.settingsPressed())  overlay_ = (overlay_ == Overlay::Settings)  ? Overlay::None : Overlay::Settings;
@@ -657,9 +724,11 @@ void GameClient::update(float dt){
     in.yaw = yaw_;
     in.pitch = pitch_;
 
-    player_->setAmbientRadiation(monuments_->radiationAt(player_->position().x, player_->position().z));
     player_->update(in, dt);
     env_->tick(dt);
+    // Растекание воды: небольшими порциями за тик, чтобы залив ямы был виден, но не
+    // стоил кадра. Пока очередь пуста, вызов бесплатен.
+    voxels_->updateWater(96);
 
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
@@ -918,9 +987,10 @@ void GameClient::renderHud(){
     drawBar(pad, y, barW, barH, player_->thirst() / 100.0f, 0.16f, 0.38f, 0.58f, buf); y += barH + gap;
     snprintf(buf, sizeof(buf), "Силы %.0f", (double)player_->stamina());
     drawBar(pad, y, barW, barH, player_->stamina() / 100.0f, 0.32f, 0.48f, 0.24f, buf); y += barH + gap;
-    if(player_->radiation() > 0.5f){
-        snprintf(buf, sizeof(buf), "РАДИАЦИЯ %.0f", (double)player_->radiation());
-        drawBar(pad, y, barW, barH, player_->radiation() / 100.0f, 0.62f, 0.58f, 0.12f, buf);
+    // Воздух показываем только когда он тратится: лишняя полоса на экране мешает.
+    if(player_->headUnderwater() || player_->oxygen() < 99.5f){
+        snprintf(buf, sizeof(buf), "Воздух %.0f", (double)player_->oxygen());
+        drawBar(pad, y, barW, barH, player_->oxygen() / 100.0f, 0.30f, 0.62f, 0.72f, buf);
         y += barH + gap;
     }
 
@@ -1114,10 +1184,11 @@ void GameClient::renderCraft(){
 
 void GameClient::mapViewport(float& x, float& y, float& size) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    // Снизу обязательно оставляем полосу под кнопки приближения — иначе они уезжают
-    // за край экрана и картой нельзя управлять.
-    float reserveTop = 62.0f * s, reserveBottom = 76.0f * s;
-    size = fminf((float)SCR_W * 0.70f, (float)SCR_H - reserveTop - reserveBottom);
+    // Карта занимает почти весь экран: сверху остаётся строка с координатами, снизу —
+    // узкая полоса с подсказкой и кнопкой закрытия. Кнопок приближения нет — масштаб
+    // меняется щипком двумя пальцами, как в любой карте на телефоне.
+    float reserveTop = 44.0f * s, reserveBottom = 44.0f * s;
+    size = fminf((float)SCR_W - 24.0f * s, (float)SCR_H - reserveTop - reserveBottom);
     x = ((float)SCR_W - size) * 0.5f;
     y = reserveTop;
 }
@@ -1149,50 +1220,37 @@ void GameClient::renderMap(){
     auto toScreenX = [&](float wx){ return mx + (wx - (mapCenterX_ - half)) / span * size; };
     auto toScreenY = [&](float wz){ return my + (wz - (mapCenterZ_ - half)) / span * size; };
 
-    // ---- Координатная сетка. Ячейка 150 м — столбцы буквами, строки цифрами, как в Rust.
-    const float CELL = 150.0f;
+    // ---- Координатная сетка 10x10 на всю карту: подпись квадрата стоит прямо в нём,
+    // как на военной карте, — не нужно водить взглядом к краям.
+    const float CELL = cfg.size / 10.0f;
     int firstCol = (int)floorf((mapCenterX_ - half) / CELL);
     int lastCol  = (int)floorf((mapCenterX_ + half) / CELL);
     int firstRow = (int)floorf((mapCenterZ_ - half) / CELL);
     int lastRow  = (int)floorf((mapCenterZ_ + half) / CELL);
-    char label[8];
+    char label[16];
     for(int c = firstCol; c <= lastCol; ++c){
         float lx = toScreenX((float)c * CELL);
-        if(lx < mx || lx > mx + size) continue;
-        drawUIRect(lx, my, 1.0f, size, 0, UI_LINE.r, UI_LINE.g, UI_LINE.b, 0.28f, false);
-        // Подпись столбца ставим по центру клетки, а не на линии.
-        float cellCenter = toScreenX(((float)c + 0.5f) * CELL);
-        // На мелком масштабе подписываем через одну: иначе буквы налезают друг на друга.
-        int labelStep = (mapZoom_ < 1.5f) ? 2 : 1;
-        if(c >= 0 && c < 26 && (c % labelStep) == 0 && cellCenter > mx && cellCenter < mx + size){
-            snprintf(label, sizeof(label), "%c", 'A' + c);
-            drawText(cellCenter - 6.0f * s, my - 26.0f * s, 21.0f * s, label,
-                     UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.95f);
-        }
+        if(lx >= mx && lx <= mx + size)
+            drawUIRect(lx, my, 1.0f, size, 0, 1, 1, 1, 0.22f, false);
     }
     for(int r = firstRow; r <= lastRow; ++r){
         float ly = toScreenY((float)r * CELL);
-        if(ly < my || ly > my + size) continue;
-        drawUIRect(mx, ly, size, 1.0f, 0, UI_LINE.r, UI_LINE.g, UI_LINE.b, 0.28f, false);
-        float cellCenter = toScreenY(((float)r + 0.5f) * CELL);
-        int labelStepRow = (mapZoom_ < 1.5f) ? 2 : 1;
-        if(r >= 0 && (r % labelStepRow) == 0 && cellCenter > my && cellCenter < my + size){
-            snprintf(label, sizeof(label), "%d", r + 1);
-            drawText(mx - 26.0f * s, cellCenter - 10.0f * s, 20.0f * s, label,
-                     UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.95f);
-        }
+        if(ly >= my && ly <= my + size)
+            drawUIRect(mx, ly, size, 1.0f, 0, 1, 1, 1, 0.22f, false);
     }
-
-    // ---- Монументы
-    for(const Monument& m : monuments_->monuments()){
-        float ax = toScreenX(m.pos.x), ay = toScreenY(m.pos.z);
-        if(ax < mx || ax > mx + size || ay < my || ay > my + size) continue;
-        bool hot = m.radiation > 0.0f;
-        drawUICircleOutline(ax, ay, 7.0f * s, hot ? UI_DANGER.r : UI_TEXT_DIM.r,
-                            hot ? UI_DANGER.g : UI_TEXT_DIM.g, hot ? UI_DANGER.b : UI_TEXT_DIM.b, 0.95f, 2.0f);
-        if(mapZoom_ >= 2.0f)
-            drawText(ax + 10.0f * s, ay - 9.0f * s, 15.0f * s, m.name,
-                     UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.85f);
+    // Подпись квадрата — в его левом верхнем углу, полупрозрачным белым.
+    for(int c = firstCol; c <= lastCol; ++c){
+        for(int r = firstRow; r <= lastRow; ++r){
+            if(c < 0 || c > 9 || r < 0 || r > 9) continue;
+            float lx = toScreenX((float)c * CELL);
+            float ly = toScreenY((float)r * CELL);
+            float cellPx = size * CELL / span;
+            if(lx + cellPx < mx || lx > mx + size) continue;
+            if(ly + cellPx < my || ly > my + size) continue;
+            snprintf(label, sizeof(label), "%c%d", 'A' + c, r + 1);
+            float fontH = clampf(cellPx * 0.20f, 12.0f * s, 34.0f * s);
+            drawText(lx + 6.0f * s, ly + 4.0f * s, fontH, label, 1, 1, 1, 0.65f);
+        }
     }
 
     // ---- Игрок: точка и стрелка направления взгляда. Стрелка собрана из отрезков —
@@ -1214,27 +1272,22 @@ void GameClient::renderMap(){
         drawUICircleOutline(ax, ay, 6.0f * s, 0.05f, 0.05f, 0.05f, 0.9f, 2.0f);
     }
 
-    // ---- Заголовок, координаты, кнопки приближения
-    int cellCol = (int)floorf(p.x / CELL);
-    int cellRow = (int)floorf(p.z / CELL);
+    // ---- Заголовок с квадратом и координатами, снизу — подсказка и «ЗАКРЫТЬ».
+    int cellCol = clampi((int)floorf(p.x / CELL), 0, 9);
+    int cellRow = clampi((int)floorf(p.z / CELL), 0, 9);
     char header[160];
-    snprintf(header, sizeof(header), "КАРТА  |  квадрат %c%d  |  X %.0f  Z %.0f  |  x%.0f",
-             (cellCol >= 0 && cellCol < 26) ? ('A' + cellCol) : '?', cellRow + 1,
-             (double)p.x, (double)p.z, (double)mapZoom_);
-    drawText(mx, my - 44.0f * s, 24.0f * s, header, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+    snprintf(header, sizeof(header), "КАРТА  %c%d   X %.0f  Z %.0f   x%.1f",
+             'A' + cellCol, cellRow + 1, (double)p.x, (double)p.z, (double)mapZoom_);
+    drawText(mx, my - 34.0f * s, 24.0f * s, header, 1, 1, 1, 0.9f);
 
-    float btn = 46.0f * s;
-    float by = my + size + 12.0f * s;
-    const char* labels[4] = { "+", "-", "Я", "ЗАКРЫТЬ" };
-    for(int i = 0; i < 4; ++i){
-        float bw = (i == 3) ? btn * 3.2f : btn;
-        float bx = mx + (i == 3 ? size - bw : (float)i * (btn + 10.0f * s));
-        drawUIRect(bx, by, bw, btn, 0, UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.85f, false);
-        uiThinFrame(bx, by, bw, btn, UI_LINE, 0.8f);
-        float textW = 12.0f * s * (float)strlen(labels[i]) * 0.6f;
-        drawText(bx + bw * 0.5f - textW * 0.5f, by + btn * 0.22f, btn * 0.5f, labels[i],
-                 UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f);
-    }
+    drawText(mx, my + size + 10.0f * s, 17.0f * s,
+             "Щипок двумя пальцами — масштаб, перетаскивание — сдвиг",
+             1, 1, 1, 0.6f);
+    float closeW = 150.0f * s, closeH = 32.0f * s;
+    float closeX = mx + size - closeW, closeY = my + size + 4.0f * s;
+    drawUIRect(closeX, closeY, closeW, closeH, 0, 1, 1, 1, 0.16f, false);
+    uiThinFrame(closeX, closeY, closeW, closeH, UI_TEXT, 0.55f);
+    drawText(closeX + closeW * 0.28f, closeY + closeH * 0.18f, closeH * 0.6f, "ЗАКРЫТЬ", 1, 1, 1, 0.9f);
 }
 
 // ==================== КОМПАС ====================
@@ -1242,54 +1295,51 @@ void GameClient::renderMap(){
 // а квадрат карты и градусы вместе заменяют полноценную навигацию.
 void GameClient::renderCompass(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float w = clampf((float)SCR_W * 0.52f, 320.0f, 860.0f);
-    float h = 40.0f * s;
+    float w = clampf((float)SCR_W * 0.46f, 300.0f, 780.0f);
+    float h = 26.0f * s;
     float x = ((float)SCR_W - w) * 0.5f;
-    float y = 8.0f * s;
+    float y = 6.0f * s;
 
-    drawUIRect(x, y, w, h, 0, UI_BG_DEEP.r, UI_BG_DEEP.g, UI_BG_DEEP.b, 0.55f, false);
-    uiThinFrame(x, y, w, h, UI_LINE, 0.55f);
-
-    // Курс: 0 — север (-Z), растёт по часовой стрелке.
+    // Ни рамки, ни подложки: полоса белая и полупрозрачная, чтобы не перекрывать вид.
+    // Шкала едет, неподвижная палка по центру показывает, на какой курс смотрит игрок.
     float heading = yaw_ * 180.0f / 3.14159265f;
     heading = fmodf(heading, 360.0f);
     if(heading < 0.0f) heading += 360.0f;
 
-    const float VISIBLE = 120.0f;   // сколько градусов помещается в полосу
-    for(int deg = 0; deg < 360; deg += 15){
+    const float VISIBLE = 100.0f;   // градусов в ширину полосы
+    char label[8];
+    for(int deg = 0; deg < 360; deg += 10){
         float delta = (float)deg - heading;
         while(delta > 180.0f) delta -= 360.0f;
         while(delta < -180.0f) delta += 360.0f;
         if(fabsf(delta) > VISIBLE * 0.5f) continue;
         float px = x + w * 0.5f + delta / VISIBLE * w;
+        // Края полосы гасим, чтобы деления не обрывались резкой линией.
+        float edgeFade = 1.0f - clampf((fabsf(delta) / (VISIBLE * 0.5f) - 0.72f) / 0.28f, 0.0f, 1.0f);
 
         bool cardinal = (deg % 90) == 0;
-        bool major = (deg % 45) == 0;
-        float tickH = cardinal ? h * 0.55f : (major ? h * 0.4f : h * 0.25f);
-        drawUIRect(px, y + h - tickH - 2.0f, 2.0f, tickH, 0,
-                   UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, cardinal ? 0.95f : 0.5f, false);
+        bool major = (deg % 30) == 0;
+        float tickH = cardinal ? h * 0.42f : (major ? h * 0.30f : h * 0.18f);
+        drawUIRect(px, y + h - tickH, 2.0f, tickH, 0, 1, 1, 1, (cardinal ? 0.85f : 0.5f) * edgeFade, false);
+
         if(major){
-            const char* name = "";
-            switch(deg){
-                case 0: name = "С"; break;   case 45: name = "СВ"; break;
-                case 90: name = "В"; break;  case 135: name = "ЮВ"; break;
-                case 180: name = "Ю"; break; case 225: name = "ЮЗ"; break;
-                case 270: name = "З"; break; case 315: name = "СЗ"; break;
+            if(cardinal){
+                const char* name = (deg == 0) ? "N" : (deg == 90) ? "E" : (deg == 180) ? "S" : "W";
+                drawText(px - 5.0f * s, y - 1.0f * s, 17.0f * s, name, 1, 1, 1, 0.9f * edgeFade);
+            } else {
+                snprintf(label, sizeof(label), "%d", deg);
+                float tw = 8.0f * s * (float)strlen(label) * 0.55f;
+                drawText(px - tw * 0.5f, y + 1.0f * s, 14.0f * s, label, 1, 1, 1, 0.55f * edgeFade);
             }
-            float tw = 11.0f * s * (float)strlen(name) * 0.5f;
-            drawText(px - tw * 0.5f, y + 3.0f * s, 20.0f * s, name,
-                     cardinal ? UI_ACCENT.r : UI_TEXT_DIM.r,
-                     cardinal ? UI_ACCENT.g : UI_TEXT_DIM.g,
-                     cardinal ? UI_ACCENT.b : UI_TEXT_DIM.b, 0.95f);
         }
     }
 
-    // Текущий курс числом — под полосой, и метка ровно по центру.
-    drawUIRect(x + w * 0.5f - 1.0f, y, 2.0f, h, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%.0f°", (double)heading);
-    drawText(x + w * 0.5f - 22.0f * s, y + h + 2.0f * s, 22.0f * s, buf,
-             UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f);
+    // Палка курса: она и есть «куда смотрит игрок». Число курса — под ней, чтобы не
+    // налезало на деления шкалы.
+    drawUIRect(x + w * 0.5f - 1.5f, y - 3.0f * s, 3.0f, h + 5.0f * s, 0, 1, 1, 1, 0.95f, false);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.0f", (double)heading);
+    drawText(x + w * 0.5f - 13.0f * s, y + h + 6.0f * s, 15.0f * s, buf, 1, 1, 1, 0.8f);
 }
 
 // ==================== ГЛАВНОЕ МЕНЮ ====================
@@ -1468,8 +1518,6 @@ int GameClient::run(int argc, char** argv){
         } else if(player_->isDead() && controls_.actionPressed()){
             Rng rng(splitMix64((uint64_t)nowMillis()));
             Vec3 spawn = world_->findSpawnPoint(rng);
-            for(int i = 0; i < 24 && !monuments_->isSafeSpawn(spawn.x, spawn.z); ++i)
-                spawn = world_->findSpawnPoint(rng);
             player_->spawn(spawn);
         } else if(!player_->isDead()){
             update(dt);

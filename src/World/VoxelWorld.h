@@ -17,6 +17,8 @@
 #include "World.h"
 
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -45,6 +47,9 @@ public:
     int   maxHeightBlocks() const { return maxY_; }
     int   waterLevelBlocks() const { return waterY_; }
 
+    // Мир изменился (правка игрока или растекание воды) — рендеру пора пересобрать чанк.
+    std::function<void(int x, int y, int z)> onBlockChanged;
+
     // ---- Правки игрока
     void  setBlock(int x, int y, int z, Block b);
     size_t editCount() const { return edits_.size(); }
@@ -55,6 +60,12 @@ public:
 
     // ---- Луч из глаз игрока: что он сейчас видит перед собой (добыча/установка).
     RayHit raycast(Vec3 origin, Vec3 dir, float maxDistance) const;
+
+    // ---- Вода. Выкопал яму у берега — её заливает; пробил стенку запруды — вода уходит.
+    // Симуляция ленивая: обсчитываются только клетки, попавшие в очередь после правок,
+    // и не больше maxCells за тик. Полноценная гидродинамика тут не нужна и не потянется.
+    int  updateWater(int maxCells);
+    size_t waterQueueSize() const { return waterQueue_.size(); }
 
     // ---- Декор чанка (деревья, руда). Мешер зовёт это перед сборкой геометрии;
     // повторный вызов бесплатен.
@@ -77,6 +88,10 @@ private:
 
     // Правки игрока: ключ — упакованные координаты блока.
     std::unordered_map<uint64_t, Block> edits_;
+    // Клетки, которые надо проверить на приток воды.
+    std::deque<uint64_t> waterQueue_;
+    void queueWaterAround(int x, int y, int z);
+
     // По чанку: самая нижняя и самая верхняя правка. Обновляется при каждой правке.
     struct EditRange { int minY = 1 << 30; int maxY = -(1 << 30); };
     std::unordered_map<uint64_t, EditRange> editRange_;

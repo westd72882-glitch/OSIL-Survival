@@ -27,6 +27,7 @@ struct WorldSample {
     Vec3  normal{0, 1, 0};
     float moisture01 = 0.0f;
     float temperature01 = 0.0f;
+    float zone01 = 0.5f;        // положение в зональной раскладке биомов (0 — запад, 1 — восток)
     float ambientTempC = 0.0f;  // «ощущаемая» температура биома с поправкой на высоту
     Biome biome = Biome::Ocean;
     bool  underwater = false;
@@ -49,6 +50,10 @@ public:
     float slopeAt(float x, float z) const;     // градусы
     float moistureAt(float x, float z) const;  // 0..1
     float temperatureAt(float x, float z) const; // 0..1
+    // Зональная раскладка биомов: 0 — пустынный запад, 1 — снежный восток, середина —
+    // равнина. Считается от координаты с искажением шумом, поэтому граница зон живая,
+    // но сами зоны остаются крупными и предсказуемыми.
+    float zoneAt(float x, float z) const;
     Biome biomeAt(float x, float z) const;
     WorldSample sampleAt(float x, float z) const;
 

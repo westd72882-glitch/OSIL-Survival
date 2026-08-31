@@ -28,10 +28,9 @@ const ResourceInfo kResources[(int)ResourceKind::COUNT] = {
 // берёза — к равнине, сухостой — к пустыне и болоту.
 void treeWeights(Biome b, float w[4]){
     switch(b){
-        case Biome::Forest:    w[0]=0.50f; w[1]=0.30f; w[2]=0.18f; w[3]=0.02f; break;
-        case Biome::Grassland: w[0]=0.25f; w[1]=0.20f; w[2]=0.50f; w[3]=0.05f; break;
-        case Biome::Snow:      w[0]=0.85f; w[1]=0.02f; w[2]=0.05f; w[3]=0.08f; break;
-        case Biome::Swamp:     w[0]=0.20f; w[1]=0.15f; w[2]=0.15f; w[3]=0.50f; break;
+        // Равнина — смешанный лес, зима — сосны, пустыня — сухие стволы.
+        case Biome::Grassland: w[0]=0.30f; w[1]=0.28f; w[2]=0.38f; w[3]=0.04f; break;
+        case Biome::Snow:      w[0]=0.88f; w[1]=0.02f; w[2]=0.04f; w[3]=0.06f; break;
         case Biome::Desert:    w[0]=0.05f; w[1]=0.05f; w[2]=0.05f; w[3]=0.85f; break;
         default:               w[0]=0.30f; w[1]=0.25f; w[2]=0.35f; w[3]=0.10f; break;
     }
@@ -146,8 +145,8 @@ std::vector<ResourceNode> ResourceMap::nodesInCell(int cx, int cz) const {
         else if(roll < 0.74f) kind = ResourceKind::Pumpkin;
         else if(roll < 0.86f) kind = ResourceKind::Hemp;
         else                  kind = ResourceKind::Mushroom;
-        // Грибы — обитатели леса и болота: в других биомах перебрасываем на куст.
-        if(kind == ResourceKind::Mushroom && s.biome != Biome::Forest && s.biome != Biome::Swamp)
+        // Грибы растут только на равнине: в песке и снегу им не место.
+        if(kind == ResourceKind::Mushroom && s.biome != Biome::Grassland)
             kind = ResourceKind::Bush;
 
         ResourceNode n;

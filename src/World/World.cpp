@@ -125,6 +125,19 @@ float World::generateMoistureRaw(float x, float z, float height) const {
     return clampf(m, 0.0f, 1.0f);
 }
 
+float World::zoneAt(float x, float z) const {
+    // Основа — координата X: запад пустынный, восток снежный. Прямую границу ломаем
+    // тем же шумом влажности (он крупный и плавный), иначе зоны выглядели бы полосами,
+    // нарезанными по линейке.
+    NoiseParams p; p.frequency = cfg_.moistureFrequency * 0.8f; p.octaves = 2;
+    float wobble = moistureNoise_.fbm(x, z, p) * 0.16f;
+    float t = x / cfg_.size + wobble;
+    // Север карты (z→0) тянет к равнине: там середина шкалы, где бы игрок ни стоял.
+    float northPull = 1.0f - clampf(z / cfg_.size * 1.6f, 0.0f, 1.0f);
+    t = lerpf(t, 0.5f, northPull * 0.55f);
+    return clampf(t, 0.0f, 1.0f);
+}
+
 float World::generateTemperatureRaw(float x, float z, float height) const {
     NoiseParams p; p.frequency = cfg_.temperatureFrequency; p.octaves = 3;
     float raw = noiseTo01(temperatureNoise_.fbm(x, z, p));
@@ -178,7 +191,7 @@ void World::generate(){
 
             bool underwater = h < cfg_.waterLevel;
             bool beach = !underwater && h < cfg_.waterLevel + cfg_.beachBand;
-            Biome b = classifyBiome(h01, moisture_[idx], temperature_[idx], underwater, beach);
+            Biome b = classifyBiome(h01, zoneAt(x, z), underwater, beach);
             biomeCount[(int)b]++;
         }
     }
@@ -187,14 +200,12 @@ void World::generate(){
     for(int i = 0; i < (int)Biome::COUNT; ++i) biomeFraction_[i] = (float)biomeCount[i] / total;
 
     generated_ = true;
-    LOG_INFO("мир готов за %lld мс; суша %.1f%%, лес %.1f%%, равнина %.1f%%, пустыня %.1f%%, "
-             "болото %.1f%%, снег %.1f%%, берег %.1f%%",
+    LOG_INFO("мир готов за %lld мс; суша %.1f%%, равнина %.1f%%, пустыня %.1f%%, "
+             "зима %.1f%%, берег %.1f%%",
              (long long)(nowMillis() - started),
              (double)(100.0f * (1.0f - biomeFraction_[(int)Biome::Ocean])),
-             (double)(100.0f * biomeFraction_[(int)Biome::Forest]),
              (double)(100.0f * biomeFraction_[(int)Biome::Grassland]),
              (double)(100.0f * biomeFraction_[(int)Biome::Desert]),
-             (double)(100.0f * biomeFraction_[(int)Biome::Swamp]),
              (double)(100.0f * biomeFraction_[(int)Biome::Snow]),
              (double)(100.0f * biomeFraction_[(int)Biome::Beach]));
 }
@@ -256,7 +267,7 @@ Biome World::biomeAt(float x, float z) const {
     float h01 = clampf(h / cfg_.maxHeight, 0.0f, 1.0f);
     bool underwater = h < cfg_.waterLevel;
     bool beach = !underwater && h < cfg_.waterLevel + cfg_.beachBand;
-    return classifyBiome(h01, moistureAt(x, z), temperatureAt(x, z), underwater, beach);
+    return classifyBiome(h01, zoneAt(x, z), underwater, beach);
 }
 
 WorldSample World::sampleAt(float x, float z) const {
@@ -269,7 +280,8 @@ WorldSample World::sampleAt(float x, float z) const {
     s.underwater = s.height < cfg_.waterLevel;
     bool beach = !s.underwater && s.height < cfg_.waterLevel + cfg_.beachBand;
     float h01 = clampf(s.height / cfg_.maxHeight, 0.0f, 1.0f);
-    s.biome = classifyBiome(h01, s.moisture01, s.temperature01, s.underwater, beach);
+    s.zone01 = zoneAt(x, z);
+    s.biome = classifyBiome(h01, s.zone01, s.underwater, beach);
     // Температура для метаболизма: базовая по биому минус поправка на высоту.
     float aboveWater = s.height - cfg_.waterLevel;
     s.ambientTempC = biomeInfo(s.biome).ambientTemp - clampf(aboveWater, 0.0f, 400.0f) * 0.0065f * 10.0f;
@@ -306,7 +318,7 @@ Vec3 World::findSpawnPoint(Rng& rng, int attempts) const {
             if(slopeAt(x, z) > maxSlope) continue;
             Biome b = biomeAt(x, z);
             // На снежных вершинах голый новичок замёрзнет за минуту — туда не спавним.
-            if(pass == 0 && b == Biome::Snow) continue;
+            if(pass == 0 && b == Biome::Snow) continue;   // голым на морозе не выжить
             return Vec3{ x, h, z };
         }
     }

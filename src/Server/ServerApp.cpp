@@ -114,13 +114,12 @@ void ServerApp::registerCommands(){
     console_.registerCommand({"world", "world", "параметры мира",
         [this](const std::vector<std::string>&) -> std::string {
             const float* f = world_->biomeFractions();
-            return fmt("%s\nбиомы: океан %.1f%%, берег %.1f%%, равнина %.1f%%, лес %.1f%%, "
-                       "пустыня %.1f%%, болото %.1f%%, снег %.1f%%",
+            return fmt("%s\nбиомы: океан %.1f%%, берег %.1f%%, равнина %.1f%%, "
+                       "пустыня %.1f%%, зима %.1f%%",
                        worldConfig_.describe().c_str(),
                        (double)(f[(int)Biome::Ocean] * 100.f), (double)(f[(int)Biome::Beach] * 100.f),
-                       (double)(f[(int)Biome::Grassland] * 100.f), (double)(f[(int)Biome::Forest] * 100.f),
-                       (double)(f[(int)Biome::Desert] * 100.f), (double)(f[(int)Biome::Swamp] * 100.f),
-                       (double)(f[(int)Biome::Snow] * 100.f));
+                       (double)(f[(int)Biome::Grassland] * 100.f),
+                       (double)(f[(int)Biome::Desert] * 100.f), (double)(f[(int)Biome::Snow] * 100.f));
         }});
 
     console_.registerCommand({"monuments", "monuments", "список монументов",

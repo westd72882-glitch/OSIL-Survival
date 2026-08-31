@@ -80,13 +80,37 @@ TEST(суши_достаточно_для_игры){
     CHECK_NEAR(sum, 1.0, 1e-3);
 }
 
-TEST(на_карте_есть_разные_биомы){
+TEST(на_карте_есть_все_три_биома){
     World w(testConfig());
     w.generate();
     const float* f = w.biomeFractions();
-    int present = 0;
-    for(int i = 0; i < (int)Biome::COUNT; ++i) if(f[i] > 0.001f) ++present;
-    CHECK_MSG(present >= 4, "мир вышел однообразным: меньше четырёх биомов");
+    // Зоны разложены по карте, значит каждая обязана присутствовать на любом сиде.
+    CHECK_MSG(f[(int)Biome::Grassland] > 0.02f, "нет равнины");
+    CHECK_MSG(f[(int)Biome::Desert] > 0.02f, "нет пустыни");
+    CHECK_MSG(f[(int)Biome::Snow] > 0.02f, "нет зимней зоны");
+    CHECK_MSG(f[(int)Biome::Ocean] > 0.05f, "нет океана вокруг острова");
+}
+
+TEST(зоны_биомов_разложены_по_сторонам_карты){
+    // Смысл зональной раскладки: игрок должен понимать, куда идти за песком, а куда
+    // за снегом. Проверяем, что запад в среднем «пустыннее» востока.
+    WorldConfig cfg = testConfig();
+    World w(cfg);
+    w.generate();
+    int westDesert = 0, eastSnow = 0, samples = 0;
+    for(float z = cfg.size * 0.35f; z < cfg.size * 0.9f; z += cfg.size * 0.05f){
+        for(int side = 0; side < 2; ++side){
+            float x = side == 0 ? cfg.size * 0.18f : cfg.size * 0.82f;
+            if(w.isWater(x, z)) continue;
+            Biome b = w.biomeAt(x, z);
+            if(side == 0 && b == Biome::Desert) ++westDesert;
+            if(side == 1 && b == Biome::Snow) ++eastSnow;
+            ++samples;
+        }
+    }
+    CHECK(samples > 4);
+    CHECK_MSG(westDesert > 0, "на западе не нашлось пустыни");
+    CHECK_MSG(eastSnow > 0, "на востоке не нашлось зимней зоны");
 }
 
 TEST(запросы_вне_карты_безопасны){
@@ -238,9 +262,17 @@ TEST(сутки_проходят_за_заданное_время){
     // Полчаса реального времени = половина суток: 8:00 -> 20:00.
     for(int i = 0; i < 30 * 60; ++i) env.tick(1.0f);
     CHECK_NEAR(env.timeOfDay(), 20.0, 0.05);
-    CHECK(env.isNight());
+    // 20:00 — закат: уже темнеет, но ещё не ночь. Ночь наступает к 21:00.
+    CHECK(env.lightLevel() < 0.9f);
+    env.setTimeOfDay(23.0f);
+    CHECK_MSG(env.isNight(), "в 23:00 обязана быть ночь");
+    env.setTimeOfDay(8.0f);
+    env.forceWeather(Weather::Clear, 0.0f);   // погода тоже гасит свет, здесь она мешает
+    CHECK_MSG(!env.isNight(), "в 8 утра уже день, а не сумерки");
+    CHECK_MSG(env.lightLevel() > 0.9f, "утро должно быть светлым: рассвет заканчивается к 6:40");
 
     // Ещё полчаса — новые сутки, снова 8 утра.
+    env.setTimeOfDay(20.0f);
     for(int i = 0; i < 30 * 60; ++i) env.tick(1.0f);
     CHECK_NEAR(env.timeOfDay(), 8.0, 0.05);
     CHECK(env.dayNumber() == 2);

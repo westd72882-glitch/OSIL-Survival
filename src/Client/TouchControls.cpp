@@ -34,7 +34,9 @@ void TouchControls::layout(int screenW, int screenH){
     r    = clampf(r,    28.0f * uiScale_, 70.0f * uiScale_);
     rBig = clampf(rBig, 38.0f * uiScale_, 92.0f * uiScale_);
 
-    stickRadius_ = clampf(mmToPx(22.0f), 90.0f * uiScale_, 190.0f * uiScale_);
+    // Джойстик уменьшен: прежние 22 мм занимали четверть экрана телефона и большой
+    // палец не доставал до края зоны, отчего движение «упиралось» в половину скорости.
+    stickRadius_ = clampf(mmToPx(15.0f), 62.0f * uiScale_, 128.0f * uiScale_);
 
     float pad = r * 0.55f;
     float rightX = (float)screenW - rBig - pad;
@@ -141,12 +143,14 @@ bool TouchControls::handleEvent(const SDL_Event& e){
             // обзору где угодно — и камера ехала от касания по левой половине и по
             // интерфейсу. Кнопки проверены выше и сюда не доходят.
             if(x < (float)screenW_ * 0.5f){
-                if(!stickActive_){
-                    stickActive_ = true;
-                    stickFinger_ = e.tfinger.fingerId;
-                    stickBaseX_ = stickCurX_ = x;
-                    stickBaseY_ = stickCurY_ = y;
-                }
+                // Новое касание слева ВСЕГДА перехватывает джойстик, даже если он
+                // считается активным. Так лечится залипание: если система потеряла
+                // FINGERUP (свернули игру, пришёл звонок), игрок просто касается экрана
+                // заново, и управление возвращается — а не «бежит само».
+                stickActive_ = true;
+                stickFinger_ = e.tfinger.fingerId;
+                stickBaseX_ = stickCurX_ = x;
+                stickBaseY_ = stickCurY_ = y;
                 return true;
             }
             if(!lookActive_){
@@ -281,6 +285,18 @@ bool TouchControls::inventoryPressed(){ bool v = invQueued_; invQueued_ = false;
 bool TouchControls::craftPressed(){ bool v = craftQueued_; craftQueued_ = false; return v; }
 bool TouchControls::mapPressed(){ bool v = mapQueued_; mapQueued_ = false; return v; }
 bool TouchControls::settingsPressed(){ bool v = optionsQueued_; optionsQueued_ = false; return v; }
+
+void TouchControls::releaseAllTouches(){
+    stickActive_ = false; stickFinger_ = -1;
+    lookActive_ = false;  lookFinger_ = -1;
+    lookDX = lookDY = 0.0f;
+    TouchButton* all[] = { &attack_, &place_, &jump_, &action_, &sprint_, &crouch_,
+                           &inventory_, &craft_, &map_, &options_ };
+    for(TouchButton* b : all){
+        b->finger = -1;
+        if(!b->toggle) b->active = false;   // тумблеры (бег, присед) состояние сохраняют
+    }
+}
 
 void TouchControls::setEditMode(bool on){
     editMode_ = on;

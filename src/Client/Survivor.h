@@ -54,6 +54,9 @@ public:
     float thirst() const { return thirst_; }
     float stamina() const { return stamina_; }
     float radiation() const { return radiation_; }
+    // Дыхание под водой: 100 — полный вдох, 0 — захлёбывается и теряет здоровье.
+    float oxygen() const { return oxygen_; }
+    bool  headUnderwater() const { return headUnderwater_; }
     float bodyTemp() const { return bodyTemp_; }
     bool isDead() const { return health_ <= 0.0f; }
     void setAmbientRadiation(float radPerSec){ ambientRadiation_ = radPerSec; }
@@ -86,6 +89,11 @@ private:
 
     float health_ = 100.0f, hunger_ = 100.0f, thirst_ = 100.0f, stamina_ = 100.0f;
     float radiation_ = 0.0f, ambientRadiation_ = 0.0f;
+    float oxygen_ = 100.0f;
+    bool  headUnderwater_ = false;
+    // Сглаживание шага: сколько метров камера ещё «догоняет» после подъёма или спуска
+    // по блоку. Без него шаг на ступеньку выглядит рывком телепорта.
+    float stepSmooth_ = 0.0f;
     float bodyTemp_ = 36.6f;
 
     RayHit target_;

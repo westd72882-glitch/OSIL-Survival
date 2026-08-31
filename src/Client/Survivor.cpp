@@ -44,12 +44,16 @@ void Survivor::spawn(Vec3 position){
     fallStartY_ = pos_.y;
     health_ = hunger_ = thirst_ = stamina_ = 100.0f;
     radiation_ = 0.0f;
+    oxygen_ = 100.0f;
+    stepSmooth_ = 0.0f;
     miningProgress_ = 0.0f;
     say("Вы очнулись на острове. Ломайте блоки — из них всё и строится.");
 }
 
 Vec3 Survivor::eyePosition() const {
-    return Vec3{ pos_.x, pos_.y + (crouch_ ? EYE_CROUCH : EYE_OFFSET), pos_.z };
+    // stepSmooth_ — остаток сглаживания шага: камера идёт к своей настоящей высоте за
+    // доли секунды, поэтому подъём на блок читается как шаг, а не как рывок.
+    return Vec3{ pos_.x, pos_.y + (crouch_ ? EYE_CROUCH : EYE_OFFSET) - stepSmooth_, pos_.z };
 }
 
 Vec3 Survivor::lookDirection() const {
@@ -121,15 +125,38 @@ void Survivor::updateMovement(const SurvivorInput& in, float dt){
         // Автоматический шаг на блок вверх: на телефоне заставлять жать «прыжок» перед
         // каждой ступенькой — верный способ бросить игру.
         Vec3 stepUp = tryX; stepUp.y += STEP_HEIGHT;
-        if(onGround_ && !collides(stepUp)){ next = stepUp; }
+        if(onGround_ && !collides(stepUp)){ next = stepUp; stepSmooth_ += STEP_HEIGHT; }
     }
     Vec3 tryZ = next; tryZ.z += dz;
     if(!collides(tryZ)) next = tryZ;
     else {
         Vec3 stepUp = tryZ; stepUp.y += STEP_HEIGHT;
-        if(onGround_ && !collides(stepUp)){ next = stepUp; }
+        if(onGround_ && !collides(stepUp)){ next = stepUp; stepSmooth_ += STEP_HEIGHT; }
     }
     pos_.x = next.x; pos_.y = next.y; pos_.z = next.z;
+
+    // Спуск по ступенькам: если под ногами обрыв ровно в один блок, не отпускаем игрока
+    // в свободное падение, а «прилипаем» к нижней ступени. Иначе спуск по лестнице из
+    // блоков превращается в череду коротких падений с подпрыгиванием камеры.
+    if(onGround_ && velY_ <= 0.0f && !inWater_){
+        Vec3 below = pos_; below.y -= 0.06f;
+        if(!collides(below)){
+            Vec3 step = pos_; step.y -= 1.0f;
+            if(collides(step)){
+                float target = floorf(pos_.y) - 1.0f + 1.0f;   // верх нижней ступени
+                float drop = pos_.y - target;
+                if(drop > 0.0f && drop <= 1.05f){
+                    pos_.y = target;
+                    stepSmooth_ -= drop;
+                }
+            }
+        }
+    }
+
+    // Сглаживание догоняет истинную высоту примерно за 0.12 с.
+    float decay = clampf(dt * 9.0f, 0.0f, 1.0f);
+    stepSmooth_ -= stepSmooth_ * decay;
+    stepSmooth_ = clampf(stepSmooth_, -1.2f, 1.2f);
 
     // Границы карты.
     float size = voxels_.world().config().size;
@@ -184,6 +211,22 @@ void Survivor::updateMovement(const SurvivorInput& in, float dt){
 }
 
 void Survivor::updateMetabolism(float dt){
+    // ---- Дыхание. Голова под водой — воздух кончается примерно за 45 секунд, дальше
+    // игрок захлёбывается. На поверхности вдох восстанавливается быстро: наказывать за
+    // ныряние дольше, чем длится само ныряние, незачем.
+    int eyeX = (int)floorf(pos_.x), eyeZ = (int)floorf(pos_.z);
+    int eyeY = (int)floorf(pos_.y + (crouch_ ? EYE_CROUCH : EYE_OFFSET));
+    headUnderwater_ = (voxels_.blockAt(eyeX, eyeY, eyeZ) == Block::Water);
+    if(headUnderwater_){
+        oxygen_ = clampf(oxygen_ - (100.0f / 45.0f) * dt, 0.0f, 100.0f);
+        if(oxygen_ <= 0.0f){
+            health_ = clampf(health_ - 12.0f * dt, 0.0f, 100.0f);
+            if(health_ <= 0.0f) say("Вы утонули");
+        }
+    } else {
+        if(oxygen_ < 100.0f) oxygen_ = clampf(oxygen_ + 30.0f * dt, 0.0f, 100.0f);
+    }
+
     const BiomeInfo& bi = biomeInfo(voxels_.world().biomeAt(pos_.x, pos_.z));
     float effort = 1.0f + (sprinting_ ? 0.8f : 0.0f);
     hunger_ = clampf(hunger_ - HUNGER_PER_SEC * effort * dt, 0.0f, 100.0f);

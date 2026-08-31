@@ -76,20 +76,27 @@ int Environment::dayNumber() const {
 }
 
 float Environment::sunAltitude() const {
-    // Простая модель: солнце встаёт в 6:00, садится в 18:00, максимум в полдень.
+    // Солнце встаёт в 6:00 и садится в 20:00 — этим определяется только его положение
+    // на небе; яркость мира считается отдельно (см. lightLevel).
     float h = timeOfDay();
-    float angle = (h - 6.0f) / 12.0f * 3.14159265f; // 0 на восходе, pi на закате
-    return sinf(angle) * 1.4f - 0.35f;              // ночью уходит ниже горизонта
+    float angle = (h - 6.0f) / 14.0f * 3.14159265f;
+    return sinf(angle) * 1.15f - 0.12f;
 }
 
-bool Environment::isNight() const { return sunAltitude() < 0.0f; }
+bool Environment::isNight() const { return lightLevel() < 0.35f; }
 
 float Environment::lightLevel() const {
-    float sun = clampf(sunAltitude() / 1.05f, -0.35f, 1.0f);
-    float base = clampf(sun, 0.0f, 1.0f);
+    // Раньше яркость шла напрямую от высоты солнца, и рассвет тянулся до девяти утра:
+    // в семь и в восемь мир оставался сумеречным, хотя солнце давно взошло. Теперь
+    // день задан явно: рассвет 5:00-6:40, полный день до 19:20, закат до 21:00,
+    // дальше ночь. Переходы плавные (smoothstep), поэтому «щелчка» между днём и ночью нет.
+    float h = timeOfDay();
+    float dawn = smoothstepf(5.0f, 6.7f, h);
+    float dusk = 1.0f - smoothstepf(19.3f, 21.0f, h);
+    float day = clampf(dawn * dusk, 0.0f, 1.0f);
     // Даже глухой ночью есть луна и звёзды: 0.06 — минимум, иначе игра становится
     // чёрным экраном, а не «страшной ночью».
-    base = 0.06f + base * 0.94f;
+    float base = 0.06f + day * 0.94f;
     switch(weather_){
         case Weather::Storm:  base *= 0.45f; break;
         case Weather::Rain:   base *= 0.7f;  break;

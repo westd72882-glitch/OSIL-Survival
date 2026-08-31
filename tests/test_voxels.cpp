@@ -162,8 +162,10 @@ TEST(в_мире_есть_деревья_из_блоков){
     VoxelWorld v(w, res);
 
     int wood = 0, leaves = 0;
-    for(int x = 200; x < 280; ++x)
-        for(int z = 200; z < 280; ++z){
+    // Ищем по широкой полосе: деревья с кроной растут на равнине, а в пустыне стоит
+    // сухостой без листвы — на узком участке можно попасть только в него.
+    for(int x = 120; x < 640; x += 2)
+        for(int z = 120; z < 640; z += 2){
             int s = v.surfaceY(x, z);
             for(int y = s + 1; y < s + 12; ++y){
                 Block b = v.blockAt(x, y, z);
@@ -171,8 +173,8 @@ TEST(в_мире_есть_деревья_из_блоков){
                 if(b == Block::Leaves) ++leaves;
             }
         }
-    CHECK_MSG(wood > 0, "в лесу не нашлось ни одного блока ствола");
-    CHECK_MSG(leaves > wood, "листвы должно быть больше, чем стволов");
+    CHECK_MSG(wood > 0, "не нашлось ни одного блока ствола");
+    CHECK_MSG(leaves > 0, "не нашлось ни одного блока листвы");
 }
 
 TEST(глубокая_яма_расширяет_диапазон_чанка){
@@ -208,4 +210,58 @@ TEST(глубокая_яма_расширяет_диапазон_чанка){
     int nMin = 0, nMax = 0;
     v.editYRange(cx + 1, cz, nMin, nMax);
     CHECK_MSG(nMin <= s - 5, "соседний чанк не узнал о яме у своей границы");
+}
+
+TEST(вода_растекается_в_выкопанную_яму){
+    // Копнул у берега ниже уровня моря — яму должно залить. Симуляция ленивая: клетки
+    // попадают в очередь при правках, поэтому проверяем именно связку setBlock + updateWater.
+    WorldConfig cfg = voxelTestConfig(909);
+    World w(cfg); w.generate();
+    ResourceMap res(w); res.generate();
+    VoxelWorld v(w, res);
+
+    // Ищем сушу вплотную к воде и ниже уровня моря по соседству.
+    int bx = -1, bz = -1;
+    for(int x = 30; x < (int)cfg.size - 30 && bx < 0; ++x){
+        for(int z = 30; z < (int)cfg.size - 30; ++z){
+            if(w.isWater((float)x, (float)z)) continue;
+            int sy = v.surfaceY(x, z);
+            if(sy > v.waterLevelBlocks() + 1 || sy < v.waterLevelBlocks() - 2) continue;
+            // Рядом должна быть вода — иначе заливать нечем.
+            if(v.blockAt(x + 1, sy, z) == Block::Water || v.blockAt(x - 1, sy, z) == Block::Water ||
+               v.blockAt(x, sy, z + 1) == Block::Water || v.blockAt(x, sy, z - 1) == Block::Water){
+                bx = x; bz = z;
+                break;
+            }
+        }
+    }
+    if(bx < 0) return;   // на этом сиде подходящего берега не нашлось — не повод падать
+
+    int sy = v.surfaceY(bx, bz);
+    CHECK(blockIsSolid(v.blockAt(bx, sy, bz)));
+    v.setBlock(bx, sy, bz, Block::Air);
+    CHECK(v.blockAt(bx, sy, bz) == Block::Air);
+    CHECK_MSG(v.waterQueueSize() > 0, "правка не поставила клетку в очередь на воду");
+
+    int changed = 0;
+    for(int i = 0; i < 40; ++i) changed += v.updateWater(64);
+    CHECK_MSG(v.blockAt(bx, sy, bz) == Block::Water, "яму у берега не залило водой");
+    CHECK(changed > 0);
+}
+
+TEST(вода_не_поднимается_выше_уровня_моря){
+    // Иначе один сломанный блок на горе превратил бы остров в аквариум.
+    WorldConfig cfg = voxelTestConfig(4242);
+    World w(cfg); w.generate();
+    ResourceMap res(w); res.generate();
+    VoxelWorld v(w, res);
+
+    int x = 0, z = 0;
+    CHECK(findLandColumn(w, v, x, z));
+    int s = v.surfaceY(x, z);
+    CHECK(s > v.waterLevelBlocks() + 3);
+
+    v.setBlock(x, s, z, Block::Air);
+    for(int i = 0; i < 40; ++i) v.updateWater(64);
+    CHECK_MSG(v.blockAt(x, s, z) == Block::Air, "вода залезла выше уровня моря");
 }

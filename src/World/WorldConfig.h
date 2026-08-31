@@ -12,14 +12,14 @@ class Config;
 struct WorldConfig {
     uint64_t seed = 0;
 
-    // ---- Размеры. По ТЗ карта 4000x4000 метров; координаты идут от 0 до size.
-    float size = 4000.0f;
+    // ---- Размеры. Карта квадратная, координаты идут от 0 до size.
+    float size = 1000.0f;
     // Шаг сетки высот в метрах. 4 м — компромисс: 1000x1000 отсчётов (4 МБ float),
     // сервер держит всю карту в памяти, а высота между узлами берётся билинейно.
     float heightGridStep = 4.0f;
 
     // ---- Вертикаль (метры над уровнем моря).
-    float maxHeight   = 220.0f; // высшая точка снежных гор
+    float maxHeight   = 120.0f; // высшая точка гор
     float waterLevel  = 18.0f;  // уровень океана: всё ниже — вода
     float beachBand   = 4.0f;   // полоса пляжа над водой
 
@@ -47,8 +47,11 @@ struct WorldConfig {
     float resourceCellSize = 12.0f;
     float resourceDensity  = 1.0f;
 
+    // Служебный признак: частоты уже приведены к размеру карты (см. sanitize).
+    bool frequenciesScaled = false;
+
     // ---- Монументы (радиационные зоны и лут-точки).
-    int   monumentCount = 12;
+    int   monumentCount = 0;   // локации отключены до этапа 5
     float monumentMinSpacing = 380.0f;
 
     // ---- Суточный цикл: полные сутки за 60 минут реального времени (ТЗ).

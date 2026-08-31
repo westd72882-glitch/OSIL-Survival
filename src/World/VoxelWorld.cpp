@@ -59,7 +59,6 @@ Block VoxelWorld::terrainBlock(int x, int y, int z, int surface) const {
         switch(b){
             case Biome::Desert: case Biome::Beach: return Block::Sand;
             case Biome::Snow:                      return Block::Snow;
-            case Biome::Swamp:                     return Block::Mud;
             case Biome::Ocean:                     return Block::Sand;
             default: break;
         }
@@ -217,12 +216,64 @@ bool VoxelWorld::isSolidAt(int x, int y, int z) const {
 void VoxelWorld::setBlock(int x, int y, int z, Block b){
     if(y < 0 || y > maxY_) return;
     edits_[packKey(x, y, z)] = b;
+    if(onBlockChanged) onBlockChanged(x, y, z);
+    queueWaterAround(x, y, z);
 
     int cx = (int)floorf((float)x / CHUNK_SIZE);
     int cz = (int)floorf((float)z / CHUNK_SIZE);
     EditRange& r = editRange_[packChunk(cx, cz)];
     if(y < r.minY) r.minY = y;
     if(y > r.maxY) r.maxY = y;
+}
+
+void VoxelWorld::queueWaterAround(int x, int y, int z){
+    // В очередь попадает сама клетка и шесть соседей: вода могла как прийти в неё,
+    // так и уйти из соседней (сломали дно запруды).
+    static const int dx[7] = { 0, 1,-1, 0, 0, 0, 0 };
+    static const int dy[7] = { 0, 0, 0, 1,-1, 0, 0 };
+    static const int dz[7] = { 0, 0, 0, 0, 0, 1,-1 };
+    for(int i = 0; i < 7; ++i){
+        int nx = x + dx[i], ny = y + dy[i], nz = z + dz[i];
+        if(ny < 0 || ny > maxY_) continue;
+        // Выше уровня моря вода не поднимается: источник у нас один — океан.
+        if(ny > waterY_) continue;
+        waterQueue_.push_back(packKey(nx, ny, nz));
+        // Очередь ограничена: при массовом копании она иначе растёт быстрее, чем
+        // обсчитывается, и съедает память.
+        if(waterQueue_.size() > 20000) waterQueue_.pop_front();
+    }
+}
+
+int VoxelWorld::updateWater(int maxCells){
+    int changed = 0;
+    for(int i = 0; i < maxCells && !waterQueue_.empty(); ++i){
+        uint64_t key = waterQueue_.front();
+        waterQueue_.pop_front();
+
+        // Распаковка ключа обратно в координаты (см. packKey).
+        int y = (int)(key & 0xFFF);
+        int z = (int)((key >> 12) & 0x1FFFFF);
+        int x = (int)((key >> 33) & 0x1FFFFF);
+        // Знак: координаты укладывались по модулю, восстанавливаем отрицательные.
+        if(x >= (1 << 20)) x -= (1 << 21);
+        if(z >= (1 << 20)) z -= (1 << 21);
+
+        if(y > waterY_ || y < 0) continue;
+        if(blockAt(x, y, z) != Block::Air) continue;
+
+        // Вода приходит сверху или с боков — как в море: свободная клетка ниже уровня
+        // моря, у которой есть водяной сосед, заполняется.
+        bool fed = blockAt(x, y + 1, z) == Block::Water ||
+                   blockAt(x + 1, y, z) == Block::Water ||
+                   blockAt(x - 1, y, z) == Block::Water ||
+                   blockAt(x, y, z + 1) == Block::Water ||
+                   blockAt(x, y, z - 1) == Block::Water;
+        if(!fed) continue;
+
+        setBlock(x, y, z, Block::Water);
+        ++changed;
+    }
+    return changed;
 }
 
 void VoxelWorld::editYRange(int cx, int cz, int& outMinY, int& outMaxY) const {
