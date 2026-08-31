@@ -15,6 +15,10 @@ void drawUIRect(float x, float y, float w, float h, GLuint tex, float r, float g
 void drawUIRectUV(float x, float y, float w, float h, GLuint tex,
                   float u0, float v0, float u1, float v1, float a);
 
+// Повёрнутая картинка вокруг своего центра. Нужна метке игрока на карте: она уже
+// нарисована «носом вверх», и показать курс — значит просто повернуть её.
+void drawUIRectRotated(float cx, float cy, float w, float h, GLuint tex, float angle, float a);
+
 extern GLuint uiCircleVAO, uiCircleVBO;
 extern const int UI_CIRCLE_SEGS;
 void initUICircle();

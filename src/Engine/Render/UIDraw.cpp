@@ -41,6 +41,39 @@ void drawUIRectUV(float x, float y, float w, float h, GLuint tex,
     glBindVertexArray(0);
 }
 
+void drawUIRectRotated(float cx, float cy, float w, float h, GLuint tex, float angle, float a){
+    float ca = cosf(angle), sa = sinf(angle);
+    float hw = w * 0.5f, hh = h * 0.5f;
+    // Углы в своей системе, затем поворот вокруг центра.
+    const float lx[4] = { -hw,  hw,  hw, -hw };
+    const float ly[4] = { -hh, -hh,  hh,  hh };
+    const float lu[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
+    const float lv[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    float px[4], py[4];
+    for(int i = 0; i < 4; ++i){
+        px[i] = cx + lx[i] * ca - ly[i] * sa;
+        py[i] = cy + lx[i] * sa + ly[i] * ca;
+    }
+    const int idx[6] = { 0, 1, 2, 0, 2, 3 };
+    float verts[6][4];
+    for(int i = 0; i < 6; ++i){
+        int k = idx[i];
+        verts[i][0] = px[k]; verts[i][1] = py[k];
+        verts[i][2] = lu[k]; verts[i][3] = lv[k];
+    }
+    glBindVertexArray(uiVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, uiVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+    glUseProgram(uiProg);
+    glUniform4f(uiColorLoc, 1,1,1,a);
+    glUniform1i(uiUseTextureLoc, 1);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(uiTexLoc, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}
+
 void drawUIRect(float x, float y, float w, float h, GLuint tex, float r, float g, float b, float a, bool useTexture){
     float verts[6][4] = {
         {x,   y,   0,0},

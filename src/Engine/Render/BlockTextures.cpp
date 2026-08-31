@@ -99,8 +99,12 @@ void makeWaterLayer(std::vector<uint8_t>& out){
     for(int y = 0; y < LAYER_SIZE; ++y){
         for(int x = 0; x < LAYER_SIZE; ++x){
             float fx = (float)x / LAYER_SIZE, fy = (float)y / LAYER_SIZE;
-            float wave = 0.5f + 0.5f * SDL_sinf(fx * 12.566f) * SDL_sinf(fy * 9.42f);
-            float v = 0.72f + wave * 0.28f;
+            // Две волны разной частоты и слабый контраст: одна синусоида давала
+            // крупную «чешую», которая на большой глади бросалась в глаза сильнее
+            // самой воды. Пока своей картинки воды нет, рябь должна быть еле заметной.
+            float wave = SDL_sinf(fx * 25.13f + SDL_sinf(fy * 12.57f) * 0.6f) * 0.5f
+                       + SDL_sinf(fy * 37.70f + SDL_sinf(fx * 18.85f) * 0.4f) * 0.5f;
+            float v = 0.94f + wave * 0.06f;
             uint8_t* d = &out[((size_t)y * LAYER_SIZE + x) * 4];
             d[0] = (uint8_t)(120 * v);
             d[1] = (uint8_t)(190 * v);

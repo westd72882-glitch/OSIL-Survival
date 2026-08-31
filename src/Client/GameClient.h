@@ -52,6 +52,12 @@ private:
     void initWorld();
     void buildMinimapTexture();
     void loadInterfaceTextures();
+    // Метки игрока на карте: касание ставит, касание по метке снимает.
+    std::vector<Vec2> mapMarks_;
+    Vec2  mapTapStart_{0,0};
+    Uint32 mapTapTime_ = 0;
+    bool  mapTapValid_ = false;
+    void  toggleMapMark(float screenX, float screenY);
     void drawMenuBackground();
     void bindBlockTextures();
     // Дальность прорисовки в метрах: настройка игрока, зажатая уровнем качества.
@@ -73,7 +79,6 @@ private:
     void renderBlockHighlight(const Mat4& view, const Mat4& proj, Vec3 camPos);
     // Предмет в руке: каменный топорик, собранный из кубов. Рисуется в пространстве
     // камеры, поэтому всегда перед лицом и не проваливается сквозь стены.
-    void renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, float dt);
     void renderHud();
     void renderOverlay();
     void renderSettings();
@@ -135,8 +140,6 @@ private:
     int forcedW_ = 0, forcedH_ = 0;   // --size: проверка раскладки под экран телефона
     float startX_ = -1.0f, startZ_ = -1.0f;   // --pos: старт в заданной точке карты
     GLuint highlightVao_ = 0, highlightVbo_ = 0;
-    GLuint heldVao_ = 0, heldVbo_ = 0;
-    float  heldBobPhase_ = 0.0f;   // фаза покачивания при ходьбе
 
     float yaw_ = 0.0f, pitch_ = 0.0f;
     float animTime_ = 0.0f;

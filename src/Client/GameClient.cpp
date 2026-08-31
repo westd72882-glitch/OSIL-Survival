@@ -184,22 +184,6 @@ bool GameClient::initGraphics(){
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(6*sizeof(float)));
     glBindVertexArray(0);
 
-    // Буфер предмета в руке: топорик — десяток кубов, вершины пересчитываются каждый
-    // кадр на процессоре (их сотни, это дешевле, чем отдельный шейдер с матрицей модели).
-    glGenVertexArrays(1, &heldVao_);
-    glGenBuffers(1, &heldVbo_);
-    glBindVertexArray(heldVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, heldVbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(VoxelVertex) * 512, nullptr, GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(3*sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(6*sizeof(float)));
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(9*sizeof(float)));
-    glBindVertexArray(0);
     return true;
 }
 
@@ -207,105 +191,6 @@ bool GameClient::initGraphics(){
 // Каменный топорик — стартовый инструмент, и он должен быть виден: без предмета в руке
 // от первого лица непонятно, чем ты вообще бьёшь. Модель собрана из кубов прямо здесь:
 // отдельного формата моделей у проекта нет, а топорик из пяти брусков читается сразу.
-void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, float dt){
-    // Покачивание в такт шагам. Фаза набегает от скорости, поэтому на бегу рука ходит
-    // чаще, а стоя — замирает.
-    heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
-    float bob = (player_->speed() > 0.4f && player_->onGround()) ? sinf(heldBobPhase_ * 2.0f) * 0.012f : 0.0f;
-    float swing = player_->miningProgress() > 0.01f ? sinf(heldBobPhase_ * 9.0f) * 0.10f : 0.0f;
-
-    Vec3 right = v3norm(v3cross(forward, Vec3{0,1,0}));
-    Vec3 up = v3cross(right, forward);
-
-    // Топорик собран в своей плоской системе (x — поперёк рукояти, y — вдоль неё),
-    // затем повёрнут и сдвинут в правый нижний угол экрана: так его держат от первого лица.
-    struct Part { float cx, cy, cz, hx, hy, hz; Block block; };
-    const Part parts[] = {
-        // рукоять — длинный тонкий брусок
-        { 0.000f, -0.090f, 0.0f, 0.0085f, 0.075f, 0.0085f, Block::Wood },
-        { 0.000f,  0.035f, 0.0f, 0.0085f, 0.055f, 0.0085f, Block::Wood },
-        // каменное лезвие: обух и скошенное остриё
-        { -0.012f, 0.098f, 0.0f, 0.021f,  0.026f, 0.011f,  Block::Stone },
-        { -0.040f, 0.104f, 0.0f, 0.014f,  0.019f, 0.009f,  Block::Stone },
-        { -0.055f, 0.108f, 0.0f, 0.008f,  0.012f, 0.007f,  Block::Stone },
-    };
-
-    // Замах: во время удара топорик проворачивается вперёд и уходит немного вглубь экрана.
-    const float baseAngle = 0.42f;              // наклон рукояти в состоянии покоя
-    float angle = baseAngle - swing * 3.2f;
-    float ca = cosf(angle), sa2 = sinf(angle);
-    const float HELD_SCALE = 0.86f;             // общий размер топорика в кадре
-    const float offX = 0.172f, offZ = 0.52f;    // положение кисти относительно камеры
-    float offY = -0.186f + bob - swing * 0.35f;
-
-    std::vector<VoxelVertex> verts;
-    verts.reserve(6 * 6 * 5);
-    static const float faceDirs[6][3] = { {0,1,0}, {0,-1,0}, {1,0,0}, {-1,0,0}, {0,0,1}, {0,0,-1} };
-    for(const Part& p : parts){
-        float tintR, tintG, tintB;
-        blockTextureTint(p.block, tintR, tintG, tintB);
-        float layer = (float)blockTextureLayer(p.block);
-        for(int f = 0; f < 6; ++f){
-            // Собираем грань бруска: четыре угла в локальных координатах камеры.
-            float n[3] = { faceDirs[f][0], faceDirs[f][1], faceDirs[f][2] };
-            float corners[4][3];
-            int axis = (n[0] != 0) ? 0 : (n[1] != 0) ? 1 : 2;
-            int a = (axis + 1) % 3, b2 = (axis + 2) % 3;
-            float half[3] = { p.hx, p.hy, p.hz };
-            float center[3] = { p.cx, p.cy, p.cz };
-            for(int k = 0; k < 4; ++k){
-                float sa = (k == 0 || k == 3) ? -1.0f : 1.0f;
-                float sb = (k < 2) ? -1.0f : 1.0f;
-                corners[k][axis] = center[axis] + half[axis] * (n[axis] > 0 ? 1.0f : -1.0f);
-                corners[k][a] = center[a] + half[a] * sa;
-                corners[k][b2] = center[b2] + half[b2] * sb;
-            }
-            // Плоское затенение по нормали — как у блоков мира.
-            float face = (n[1] > 0.5f) ? 1.0f : (n[1] < -0.5f ? 0.5f : (fabsf(n[0]) > 0.5f ? 0.75f : 0.88f));
-            // Нормаль поворачивается вместе с топориком, иначе затенение «плывёт» при замахе.
-            float rnx = n[0] * ca - n[1] * sa2;
-            float rny = n[0] * sa2 + n[1] * ca;
-            VoxelVertex quad[4];
-            for(int k = 0; k < 4; ++k){
-                float ox = corners[k][0] * HELD_SCALE, oy = corners[k][1] * HELD_SCALE;
-                float lx = ox * ca - oy * sa2 + offX;
-                float ly = ox * sa2 + oy * ca + offY;
-                float lz = corners[k][2] * HELD_SCALE + offZ;
-                Vec3 world{
-                    eye.x + right.x * lx + up.x * ly + forward.x * lz,
-                    eye.y + right.y * lx + up.y * ly + forward.y * lz,
-                    eye.z + right.z * lx + up.z * ly + forward.z * lz
-                };
-                Vec3 wn{
-                    right.x * rnx + up.x * rny + forward.x * n[2],
-                    right.y * rnx + up.y * rny + forward.y * n[2],
-                    right.z * rnx + up.z * rny + forward.z * n[2]
-                };
-                float uu = (k == 1 || k == 2) ? 1.0f : 0.0f;
-                float vv = (k >= 2) ? 1.0f : 0.0f;
-                quad[k] = VoxelVertex{ world.x, world.y, world.z, wn.x, wn.y, wn.z,
-                                       tintR * face, tintG * face, tintB * face, uu, vv, layer };
-            }
-            verts.push_back(quad[0]); verts.push_back(quad[1]); verts.push_back(quad[2]);
-            verts.push_back(quad[0]); verts.push_back(quad[2]); verts.push_back(quad[3]);
-        }
-    }
-
-    glUseProgram(voxelProg);
-    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
-    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
-    glUniform1f(voxelFogDensityLoc, 0.0f);   // рука не тонет в тумане
-    glUniform1f(voxelAlphaLoc, 1.0f);
-    bindBlockTextures();
-    glBindVertexArray(heldVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, heldVbo_);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
-    // Глубину для руки очищаем: иначе топорик тонет в блоке, к которому подошёл вплотную.
-    glClear(GL_DEPTH_BUFFER_BIT);
-    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
-    glBindVertexArray(0);
-}
-
 void GameClient::initWorld(){
     WorldConfig cfg;
     cfg.seed = seedFromString(WORLD_SEED_TEXT);
@@ -525,8 +410,11 @@ bool GameClient::handleSettingsTouch(float x, float y){
             }
             case 6: settings.showDebugInfo = !settings.showDebugInfo; break;
             case 7:     // редактор раскладки кнопок
+                // Кнопки живут в игре, а не в меню, поэтому из главного меню сначала
+                // входим в игру: иначе строка нажималась, а расставлять было нечего.
                 controls_.setEditMode(true);
                 overlay_ = Overlay::None;
+                if(state_ != GameState::Playing) state_ = GameState::Playing;
                 break;
             case 8:     // сброс раскладки
                 controls_.resetLayout();
@@ -657,6 +545,34 @@ bool GameClient::handleOverlayTouch(float x, float y){
     return true;
 }
 
+// Метка на карте: короткое касание по пустому месту ставит флажок, касание по уже
+// стоящему флажку его снимает. Радиус попадания в экранных пикселях, а не в метрах:
+// на любом масштабе палец должен попадать по нарисованному значку, а не по точке.
+void GameClient::toggleMapMark(float screenX, float screenY){
+    const WorldConfig& cfg = world_->config();
+    float aspect = (float)SCR_W / (float)SCR_H;
+    float spanZ = cfg.size / mapZoom_;
+    float spanX = spanZ * aspect;
+    float x0 = mapCenterX_ - spanX * 0.5f, z0 = mapCenterZ_ - spanZ * 0.5f;
+
+    float wx = x0 + screenX / (float)SCR_W * spanX;
+    float wz = z0 + screenY / (float)SCR_H * spanZ;
+    if(wx < 0.0f || wx > cfg.size || wz < 0.0f || wz > cfg.size) return;
+
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float hitPx = 26.0f * s;
+    float hitX = hitPx / (float)SCR_W * spanX;
+    float hitZ = hitPx / (float)SCR_H * spanZ;
+    for(size_t i = 0; i < mapMarks_.size(); ++i){
+        if(fabsf(mapMarks_[i].x - wx) <= hitX && fabsf(mapMarks_[i].y - wz) <= hitZ){
+            mapMarks_.erase(mapMarks_.begin() + (long)i);
+            return;
+        }
+    }
+    // Больше сотни флажков — это уже не ориентиры, а мусор на карте.
+    if(mapMarks_.size() < 100) mapMarks_.push_back(Vec2{ wx, wz });
+}
+
 bool GameClient::handleMapEvent(const SDL_Event& e){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     float closeSize = 54.0f * s;
@@ -689,6 +605,13 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
             } else if(mapFingers_.size() == 1){
                 mapDragging_ = true;
                 mapFollowsPlayer_ = false;
+                // Запоминаем начало касания: если палец почти не сдвинулся и быстро
+                // поднялся — это тап по карте, а не перетаскивание.
+                mapTapStart_ = Vec2{ x, y };
+                mapTapTime_ = SDL_GetTicks();
+                mapTapValid_ = true;
+            } else {
+                mapTapValid_ = false;
             }
             return true;
         }
@@ -705,6 +628,7 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
                     mapZoom_ = clampf(pinchBaseZoom_ * (dist / pinchBaseDist_), 1.0f, 12.0f);
                 return true;
             }
+            if(mapTapValid_ && v2dist(Vec2{ x, y }, mapTapStart_) > 14.0f) mapTapValid_ = false;
             if(mapDragging_){
                 float spanZ = world_->config().size / mapZoom_;
                 float spanX = spanZ * (float)SCR_W / (float)SCR_H;
@@ -714,9 +638,17 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
             return true;
         }
         case SDL_FINGERUP: {
+            float x = e.tfinger.x * (float)SCR_W, y = e.tfinger.y * (float)SCR_H;
             mapFingers_.erase(e.tfinger.fingerId);
             if(mapFingers_.size() < 2) pinchBaseDist_ = 0.0f;
-            if(mapFingers_.empty()) mapDragging_ = false;
+            if(mapFingers_.empty()){
+                mapDragging_ = false;
+                if(mapTapValid_ && SDL_GetTicks() - mapTapTime_ < 400
+                   && v2dist(Vec2{ x, y }, mapTapStart_) <= 14.0f){
+                    toggleMapMark(x, y);
+                }
+            }
+            mapTapValid_ = false;
             return true;
         }
         // ---- Мышь на ПК: перетаскивание и колесо.
@@ -729,6 +661,9 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
             }
             mapDragging_ = true;
             mapFollowsPlayer_ = false;
+            mapTapStart_ = Vec2{ x, y };
+            mapTapTime_ = SDL_GetTicks();
+            mapTapValid_ = true;
             return true;
         }
         case SDL_MOUSEMOTION: {
@@ -741,7 +676,16 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
             }
             return true;
         }
-        case SDL_MOUSEBUTTONUP: mapDragging_ = false; return true;
+        case SDL_MOUSEBUTTONUP: {
+            if(e.button.which != SDL_TOUCH_MOUSEID && mapTapValid_
+               && SDL_GetTicks() - mapTapTime_ < 400
+               && v2dist(Vec2{ (float)e.button.x, (float)e.button.y }, mapTapStart_) <= 14.0f){
+                toggleMapMark((float)e.button.x, (float)e.button.y);
+            }
+            mapTapValid_ = false;
+            mapDragging_ = false;
+            return true;
+        }
         case SDL_MOUSEWHEEL:
             mapZoom_ = clampf(mapZoom_ * (e.wheel.y > 0 ? 1.25f : 0.8f), 1.0f, 12.0f);
             return true;
@@ -1068,10 +1012,6 @@ void GameClient::renderScene(){
 
     // ---- Рамка блока под прицелом
     renderBlockHighlight(view, proj, eye);
-
-    // ---- Топор в руке (только в игре: в меню рука не нужна)
-    if(state_ == GameState::Playing)
-        renderHeldItem(view, proj, eye, forward, 1.0f / 60.0f);
 
     // ---- Вода: полупрозрачная, БЕЗ записи глубины и вторым проходом — иначе она
     // закрывает собой дно, которое сквозь неё должно быть видно.
@@ -1516,29 +1456,47 @@ void GameClient::renderMap(){
             if(lx + cellW < 0.0f || lx > (float)SCR_W) continue;
             if(ly + cellH < 0.0f || ly > (float)SCR_H) continue;
             snprintf(label, sizeof(label), "%c%d", 'A' + c, r + 1);
-            // Подпись прижата к левому верхнему углу квадрата, но не вылезает за экран:
-            // у крайних квадратов её сдвигает внутрь, иначе буквы «съедались» краем.
-            float tx = clampf(lx + 6.0f * s, worldL + 4.0f, worldR - fontH * 2.2f);
-            float ty = clampf(ly + 5.0f * s, worldT + 4.0f, worldB - fontH * 1.4f);
+            // Подпись стоит в своём углу квадрата и НИКУДА не едет: раньше её
+            // подтягивало к краю экрана, и при перетаскивании карты буквы ползали
+            // сами по себе. Не поместилась целиком — просто не рисуем.
+            float tx = lx + 6.0f * s, ty = ly + 5.0f * s;
+            if(tx < 2.0f || tx + fontH * 2.2f > (float)SCR_W) continue;
+            if(ty < 2.0f || ty + fontH * 1.4f > (float)SCR_H) continue;
             drawText(tx, ty, fontH, label, 1, 1, 1, 0.7f);
         }
     }
 
-    // ---- Игрок. Размер маркера ПОСТОЯННЫЙ: при приближении карты он не должен расти,
-    // иначе на большом масштабе закрывает собой пол-квадрата.
+    // ---- Метки игрока: касание по карте ставит флажок, касание по нему — снимает.
+    float markR = clampf(9.0f * s * SDL_powf(mapZoom_, 0.35f), 7.0f * s, 26.0f * s);
+    for(const Vec2& m : mapMarks_){
+        float mx = toScreenX(m.x), my = toScreenY(m.y);
+        if(mx < -markR || mx > (float)SCR_W + markR) continue;
+        if(my < -markR || my > (float)SCR_H + markR) continue;
+        // Флажок: ножка и треугольное полотнище. Рисуем примитивами — своей картинки
+        // для метки в наборе нет, а цветное пятно на карте читается и так.
+        drawUIRect(mx - 1.5f * s, my - markR, 3.0f * s, markR, 0, 1.0f, 0.95f, 0.35f, 0.95f, false);
+        for(int i = 0; i < 8; ++i){
+            float t = (float)i / 8.0f;
+            float wq = markR * 0.62f * (1.0f - t);
+            drawUIRect(mx + 1.5f * s, my - markR + t * markR * 0.55f, wq, markR * 0.08f + 1.0f,
+                       0, 1.0f, 0.35f, 0.30f, 0.95f, false);
+        }
+        drawUICircleOutline(mx, my, markR * 0.30f, 1.0f, 0.95f, 0.35f, 0.9f, 2.0f);
+    }
+
+    // ---- Игрок. Метка своя (self.png) и уже показывает направление взгляда — стрелку
+    // поверх неё не рисуем. Картинка нарисована «носом вверх», поэтому её надо
+    // повернуть на текущий курс. Размер растёт с приближением, но не бесконечно:
+    // на дальнем масштабе метку всё равно должно быть видно, на ближнем — не должна
+    // закрывать квадрат.
     float ax = toScreenX(p.x), ay = toScreenY(p.z);
     if(ax >= 0.0f && ax <= (float)SCR_W && ay >= 0.0f && ay <= (float)SCR_H){
-        float dirX = -sinf(yaw_), dirZ = -cosf(yaw_);
-        float len = 26.0f * s;
-        for(int i = 3; i <= 10; ++i){
-            float t = (float)i / 10.0f;
-            float thick = (1.0f - t) * 5.0f * s + 1.5f;
-            drawUIRect(ax + dirX * len * t - thick * 0.5f, ay + dirZ * len * t - thick * 0.5f,
-                       thick, thick, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        float m = clampf(11.0f * s * SDL_powf(mapZoom_, 0.40f), 9.0f * s, 34.0f * s);
+        if(texPlayerMarker_){
+            drawUIRectRotated(ax, ay, m * 2.0f, m * 2.0f, texPlayerMarker_, yaw_, 1.0f);
+        } else {
+            drawUICircle(ax, ay, m * 0.5f, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
         }
-        float m = 13.0f * s;
-        if(texPlayerMarker_) drawUIRect(ax - m, ay - m, m * 2.0f, m * 2.0f, texPlayerMarker_, 1, 1, 1, 1.0f, true);
-        else                 drawUICircle(ax, ay, m * 0.5f, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
     }
 
     // ---- Заголовок и кнопка закрытия.
@@ -1550,7 +1508,7 @@ void GameClient::renderMap(){
     drawUIRect(10.0f * s, 8.0f * s, 320.0f * s, 34.0f * s, 0, 0, 0, 0, 0.45f, false);
     drawText(18.0f * s, 12.0f * s, 25.0f * s, header, 1, 1, 1, 0.95f);
     drawText(18.0f * s, (float)SCR_H - 30.0f * s, 17.0f * s,
-             "Щипок двумя пальцами — масштаб, перетаскивание — сдвиг",
+             "Щипок — масштаб, перетаскивание — сдвиг, касание — метка (по метке — снять)",
              1, 1, 1, 0.55f);
 
     float closeSize = 54.0f * s;
