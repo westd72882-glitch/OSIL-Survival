@@ -108,7 +108,7 @@ std::vector<ResourceNode> ResourceMap::nodesInCell(int cx, int cz) const {
 
     // ---- Жилы: сера, железо и камень. Спавнятся нечасто — это точки интереса, а не
     // фон. Валунов и «скальных выходов» больше нет: они были просто кубами камня.
-    int rockTries = attemptsFor(0.42f * bi.rockDensity * density * (0.7f + steep * 0.6f));
+    int rockTries = attemptsFor(0.30f * bi.rockDensity * density * (0.7f + steep * 0.6f));
     for(int i = 0; i < rockTries; ++i){
         float x = baseX + rng.nextFloat() * cell;
         float z = baseZ + rng.nextFloat() * cell;

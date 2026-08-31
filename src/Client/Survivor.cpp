@@ -264,17 +264,20 @@ bool Survivor::hasAxe() const {
 // Один удар по объекту: ресурс в инвентарь, счётчик ударов вниз, кончились — объект
 // уходит (дерево валится целиком, жила и бочка исчезают).
 void Survivor::hitTarget(Block block, int x, int y, int z){
+    // Сколько всего ресурса в объекте и сколько уходит за удар. С дерева 50 древесины,
+    // с любой жилы 30 — цифры из ТЗ, а число ударов из них и выводится.
     ItemType drop = ItemType::None;
     int perHit = 1;
-    int hitsTotal = 6;
+    int total  = 30;
     switch(block){
-        case Block::Wood:      drop = ItemType::Wood;      perHit = 2; hitsTotal = 8;  break;
-        case Block::Stone:     drop = ItemType::Stone;     perHit = 2; hitsTotal = 8;  break;
-        case Block::OreMetal:  drop = ItemType::OreMetal;  perHit = 1; hitsTotal = 10; break;
-        case Block::OreSulfur: drop = ItemType::OreSulfur; perHit = 1; hitsTotal = 10; break;
-        case Block::Barrel:    drop = ItemType::Scrap;     perHit = 2; hitsTotal = 4;  break;
+        case Block::Wood:      drop = ItemType::Wood;      perHit = 5; total = 50; break;
+        case Block::Stone:     drop = ItemType::Stone;     perHit = 3; total = 30; break;
+        case Block::OreMetal:  drop = ItemType::OreMetal;  perHit = 3; total = 30; break;
+        case Block::OreSulfur: drop = ItemType::OreSulfur; perHit = 3; total = 30; break;
+        case Block::Barrel:    drop = ItemType::Scrap;     perHit = 4; total = 12; break;
         default: return;
     }
+    int hitsTotal = (total + perHit - 1) / perHit;
 
     // Счётчик ударов привязан к объекту, а не к блоку: бьём в одну точку — вырабатываем
     // всё дерево целиком, а не отдельный кубик ствола.
@@ -292,6 +295,7 @@ void Survivor::hitTarget(Block block, int x, int y, int z){
     if(--hitsLeft_ <= 0){
         hitsLeft_ = 0;
         hitBlock_ = Block::Air;
+        if(onNodeBroken) onNodeBroken(block, x, y, z);
         voxels_.fellCluster(x, y, z);
     }
 }

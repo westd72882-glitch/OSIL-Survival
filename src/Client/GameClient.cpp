@@ -184,13 +184,220 @@ bool GameClient::initGraphics(){
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex), (void*)(6*sizeof(float)));
     glBindVertexArray(0);
 
+    // Динамические буферы: частицы от разбитой жилы и топорик в руке. И то и другое —
+    // обычные воксельные вершины, поэтому шейдер тот же, что у мира.
+    auto makeDynamicVoxelBuffer = [](GLuint& vao, GLuint& vbo, int verts){
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(VoxelVertex) * verts, nullptr, GL_DYNAMIC_DRAW);
+        for(int i = 0; i < 3; ++i){
+            glEnableVertexAttribArray((GLuint)i);
+            glVertexAttribPointer((GLuint)i, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex),
+                                  (void*)(intptr_t)(i * 3 * sizeof(float)));
+        }
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(VoxelVertex),
+                              (void*)(intptr_t)(9 * sizeof(float)));
+        glBindVertexArray(0);
+    };
+    makeDynamicVoxelBuffer(partVao_, partVbo_, 64 * 36);
+    makeDynamicVoxelBuffer(heldVao_, heldVbo_, 6 * 36);
+
     return true;
 }
 
-// ==================== ПРЕДМЕТ В РУКЕ ====================
-// Каменный топорик — стартовый инструмент, и он должен быть виден: без предмета в руке
-// от первого лица непонятно, чем ты вообще бьёшь. Модель собрана из кубов прямо здесь:
-// отдельного формата моделей у проекта нет, а топорик из пяти брусков читается сразу.
+// ==================== ЧАСТИЦЫ И ПРЕДМЕТ В РУКЕ ====================
+// Осколки от выработанной жилы и топорик в руке — это маленькие кубы, поэтому рисуются
+// тем же воксельным шейдером, что и мир: отдельной системы частиц заводить незачем.
+
+namespace {
+// Один кубик в набор вершин. Центр, полуразмер, цвет и слой текстуры.
+void pushCube(std::vector<VoxelVertex>& out, Vec3 c, float half,
+              float r, float g, float b, float layer){
+    static const float N[6][3] = { {0,1,0},{0,-1,0},{1,0,0},{-1,0,0},{0,0,1},{0,0,-1} };
+    for(int f = 0; f < 6; ++f){
+        const float* n = N[f];
+        int axis = (n[0] != 0) ? 0 : (n[1] != 0) ? 1 : 2;
+        int a = (axis + 1) % 3, b2 = (axis + 2) % 3;
+        float centre[3] = { c.x, c.y, c.z };
+        float corner[4][3];
+        for(int k = 0; k < 4; ++k){
+            float sa = (k == 0 || k == 3) ? -1.0f : 1.0f;
+            float sb = (k < 2) ? -1.0f : 1.0f;
+            corner[k][axis] = centre[axis] + half * (n[axis] > 0 ? 1.0f : -1.0f);
+            corner[k][a] = centre[a] + half * sa;
+            corner[k][b2] = centre[b2] + half * sb;
+        }
+        // Плоское затенение по нормали — как у граней мира.
+        float face = (n[1] > 0.5f) ? 1.0f : (n[1] < -0.5f ? 0.5f : (fabsf(n[0]) > 0.5f ? 0.75f : 0.88f));
+        VoxelVertex q[4];
+        for(int k = 0; k < 4; ++k){
+            float uu = (k == 1 || k == 2) ? 1.0f : 0.0f;
+            float vv = (k >= 2) ? 1.0f : 0.0f;
+            q[k] = VoxelVertex{ corner[k][0], corner[k][1], corner[k][2],
+                                n[0], n[1], n[2],
+                                r * face, g * face, b * face, uu, vv, layer };
+        }
+        out.push_back(q[0]); out.push_back(q[1]); out.push_back(q[2]);
+        out.push_back(q[0]); out.push_back(q[2]); out.push_back(q[3]);
+    }
+}
+} // namespace
+
+void GameClient::spawnBreakParticles(Block block, int x, int y, int z){
+    float tr, tg, tb;
+    blockTextureTint(block, tr, tg, tb);
+    float layer = (float)blockTextureLayer(block);
+    Rng rng((uint64_t)(x * 73856093 ^ y * 19349663 ^ z * 83492791) ^ 0xB00Bu);
+    // Двух десятков осколков хватает: больше на телефоне только шумит.
+    for(int i = 0; i < 22; ++i){
+        Particle p;
+        p.pos = Vec3{ (float)x + rng.nextRange(0.1f, 0.9f),
+                      (float)y + rng.nextRange(0.1f, 0.9f),
+                      (float)z + rng.nextRange(0.1f, 0.9f) };
+        p.vel = Vec3{ rng.nextRange(-2.4f, 2.4f), rng.nextRange(1.5f, 4.5f),
+                      rng.nextRange(-2.4f, 2.4f) };
+        p.life = rng.nextRange(0.7f, 1.3f);
+        p.size = rng.nextRange(0.045f, 0.10f);
+        p.r = tr; p.g = tg; p.b = tb; p.layer = layer;
+        if(particles_.size() < 64) particles_.push_back(p);
+    }
+}
+
+void GameClient::updateParticles(float dt){
+    for(size_t i = 0; i < particles_.size(); ){
+        Particle& p = particles_[i];
+        p.life -= dt;
+        if(p.life <= 0.0f){
+            particles_[i] = particles_.back();
+            particles_.pop_back();
+            continue;
+        }
+        p.vel.y -= 12.0f * dt;                 // осколки падают
+        p.pos.x += p.vel.x * dt;
+        p.pos.y += p.vel.y * dt;
+        p.pos.z += p.vel.z * dt;
+        ++i;
+    }
+}
+
+void GameClient::renderParticles(const Mat4& view, const Mat4& proj){
+    if(particles_.empty()) return;
+    std::vector<VoxelVertex> verts;
+    verts.reserve(particles_.size() * 36);
+    for(const Particle& p : particles_)
+        pushCube(verts, p.pos, p.size, p.r, p.g, p.b, p.layer);
+
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    bindBlockTextures();
+    glBindVertexArray(partVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+}
+
+// Топорик в руке. Виден только когда он выбран в поясе: рука должна показывать ровно
+// тот предмет, которым игрок сейчас работает. Глубину НЕ чистим — иначе следующий
+// проход (вода) теряет глубину и рисуется поверх всего.
+void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, float dt){
+    const ItemStack& sel = inventory_.selectedStack();
+    if(sel.empty() || sel.type != ItemType::Axe) return;
+
+    heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
+    float bob = (player_->speed() > 0.4f && player_->onGround())
+                ? sinf(heldBobPhase_ * 2.0f) * 0.012f : 0.0f;
+    float swing = player_->miningProgress() > 0.01f ? sinf(heldBobPhase_ * 9.0f) * 0.10f : 0.0f;
+
+    Vec3 right = v3norm(v3cross(forward, Vec3{0,1,0}));
+    Vec3 up = v3cross(right, forward);
+
+    // Бруски топорика в своей плоской системе: x поперёк рукояти, y вдоль неё.
+    struct Part { float cx, cy, hx, hy, hz; Block block; };
+    const Part parts[] = {
+        { 0.000f, -0.090f, 0.0085f, 0.075f, 0.0085f, Block::Wood },
+        { 0.000f,  0.035f, 0.0085f, 0.055f, 0.0085f, Block::Wood },
+        { -0.012f, 0.098f, 0.021f,  0.026f, 0.011f,  Block::Stone },
+        { -0.040f, 0.104f, 0.014f,  0.019f, 0.009f,  Block::Stone },
+    };
+    const float S = 0.86f;
+    float angle = 0.42f - swing * 3.2f;
+    float ca = cosf(angle), sa = sinf(angle);
+    float offX = 0.172f, offZ = 0.52f;
+    float offY = -0.186f + bob - swing * 0.35f;
+
+    std::vector<VoxelVertex> verts;
+    verts.reserve(4 * 36);
+    for(const Part& part : parts){
+        float tr, tg, tb;
+        blockTextureTint(part.block, tr, tg, tb);
+        float layer = (float)blockTextureLayer(part.block);
+        // Брусок собираем как «кубик» с разными полуразмерами: pushCube даёт куб, а
+        // тут нужен вытянутый, поэтому строим грани здесь же по тем же правилам.
+        float lx = part.cx * S * ca - part.cy * S * sa + offX;
+        float ly = part.cx * S * sa + part.cy * S * ca + offY;
+        Vec3 centre{
+            eye.x + right.x * lx + up.x * ly + forward.x * offZ,
+            eye.y + right.y * lx + up.y * ly + forward.y * offZ,
+            eye.z + right.z * lx + up.z * ly + forward.z * offZ
+        };
+        // Оси бруска в мировых координатах: рукоять повёрнута вместе с топором.
+        Vec3 ax{ right.x * ca + up.x * sa, right.y * ca + up.y * sa, right.z * ca + up.z * sa };
+        Vec3 ay{ -right.x * sa + up.x * ca, -right.y * sa + up.y * ca, -right.z * sa + up.z * ca };
+        float hx = part.hx * S, hy = part.hy * S, hz = part.hz * S;
+        static const int SX[6] = { 0, 0, 1, -1, 0, 0 };
+        static const int SY[6] = { 1, -1, 0, 0, 0, 0 };
+        static const int SZ[6] = { 0, 0, 0, 0, 1, -1 };
+        for(int f = 0; f < 6; ++f){
+            Vec3 n{ ax.x * SX[f] + ay.x * SY[f] + forward.x * SZ[f],
+                    ax.y * SX[f] + ay.y * SY[f] + forward.y * SZ[f],
+                    ax.z * SX[f] + ay.z * SY[f] + forward.z * SZ[f] };
+            // Два касательных направления грани и их полуразмеры.
+            Vec3 t1, t2; float h1, h2;
+            if(SY[f] != 0){ t1 = ax; h1 = hx; t2 = forward; h2 = hz; }
+            else if(SX[f] != 0){ t1 = ay; h1 = hy; t2 = forward; h2 = hz; }
+            else { t1 = ax; h1 = hx; t2 = ay; h2 = hy; }
+            Vec3 base{ centre.x + n.x * (SY[f] ? hy : SX[f] ? hx : hz),
+                       centre.y + n.y * (SY[f] ? hy : SX[f] ? hx : hz),
+                       centre.z + n.z * (SY[f] ? hy : SX[f] ? hx : hz) };
+            float face = (SY[f] > 0) ? 1.0f : (SY[f] < 0 ? 0.55f : (SX[f] ? 0.78f : 0.9f));
+            VoxelVertex q[4];
+            for(int k = 0; k < 4; ++k){
+                float s1 = (k == 0 || k == 3) ? -1.0f : 1.0f;
+                float s2 = (k < 2) ? -1.0f : 1.0f;
+                q[k] = VoxelVertex{
+                    base.x + t1.x * h1 * s1 + t2.x * h2 * s2,
+                    base.y + t1.y * h1 * s1 + t2.y * h2 * s2,
+                    base.z + t1.z * h1 * s1 + t2.z * h2 * s2,
+                    n.x, n.y, n.z,
+                    tr * face, tg * face, tb * face,
+                    (k == 1 || k == 2) ? 1.0f : 0.0f, (k >= 2) ? 1.0f : 0.0f, layer };
+            }
+            verts.push_back(q[0]); verts.push_back(q[1]); verts.push_back(q[2]);
+            verts.push_back(q[0]); verts.push_back(q[2]); verts.push_back(q[3]);
+        }
+    }
+
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelFogDensityLoc, 0.0f);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    bindBlockTextures();
+    glDisable(GL_CULL_FACE);
+    glBindVertexArray(heldVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, heldVbo_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+}
+
 void GameClient::initWorld(){
     WorldConfig cfg;
     cfg.seed = seedFromString(WORLD_SEED_TEXT);
@@ -217,6 +424,7 @@ void GameClient::initWorld(){
     // пересборку. Подписываемся на сам мир, а не на игрока: у воды своего игрока нет.
     voxels_->onBlockChanged = [this](int x, int y, int z){ chunks_.markDirty(x, y, z); };
     player_.reset(new Survivor(*voxels_, *env_, inventory_));
+    player_->onNodeBroken = [this](Block b, int x, int y, int z){ spawnBreakParticles(b, x, y, z); };
 
     Rng rng(splitMix64(cfg.seed ^ 0x5350ULL));
     Vec3 spawn = world_->findSpawnPoint(rng);
@@ -526,25 +734,31 @@ bool GameClient::handleOverlayTouch(float x, float y){
 
     if(overlay_ != Overlay::Inventory) return false;
 
+    // Обычный перенос: палец лёг на ячейку с предметом — берём её, ведём — предмет
+    // едет за пальцем, отпустили над другой ячейкой — кладём туда.
+    int i = slotAtPoint(x, y);
+    if(i >= 0 && !inventory_.slot(i).empty()){
+        dragSlot_ = i;
+        dragPos_ = Vec2{ x, y };
+        dragActive_ = false;   // станет true, как только палец поедет
+    } else {
+        dragSlot_ = -1;
+        dragActive_ = false;
+    }
+    return true;
+}
+
+// Ячейка под точкой экрана, или -1.
+int GameClient::slotAtPoint(float x, float y) const {
     float gx, gy, slot, gap;
     inventoryGeometry(gx, gy, slot, gap);
     for(int i = 0; i < Inventory::SIZE; ++i){
         int col = i % Inventory::COLS, row = i / Inventory::COLS;
         float sx = gx + col * (slot + gap);
         float sy = gy + row * (slot + gap);
-        if(x < sx || x > sx + slot || y < sy || y > sy + slot) continue;
-        // Перенос в ДВА касания вместо перетаскивания: на телефоне палец закрывает
-        // собой ячейку, и классический drag&drop промахивается мимо цели.
-        if(dragSlot_ < 0){
-            if(!inventory_.slot(i).empty()) dragSlot_ = i;
-        } else {
-            inventory_.moveOrSwap(dragSlot_, i);
-            dragSlot_ = -1;
-        }
-        return true;
+        if(x >= sx && x <= sx + slot && y >= sy && y <= sy + slot) return i;
     }
-    dragSlot_ = -1;
-    return true;
+    return -1;
 }
 
 // Метка на карте: короткое касание по пустому месту ставит флажок, касание по уже
@@ -696,16 +910,34 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
 }
 
 void GameClient::handleOverlayDrag(float x, float y, float dx, float dy){
-    (void)x; (void)y;
     if(overlay_ == Overlay::Craft && craftDragging_){
+        (void)x; (void)y; (void)dx;
         craftScroll_ -= dy;
         return;
+    }
+    if(overlay_ == Overlay::Inventory && dragSlot_ >= 0){
+        dragPos_ = Vec2{ x, y };
+        // Порог в несколько пикселей: случайное дрожание пальца не должно считаться
+        // переносом, иначе простое касание ячейки уже «тащит».
+        if(!dragActive_ && (fabsf(dx) + fabsf(dy)) > 3.0f) dragActive_ = true;
     }
 }
 
 void GameClient::handleOverlayRelease(){
     mapDragging_ = false;
     craftDragging_ = false;
+
+    if(overlay_ == Overlay::Inventory && dragSlot_ >= 0){
+        int target = slotAtPoint(dragPos_.x, dragPos_.y);
+        if(dragActive_ && target >= 0 && target != dragSlot_){
+            inventory_.moveOrSwap(dragSlot_, target);
+        } else if(!dragActive_ && dragSlot_ < Inventory::COLS){
+            // Короткое касание по ячейке пояса — выбрать её в руку.
+            inventory_.select(dragSlot_);
+        }
+        dragSlot_ = -1;
+        dragActive_ = false;
+    }
 }
 
 void GameClient::handleEvents(){
@@ -852,6 +1084,9 @@ void GameClient::update(float dt){
     voxels_->updateWater(96);
     // Восстановление выбитых жил: пока очередь пуста, вызов ничего не стоит.
     voxels_->updateRespawn(dt);
+    // Падение срубленного дерева и осколки от выработанной жилы.
+    voxels_->updateFalling(dt);
+    updateParticles(dt);
 
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
@@ -869,45 +1104,6 @@ void GameClient::update(float dt){
 
 // ==================== ОТРИСОВКА СЦЕНЫ ====================
 
-void GameClient::renderBlockHighlight(const Mat4& view, const Mat4& proj, Vec3 camPos){
-    const RayHit& t = player_->target();
-    if(!t.hit) return;
-
-    // Рамка ровно по граням блока, чуть наружу — иначе линии тонут в самой грани
-    // (z-fighting) и мерцают при движении головы.
-    const float e = 0.004f;
-    float x0 = (float)t.x - e, y0 = (float)t.y - e, z0 = (float)t.z - e;
-    float x1 = (float)t.x + 1.0f + e, y1 = (float)t.y + 1.0f + e, z1 = (float)t.z + 1.0f + e;
-
-    // Цвет зависит от прогресса добычи: чёрная рамка светлеет к белой, когда блок
-    // вот-вот развалится — это единственная подсказка игроку, что удар засчитан.
-    float p = player_->miningProgress();
-    float c = 0.05f + p * 0.9f;
-
-    VoxelVertex v[24];
-    int n = 0;
-    auto line = [&](float ax, float ay, float az, float bx, float by, float bz){
-        v[n++] = VoxelVertex{ ax, ay, az, 0,1,0, c, c, c, 0,0,0 };
-        v[n++] = VoxelVertex{ bx, by, bz, 0,1,0, c, c, c, 0,0,0 };
-    };
-    line(x0,y0,z0, x1,y0,z0); line(x1,y0,z0, x1,y0,z1); line(x1,y0,z1, x0,y0,z1); line(x0,y0,z1, x0,y0,z0);
-    line(x0,y1,z0, x1,y1,z0); line(x1,y1,z0, x1,y1,z1); line(x1,y1,z1, x0,y1,z1); line(x0,y1,z1, x0,y1,z0);
-    line(x0,y0,z0, x0,y1,z0); line(x1,y0,z0, x1,y1,z0); line(x1,y0,z1, x1,y1,z1); line(x0,y0,z1, x0,y1,z1);
-
-    glUseProgram(voxelProg);
-    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
-    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
-    glUniform3f(voxelCamPosLoc, camPos.x, camPos.y, camPos.z);
-    glUniform1f(voxelAlphaLoc, 1.0f);
-    glUniform1f(voxelFogDensityLoc, 0.0f);   // рамку туман не съедает
-    glUniform1f(voxelLightAmountLoc, 1.2f);
-    glUniform1f(voxelTexturedLoc, 0.0f);      // рамка — чистая линия, без текстуры
-    glBindVertexArray(highlightVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, highlightVbo_);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
-    glDrawArrays(GL_LINES, 0, 24);
-    glBindVertexArray(0);
-}
 
 // Привязывает массив текстур блоков к шейдеру. Вынесено в функцию, потому что делать
 // это надо перед каждым проходом (непрозрачные блоки, вода), а забыть — легко: мир
@@ -1014,8 +1210,13 @@ void GameClient::renderScene(){
     bindBlockTextures();
     chunks_.renderOpaque(view, proj, eye, viewDist);
 
-    // ---- Рамка блока под прицелом
-    renderBlockHighlight(view, proj, eye);
+    // Рамки блока под прицелом нет: она подсвечивала каждый куб рельефа, по которому
+    // всё равно нельзя ударить, и только мешала смотреть.
+
+    // ---- Осколки и предмет в руке. Оба прохода до воды и БЕЗ очистки глубины.
+    renderParticles(view, proj);
+    if(state_ == GameState::Playing)
+        renderHeldItem(view, proj, eye, forward, 1.0f / 60.0f);
 
     // ---- Вода: полупрозрачная, БЕЗ записи глубины и вторым проходом — иначе она
     // закрывает собой дно, которое сквозь неё должно быть видно.
@@ -1338,7 +1539,15 @@ void GameClient::renderOverlay(){
             int col = i % Inventory::COLS, row = i / Inventory::COLS;
             float sx = gx + col * (slot + gap);
             float sy = gy + row * (slot + gap);
-            drawSlot(sx, sy, slot, inventory_.slot(i), i == dragSlot_ || (row == 0 && col == inventory_.selected()));
+            // Пока предмет тащат, его ячейка стоит пустой: он «в руке» у пальца.
+            ItemStack shown = (dragActive_ && i == dragSlot_) ? ItemStack{} : inventory_.slot(i);
+            drawSlot(sx, sy, slot, shown, row == 0 && col == inventory_.selected());
+        }
+        if(dragActive_ && dragSlot_ >= 0){
+            // Предмет под пальцем, со смещением вверх: иначе его закрывает сам палец.
+            float dsz = slot * 0.92f;
+            drawSlot(dragPos_.x - dsz * 0.5f, dragPos_.y - dsz * 1.15f, dsz,
+                     inventory_.slot(dragSlot_), false);
         }
         return;
     }

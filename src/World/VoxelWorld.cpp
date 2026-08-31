@@ -250,9 +250,9 @@ bool VoxelWorld::isDecorBlock(int x, int y, int z) const {
     return ch->second.find(packKey(x, y, z)) != ch->second.end();
 }
 
-// Сколько ждёт жила до восстановления. Пять минут: за это время игрок успевает уйти,
-// и возврат блока не происходит у него на глазах.
-static const float RESPAWN_SECONDS = 300.0f;
+// Сколько ждёт жила до восстановления. Полчаса: ресурс должен быть ценным, иначе
+// добывать его незачем — вырубил рощу и стой жди.
+static const float RESPAWN_SECONDS = 1800.0f;
 
 int VoxelWorld::updateRespawn(float dtSeconds){
     if(respawn_.empty()) return 0;

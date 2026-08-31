@@ -59,6 +59,12 @@ private:
     bool  mapTapValid_ = false;
     void  toggleMapMark(float screenX, float screenY);
     void drawMenuBackground();
+    // Частицы от разбитой жилы и модель топора в руке рисуются одним и тем же
+    // воксельным шейдером: это те же кубы, только маленькие.
+    void spawnBreakParticles(Block block, int x, int y, int z);
+    void updateParticles(float dt);
+    void renderParticles(const Mat4& view, const Mat4& proj);
+    void renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, float dt);
     GLuint itemIcon(ItemType t) const;
     void bindBlockTextures();
     // Дальность прорисовки в метрах: настройка игрока, зажатая уровнем качества.
@@ -77,7 +83,6 @@ private:
 
     void render();
     void renderScene();
-    void renderBlockHighlight(const Mat4& view, const Mat4& proj, Vec3 camPos);
     // Предмет в руке: каменный топорик, собранный из кубов. Рисуется в пространстве
     // камеры, поэтому всегда перед лицом и не проваливается сквозь стены.
     void renderHud();
@@ -128,7 +133,10 @@ private:
     float craftScroll_ = 0.0f;
     bool  craftDragging_ = false;
     Overlay overlayOverride_ = Overlay::None;  // ключ --overlay: снять окно на скриншот
-    int dragSlot_ = -1;          // выбранный в инвентаре слот (перенос в два касания)
+    int dragSlot_ = -1;          // ячейка, которую тащим пальцем
+    Vec2 dragPos_{0,0};          // где сейчас палец: под ним рисуется сам предмет
+    bool dragActive_ = false;    // палец действительно тащит, а не просто коснулся
+    int  slotAtPoint(float x, float y) const;
 
     GLuint skyVao_ = 0;   // пустой VAO для полноэкранного треугольника неба
     GLuint minimapTex_ = 0;
@@ -141,6 +149,12 @@ private:
     GLuint texItems_[(int)ItemType::COUNT] = {};
     GLuint texJoyBase_ = 0, texJoyStick_ = 0, texPlayerMarker_ = 0, texMenuBg_ = 0;
     int menuBgW_ = 0, menuBgH_ = 0;   // размеры фона: рисуем его без растяжения
+    struct Particle { Vec3 pos, vel; float life, size; float r, g, b; float layer; };
+    std::vector<Particle> particles_;
+    GLuint partVao_ = 0, partVbo_ = 0;
+    GLuint heldVao_ = 0, heldVbo_ = 0;
+    float  heldBobPhase_ = 0.0f;
+
     int forcedW_ = 0, forcedH_ = 0;   // --size: проверка раскладки под экран телефона
     float startX_ = -1.0f, startZ_ = -1.0f;   // --pos: старт в заданной точке карты
     GLuint highlightVao_ = 0, highlightVbo_ = 0;

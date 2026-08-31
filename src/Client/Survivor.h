@@ -104,6 +104,10 @@ private:
     int   hitX_ = 0, hitY_ = 0, hitZ_ = 0, hitsLeft_ = 0;
     Block hitBlock_ = Block::Air;
     bool  hasAxe() const;
+public:
+    // Объект выработан: клиент по этому сигналу сыпет частицы на месте.
+    std::function<void(Block block, int x, int y, int z)> onNodeBroken;
+private:
     void  hitTarget(Block block, int x, int y, int z);
 
     std::string message_;

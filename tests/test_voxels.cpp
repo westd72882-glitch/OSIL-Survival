@@ -297,9 +297,9 @@ TEST(выбитая_жила_восстанавливается_а_постро�
     CHECK(vox.blockAt(fx, fy, fz) == Block::Air);
     CHECK(vox.respawnQueueSize() == 1);
 
-    vox.updateRespawn(60.0f);            // ещё рано
+    vox.updateRespawn(600.0f);           // ещё рано: срок восстановления полчаса
     CHECK(vox.blockAt(fx, fy, fz) == Block::Air);
-    vox.updateRespawn(600.0f);           // срок вышел — блок вернулся
+    vox.updateRespawn(1500.0f);          // срок вышел — блок вернулся
     CHECK_MSG(vox.blockAt(fx, fy, fz) != Block::Air, "жила не восстановилась");
     CHECK(vox.respawnQueueSize() == 0);
 
@@ -307,6 +307,6 @@ TEST(выбитая_жила_восстанавливается_а_постро�
     int py = vox.surfaceY(fx + 40, fz + 40) + 1;
     vox.setBlock(fx + 40, py, fz + 40, Block::Planks);
     CHECK(vox.respawnQueueSize() == 0);
-    vox.updateRespawn(1000.0f);
+    vox.updateRespawn(2000.0f);
     CHECK(vox.blockAt(fx + 40, py, fz + 40) == Block::Planks);
 }
