@@ -1289,6 +1289,9 @@ void GameClient::renderTouchControls(){
         else if(label == "КРАФТ")    icon = texCraft_;
         else if(label == "КАРТА")    icon = texMap_;
         else if(label == "НАСТР")    icon = texSettings_;
+        else if(label == "ПРЫЖОК")   icon = texJump_;
+        else if(label == "БЕГ")      icon = texRun_;
+        else if(label == "СЕСТЬ")    icon = texCrouch_;
 
         float alpha = b.active ? 0.95f : 0.62f;
         if(icon){
@@ -1297,8 +1300,8 @@ void GameClient::renderTouchControls(){
             continue;
         }
 
-        // Для прыжка, бега и приседа иконок в наборе нет — рисуем знаки примитивами:
-        // стрелка вверх, двойная стрелка вперёд, стрелка вниз.
+        // Запасной вариант, если картинки кнопки нет: знак рисуется примитивами —
+        // стрелка вверх (прыжок), стрелка вниз (присед), «бегущие» полоски (бег).
         drawUICircle(b.cx, b.cy, b.radius, UI_BG_PANEL.r, UI_BG_PANEL.g, UI_BG_PANEL.b, b.active ? 0.5f : 0.3f);
         drawUICircleOutline(b.cx, b.cy, b.radius, 1, 1, 1, alpha * 0.8f, 2.5f);
         float k = b.radius * 0.5f;
@@ -1863,6 +1866,9 @@ void GameClient::loadInterfaceTextures(){
         { "ui_map.png",            &texMap_ },
         { "ui_settings.png",       &texSettings_ },
         { "ui_close.png",          &texClose_ },
+        { "ui_jump.png",           &texJump_ },
+        { "ui_run.png",            &texRun_ },
+        { "ui_crouch.png",         &texCrouch_ },
         { "ui_joystick_base.png",  &texJoyBase_ },
         { "ui_joystick_stick.png", &texJoyStick_ },
         { "ui_player_marker.png",  &texPlayerMarker_ },

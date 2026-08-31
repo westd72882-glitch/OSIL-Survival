@@ -40,6 +40,7 @@ const char* BLOCK_TEXTURES[] = {
 const char* UI_TEXTURES[] = {
     "ui_dig.png", "ui_place.png", "ui_interact.png", "ui_inventory.png",
     "ui_craft.png", "ui_map.png", "ui_settings.png", "ui_close.png",
+    "ui_jump.png", "ui_run.png", "ui_crouch.png",
     "ui_joystick_base.png", "ui_joystick_stick.png", "ui_player_marker.png",
     "menu_bg.png"
 };
