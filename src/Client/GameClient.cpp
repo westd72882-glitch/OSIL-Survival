@@ -96,7 +96,11 @@ bool GameClient::initPlatform(){
 #else
     Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
 #endif
-    SCR_W = 1280; SCR_H = 720;
+    // По умолчанию окно 1280x720. Ключ --size WxH нужен, чтобы на сборочной машине
+    // проверить раскладку под вытянутый экран телефона (20:9) — иначе подписи карты и
+    // кнопки проверяются только в одном соотношении сторон.
+    SCR_W = forcedW_ > 0 ? forcedW_ : 1280;
+    SCR_H = forcedH_ > 0 ? forcedH_ : 720;
     win = SDL_CreateWindow("OSIL Survival", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                            SCR_W, SCR_H, flags);
     if(!win){ SDL_Log("SDL_CreateWindow: %s", SDL_GetError()); return false; }
@@ -1479,17 +1483,23 @@ void GameClient::renderMap(){
     auto toScreenY = [&](float wz){ return (wz - z0) / spanZ * (float)SCR_H; };
 
     // ---- Сетка 10x10 с подписью прямо в квадрате.
+    // Сетка живёт только внутри мира: на вытянутом экране телефона мир по ширине занимает
+    // не весь кадр, и линии, уходящие в пустоту по краям, выглядели браком.
     const float CELL = cfg.size / 10.0f;
+    float worldL = clampf(toScreenX(0.0f), 0.0f, (float)SCR_W);
+    float worldR = clampf(toScreenX(cfg.size), 0.0f, (float)SCR_W);
+    float worldT = clampf(toScreenY(0.0f), 0.0f, (float)SCR_H);
+    float worldB = clampf(toScreenY(cfg.size), 0.0f, (float)SCR_H);
     char label[16];
     for(int c = 0; c <= 10; ++c){
         float lx = toScreenX((float)c * CELL);
         if(lx >= 0.0f && lx <= (float)SCR_W)
-            drawUIRect(lx, 0, 1.0f, (float)SCR_H, 0, 1, 1, 1, 0.25f, false);
+            drawUIRect(lx, worldT, 1.0f, worldB - worldT, 0, 1, 1, 1, 0.25f, false);
     }
     for(int r = 0; r <= 10; ++r){
         float ly = toScreenY((float)r * CELL);
         if(ly >= 0.0f && ly <= (float)SCR_H)
-            drawUIRect(0, ly, (float)SCR_W, 1.0f, 0, 1, 1, 1, 0.25f, false);
+            drawUIRect(worldL, ly, worldR - worldL, 1.0f, 0, 1, 1, 1, 0.25f, false);
     }
     float cellW = CELL / spanX * (float)SCR_W;
     float cellH = CELL / spanZ * (float)SCR_H;
@@ -1503,8 +1513,8 @@ void GameClient::renderMap(){
             snprintf(label, sizeof(label), "%c%d", 'A' + c, r + 1);
             // Подпись прижата к левому верхнему углу квадрата, но не вылезает за экран:
             // у крайних квадратов её сдвигает внутрь, иначе буквы «съедались» краем.
-            float tx = clampf(lx + 6.0f * s, 4.0f, (float)SCR_W - fontH * 2.2f);
-            float ty = clampf(ly + 5.0f * s, 4.0f, (float)SCR_H - fontH * 1.4f);
+            float tx = clampf(lx + 6.0f * s, worldL + 4.0f, worldR - fontH * 2.2f);
+            float ty = clampf(ly + 5.0f * s, worldT + 4.0f, worldB - fontH * 1.4f);
             drawText(tx, ty, fontH, label, 1, 1, 1, 0.7f);
         }
     }
@@ -1724,6 +1734,11 @@ int GameClient::run(int argc, char** argv){
             startInGame_ = true;   // пропустить главное меню (отладка)
         } else if(a == "--debug"){
             settings.showDebugInfo = true;
+        } else if(a == "--size" && i + 1 < argc){
+            int w = 0, h = 0;
+            if(sscanf(argv[++i], "%dx%d", &w, &h) == 2 && w > 0 && h > 0){
+                forcedW_ = w; forcedH_ = h;
+            }
         }
     }
 

@@ -132,6 +132,7 @@ private:
     GLuint texJump_ = 0, texRun_ = 0, texCrouch_ = 0;
     GLuint texJoyBase_ = 0, texJoyStick_ = 0, texPlayerMarker_ = 0, texMenuBg_ = 0;
     int menuBgW_ = 0, menuBgH_ = 0;   // размеры фона: рисуем его без растяжения
+    int forcedW_ = 0, forcedH_ = 0;   // --size: проверка раскладки под экран телефона
     GLuint highlightVao_ = 0, highlightVbo_ = 0;
     GLuint heldVao_ = 0, heldVbo_ = 0;
     float  heldBobPhase_ = 0.0f;   // фаза покачивания при ходьбе
