@@ -59,6 +59,7 @@ private:
     bool  mapTapValid_ = false;
     void  toggleMapMark(float screenX, float screenY);
     void drawMenuBackground();
+    GLuint itemIcon(ItemType t) const;
     void bindBlockTextures();
     // Дальность прорисовки в метрах: настройка игрока, зажатая уровнем качества.
     float viewDistanceMeters() const;
@@ -135,6 +136,7 @@ private:
     GLuint texDig_ = 0, texPlace_ = 0, texInteract_ = 0, texInventory_ = 0;
     GLuint texCraft_ = 0, texMap_ = 0, texSettings_ = 0, texClose_ = 0;
     GLuint texJump_ = 0, texRun_ = 0, texCrouch_ = 0;
+    GLuint texItemSulfur_ = 0, texItemIron_ = 0;
     GLuint texJoyBase_ = 0, texJoyStick_ = 0, texPlayerMarker_ = 0, texMenuBg_ = 0;
     int menuBgW_ = 0, menuBgH_ = 0;   // размеры фона: рисуем его без растяжения
     int forcedW_ = 0, forcedH_ = 0;   // --size: проверка раскладки под экран телефона

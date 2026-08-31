@@ -109,6 +109,9 @@ JOBS = {
     'ui_player_marker.png':  ('self.png', 48),
     'ui_damage.png':     ('Damage Indicator.png', 256),
     'item_torch.png':    ('Torch_0.png', 128),
+    # Значки предметов для ячеек инвентаря: те же картинки, что и у блоков жил.
+    'item_sulfur.png':   ('Sulfur Ore.png', 128),
+    'item_iron.png':     ('Scrap.png', 128),
     'menu_bg.png':       ('menu-bg-update.png', 0),            # 0 — оставить как есть
 }
 

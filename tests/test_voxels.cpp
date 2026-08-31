@@ -265,3 +265,48 @@ TEST(вода_не_поднимается_выше_уровня_моря){
     for(int i = 0; i < 40; ++i) v.updateWater(64);
     CHECK_MSG(v.blockAt(x, s, z) == Block::Air, "вода залезла выше уровня моря");
 }
+
+TEST(выбитая_жила_восстанавливается_а_постройка_нет){
+    WorldConfig cfg = voxelTestConfig();
+    World w(cfg); w.generate();
+    ResourceMap res(w); res.generate();
+    VoxelWorld vox(w, res);
+
+    // Ищем блок, который поставил сам мир: обходим чанки, пока не найдём жилу или
+    // ствол дерева над поверхностью.
+    int fx = 0, fy = 0, fz = 0; bool found = false;
+    for(int cz = 0; cz < 24 && !found; ++cz){
+        for(int cx = 0; cx < 24 && !found; ++cx){
+            vox.ensureChunkDecor(cx, cz);
+            for(int x = cx * CHUNK_SIZE; x < (cx + 1) * CHUNK_SIZE && !found; ++x)
+                for(int z = cz * CHUNK_SIZE; z < (cz + 1) * CHUNK_SIZE && !found; ++z){
+                    int sy = vox.surfaceY(x, z);
+                    for(int y = sy + 1; y <= sy + 8; ++y){
+                        Block b = vox.blockAt(x, y, z);
+                        if(b == Block::Wood || b == Block::Stone ||
+                           b == Block::OreMetal || b == Block::OreSulfur){
+                            fx = x; fy = y; fz = z; found = true; break;
+                        }
+                    }
+                }
+        }
+    }
+    CHECK_MSG(found, "в мире не нашлось ни одного блока декора");
+
+    vox.setBlock(fx, fy, fz, Block::Air);
+    CHECK(vox.blockAt(fx, fy, fz) == Block::Air);
+    CHECK(vox.respawnQueueSize() == 1);
+
+    vox.updateRespawn(60.0f);            // ещё рано
+    CHECK(vox.blockAt(fx, fy, fz) == Block::Air);
+    vox.updateRespawn(600.0f);           // срок вышел — блок вернулся
+    CHECK_MSG(vox.blockAt(fx, fy, fz) != Block::Air, "жила не восстановилась");
+    CHECK(vox.respawnQueueSize() == 0);
+
+    // Поставленный игроком блок в очередь не попадает и сам не исчезает.
+    int py = vox.surfaceY(fx + 40, fz + 40) + 1;
+    vox.setBlock(fx + 40, py, fz + 40, Block::Planks);
+    CHECK(vox.respawnQueueSize() == 0);
+    vox.updateRespawn(1000.0f);
+    CHECK(vox.blockAt(fx + 40, py, fz + 40) == Block::Planks);
+}

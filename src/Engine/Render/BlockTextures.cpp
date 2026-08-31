@@ -22,6 +22,7 @@ enum Layer {
     LAYER_SULFUR,
     LAYER_METAL,
     LAYER_LEAVES,
+    LAYER_LEAVES_SNOW,
     LAYER_WATER,
     LAYER_COUNT
 };
@@ -35,6 +36,7 @@ const char* kLayerFiles[LAYER_COUNT] = {
     "block_sulfur.png",
     "block_metal.png",
     "block_leaves.png",
+    nullptr,            // заснеженная листва — та же картинка, обесцвеченная
     nullptr,            // вода рисуется процедурно, файла для неё нет
 };
 
@@ -61,7 +63,7 @@ void scaleInto(SDL_Surface* src, std::vector<uint8_t>& out){
 // но оставляет тёплый песочный оттенок, и зима выглядела бледной пустыней. Поэтому
 // цвет сводится к своей яркости (обесцвечивание) и затем осветляется — это и есть
 // «тот же песок под белым фильтром», только фильтр честный.
-void makeSnowLayer(const std::vector<uint8_t>& ground, std::vector<uint8_t>& out){
+void makeSnowLayer(const std::vector<uint8_t>& ground, std::vector<uint8_t>& out, float lift){
     out.assign((size_t)LAYER_SIZE * LAYER_SIZE * 4, 255);
     for(size_t i = 0; i + 3 < ground.size(); i += 4){
         float r = ground[i] / 255.0f, g = ground[i+1] / 255.0f, b = ground[i+2] / 255.0f;
@@ -71,8 +73,9 @@ void makeSnowLayer(const std::vector<uint8_t>& ground, std::vector<uint8_t>& out
         float nr = lum + (r - lum) * KEEP;
         float ng = lum + (g - lum) * KEEP;
         float nb = lum + (b - lum) * KEEP;
-        // Осветление к белому: снег ярче песка, из которого он сделан.
-        const float LIFT = 0.34f;
+        // Осветление к белому. Насколько — зависит от исходника: песок и так светлый,
+        // а листва тёмная, и без сильного подъёма она становится не снегом, а сажей.
+        const float LIFT = lift;
         nr += (1.0f - nr) * LIFT;
         ng += (1.0f - ng) * LIFT;
         nb += (1.0f - nb) * (LIFT + 0.06f);   // чуть холоднее, синева читается как снег
@@ -126,12 +129,14 @@ bool blockTexturesInit(){
 
     int loaded = 0;
     std::vector<uint8_t> buffer;
-    std::vector<uint8_t> groundPixels;
+    std::vector<uint8_t> groundPixels, leavesPixels;
     for(int i = 0; i < LAYER_COUNT; ++i){
         if(i == LAYER_WATER){
             makeWaterLayer(buffer);
         } else if(i == LAYER_SNOW){
-            makeSnowLayer(groundPixels, buffer);
+            makeSnowLayer(groundPixels, buffer, 0.34f);
+        } else if(i == LAYER_LEAVES_SNOW){
+            makeSnowLayer(leavesPixels, buffer, 0.80f);
         } else if(i == LAYER_STONE){
             makeStoneLayer(buffer);
         } else {
@@ -146,6 +151,7 @@ bool blockTexturesInit(){
             scaleInto(conv, buffer);
             SDL_FreeSurface(conv);
             if(i == LAYER_GROUND) groundPixels = buffer;   // из него делается снег
+            if(i == LAYER_LEAVES) leavesPixels = buffer;   // а из листвы — заснеженная
             ++loaded;
         }
         glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i, LAYER_SIZE, LAYER_SIZE, 1,
@@ -159,7 +165,7 @@ bool blockTexturesInit(){
     glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 
     g_ready = (loaded > 0);
-    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 3);
+    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 4);
     return g_ready;
 }
 
@@ -180,6 +186,7 @@ int blockTextureLayer(Block b){
         case Block::OreSulfur:  return LAYER_SULFUR;
         case Block::OreMetal:   return LAYER_METAL;
         case Block::Leaves:     return LAYER_LEAVES;
+        case Block::LeavesSnow: return LAYER_LEAVES_SNOW;
         case Block::Water:      return LAYER_WATER;
         case Block::Snow:       return LAYER_SNOW;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
@@ -197,6 +204,8 @@ void blockTextureTint(Block b, float& r, float& g, float& bl){
         case Block::Dirt:       r = 0.78f; g = 0.62f; bl = 0.46f; break;
         case Block::Mud:        r = 0.55f; g = 0.52f; bl = 0.40f; break;
         case Block::Leaves:     r = 0.85f; g = 1.05f; bl = 0.75f; break;
+        // Заснеженной листве свой слой уже обесцвечен — фильтр почти нейтральный.
+        case Block::LeavesSnow: r = 1.00f; g = 1.01f; bl = 1.04f; break;
         case Block::Water:      r = 0.85f; g = 0.95f; bl = 1.05f; break;
         case Block::StoneBrick: r = 1.05f; g = 1.05f; bl = 1.02f; break;
         default:                r = 1.00f; g = 1.00f; bl = 1.00f; break;

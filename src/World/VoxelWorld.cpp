@@ -99,6 +99,9 @@ void VoxelWorld::generateDecor(int cx, int cz) const {
             case ResourceKind::TreeBirch:
             case ResourceKind::TreeDead: {
                 Rng rng = rngForCell(bx, bz, world_.config().seed, SALT_TREE);
+                // В зиме листва заснеженная — свой блок с белой текстурой.
+                Block leaf = (world_.biomeAt((float)bx, (float)bz) == Biome::Snow)
+                             ? Block::LeavesSnow : Block::Leaves;
                 bool pine = (n->kind == ResourceKind::TreePine);
                 bool dead = (n->kind == ResourceKind::TreeDead);
                 int trunk = dead ? rng.nextInt(3, 4) : (pine ? rng.nextInt(6, 9) : rng.nextInt(4, 6));
@@ -115,10 +118,10 @@ void VoxelWorld::generateDecor(int cx, int cz) const {
                             for(int dz = -r; dz <= r; ++dz){
                                 if(abs(dx) + abs(dz) > r + 1) continue;
                                 if(dx == 0 && dz == 0 && level < 2) continue;
-                                put(bx + dx, y, bz + dz, Block::Leaves);
+                                put(bx + dx, y, bz + dz, leaf);
                             }
                     }
-                    put(bx, topY + 1, bz, Block::Leaves);
+                    put(bx, topY + 1, bz, leaf);
                 } else {
                     // Лиственное: шар листвы вокруг верхушки ствола.
                     for(int dx = -2; dx <= 2; ++dx)
@@ -126,40 +129,28 @@ void VoxelWorld::generateDecor(int cx, int cz) const {
                             for(int dy = -1; dy <= 2; ++dy){
                                 if(abs(dx) + abs(dz) + abs(dy) > 4) continue;
                                 if(dx == 0 && dz == 0 && dy <= 0) continue;
-                                put(bx + dx, topY + dy, bz + dz, Block::Leaves);
+                                put(bx + dx, topY + dy, bz + dz, leaf);
                             }
                 }
                 break;
             }
-            case ResourceKind::Boulder:
-            case ResourceKind::RockCluster: {
-                // Валун: кучка каменных блоков на поверхности.
-                int size = (n->kind == ResourceKind::RockCluster) ? 2 : 1;
-                for(int dx = -size; dx <= size; ++dx)
-                    for(int dz = -size; dz <= size; ++dz){
-                        if(abs(dx) + abs(dz) > size) continue;
-                        int h = (abs(dx) + abs(dz) == 0) ? size : 1;
-                        int sy = surfaceY(bx + dx, bz + dz) + 1;
-                        for(int i = 0; i < h; ++i) put(bx + dx, sy + i, bz + dz, Block::Stone);
-                    }
-                break;
-            }
+            case ResourceKind::StoneNode:
             case ResourceKind::MetalOre:
-                put(bx, base, bz, Block::OreMetal);
-                put(bx, base + 1, bz, Block::OreMetal);
-                break;
-            case ResourceKind::SulfurOre:
-                put(bx, base, bz, Block::OreSulfur);
-                put(bx, base + 1, bz, Block::OreSulfur);
-                break;
-            case ResourceKind::Bush:
-            case ResourceKind::BerryBush:
-            case ResourceKind::Hemp: {
-                // Куст — один блок листвы: с него падает ткань. Ставим не каждый: мелочи
-                // в мире около 80 тысяч, и сплошной ковёр кубов под ногами и мешал бы
-                // ходить, и съедал бы кадры на ровном месте.
-                Rng rng = rngForCell(bx, bz, world_.config().seed, SALT_TREE + 17);
-                if(rng.chance(0.35f)) put(bx, base, bz, Block::Leaves);
+            case ResourceKind::SulfurOre: {
+                // Жила — площадка 4x4 блока в два слоя: её видно издалека, и с неё
+                // есть что добыть, в отличие от одиночного куба.
+                Block ore = (n->kind == ResourceKind::MetalOre)  ? Block::OreMetal
+                          : (n->kind == ResourceKind::SulfurOre) ? Block::OreSulfur
+                                                                 : Block::Stone;
+                for(int dx = 0; dx < 4; ++dx)
+                    for(int dz = 0; dz < 4; ++dz){
+                        int wx = bx + dx - 1, wz = bz + dz - 1;
+                        int sy = surfaceY(wx, wz) + 1;
+                        // Углы ниже середины: иначе жила выглядит кирпичом.
+                        bool corner = (dx == 0 || dx == 3) && (dz == 0 || dz == 3);
+                        int h = corner ? 1 : 2;
+                        for(int i = 0; i < h; ++i) put(wx, sy + i, wz, ore);
+                    }
                 break;
             }
             default:
@@ -213,8 +204,44 @@ bool VoxelWorld::isSolidAt(int x, int y, int z) const {
     return blockIsSolid(blockAt(x, y, z));
 }
 
+bool VoxelWorld::isDecorBlock(int x, int y, int z) const {
+    int cx = (int)floorf((float)x / CHUNK_SIZE);
+    int cz = (int)floorf((float)z / CHUNK_SIZE);
+    auto ch = decor_.find(packChunk(cx, cz));
+    if(ch == decor_.end()) return false;
+    return ch->second.find(packKey(x, y, z)) != ch->second.end();
+}
+
+// Сколько ждёт жила до восстановления. Пять минут: за это время игрок успевает уйти,
+// и возврат блока не происходит у него на глазах.
+static const float RESPAWN_SECONDS = 300.0f;
+
+int VoxelWorld::updateRespawn(float dtSeconds){
+    if(respawn_.empty()) return 0;
+    int restored = 0;
+    for(auto it = respawn_.begin(); it != respawn_.end(); ){
+        it->second.left -= dtSeconds;
+        if(it->second.left > 0.0f){ ++it; continue; }
+        uint64_t key = it->first;
+        RespawnCell cell = it->second;
+        it = respawn_.erase(it);
+        // Возврат — это снятие правки: под ней снова окажется блок декора. Если игрок
+        // успел что-то на этом месте поставить, правку не трогаем.
+        auto e = edits_.find(key);
+        if(e == edits_.end() || e->second != Block::Air) continue;
+        edits_.erase(e);
+        if(onBlockChanged) onBlockChanged(cell.x, cell.y, cell.z);
+        ++restored;
+    }
+    return restored;
+}
+
 void VoxelWorld::setBlock(int x, int y, int z, Block b){
     if(y < 0 || y > maxY_) return;
+    // Выбили блок, который поставил мир (жила, дерево) — ставим его в очередь на
+    // восстановление. Построенное игроком в очередь не попадает.
+    if(b == Block::Air && isDecorBlock(x, y, z))
+        respawn_[packKey(x, y, z)] = RespawnCell{ RESPAWN_SECONDS, x, y, z };
     edits_[packKey(x, y, z)] = b;
     if(onBlockChanged) onBlockChanged(x, y, z);
     queueWaterAround(x, y, z);

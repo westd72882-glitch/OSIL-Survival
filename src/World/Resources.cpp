@@ -106,8 +106,9 @@ std::vector<ResourceNode> ResourceMap::nodesInCell(int cx, int cz) const {
         out.push_back(n);
     }
 
-    // ---- Камни, руда, сера. На крутых склонах и в горах — заметно чаще.
-    int rockTries = attemptsFor(1.1f * bi.rockDensity * density * (0.6f + steep));
+    // ---- Жилы: сера, железо и камень. Спавнятся нечасто — это точки интереса, а не
+    // фон. Валунов и «скальных выходов» больше нет: они были просто кубами камня.
+    int rockTries = attemptsFor(0.42f * bi.rockDensity * density * (0.7f + steep * 0.6f));
     for(int i = 0; i < rockTries; ++i){
         float x = baseX + rng.nextFloat() * cell;
         float z = baseZ + rng.nextFloat() * cell;
@@ -117,8 +118,7 @@ std::vector<ResourceNode> ResourceMap::nodesInCell(int cx, int cz) const {
         ResourceKind kind;
         if(roll < bi.oreChance)                        kind = ResourceKind::MetalOre;
         else if(roll < bi.oreChance + bi.sulfurChance) kind = ResourceKind::SulfurOre;
-        else if(rng.chance(0.35f))                     kind = ResourceKind::RockCluster;
-        else                                           kind = ResourceKind::Boulder;
+        else                                           kind = ResourceKind::StoneNode;
 
         ResourceNode n;
         n.kind = kind;
@@ -130,34 +130,9 @@ std::vector<ResourceNode> ResourceMap::nodesInCell(int cx, int cz) const {
         out.push_back(n);
     }
 
-    // ---- Мелочь под руками: камни, кусты, ягоды, тыквы, грибы, конопля.
-    int smallTries = attemptsFor(2.0f * bi.bushDensity * density * (1.0f - steep));
-    for(int i = 0; i < smallTries; ++i){
-        float x = baseX + rng.nextFloat() * cell;
-        float z = baseZ + rng.nextFloat() * cell;
-        if(world_.isWater(x, z)) continue;
-
-        float roll = rng.nextFloat();
-        ResourceKind kind;
-        if(roll < 0.22f)      kind = ResourceKind::StoneNode;
-        else if(roll < 0.46f) kind = ResourceKind::Bush;
-        else if(roll < 0.64f) kind = ResourceKind::BerryBush;
-        else if(roll < 0.74f) kind = ResourceKind::Pumpkin;
-        else if(roll < 0.86f) kind = ResourceKind::Hemp;
-        else                  kind = ResourceKind::Mushroom;
-        // Грибы растут только на равнине: в песке и снегу им не место.
-        if(kind == ResourceKind::Mushroom && s.biome != Biome::Grassland)
-            kind = ResourceKind::Bush;
-
-        ResourceNode n;
-        n.kind = kind;
-        n.pos = Vec3{ x, world_.heightAt(x, z), z };
-        n.rotationY = rng.nextRange(0.0f, 6.28318f);
-        n.scale = rng.nextRange(0.9f, 1.1f);
-        n.health = resourceInfo(kind).health;
-        n.id = (uint32_t)(hashCoords(cx, cz, cfg.seed, SALT_RESOURCES + 4231ULL + (uint64_t)i * 31ULL) & 0xffffffffu);
-        out.push_back(n);
-    }
+    // Мелочи (кусты, ягоды, тыквы, грибы, конопля, мелкие камни под руками) больше
+    // нет: она превращала поле в ковёр из кубов, а давала пустяки. Остались деревья
+    // и рудные/каменные жилы — то, ради чего вообще ходят по карте.
 
     return out;
 }
@@ -179,7 +154,7 @@ void ResourceMap::generate(){
         }
     }
 
-    LOG_INFO("ресурсы расставлены: всего %zu объектов (деревьев %zu, камня и руды %zu, мелочи %zu)",
+    LOG_INFO("ресурсы расставлены: всего %zu объектов (деревьев %zu, жил камня и руды %zu, прочего %zu)",
              nodes_.size(),
              countOf(ResourceKind::TreePine) + countOf(ResourceKind::TreeOak) +
                  countOf(ResourceKind::TreeBirch) + countOf(ResourceKind::TreeDead),

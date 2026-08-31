@@ -188,11 +188,15 @@ TEST(ресурсы_есть_всех_основных_видов){
     res.generate();
     size_t trees = res.countOf(ResourceKind::TreePine) + res.countOf(ResourceKind::TreeOak) +
                    res.countOf(ResourceKind::TreeBirch) + res.countOf(ResourceKind::TreeDead);
-    size_t rocks = res.countOf(ResourceKind::Boulder) + res.countOf(ResourceKind::RockCluster);
+    // Валунов и мелочи в мире больше нет: остались деревья и жилы (камень, железо,
+    // сера). Жилы редкие по замыслу, поэтому порог низкий — важно, что они есть.
+    size_t stone = res.countOf(ResourceKind::StoneNode);
     CHECK_MSG(trees > 50, "деревьев почти нет");
-    CHECK_MSG(rocks > 20, "камня почти нет");
-    CHECK_MSG(res.countOf(ResourceKind::MetalOre) > 0, "нет металлической руды");
+    CHECK_MSG(stone > 5, "каменных жил почти нет");
+    CHECK_MSG(res.countOf(ResourceKind::MetalOre) > 0, "нет железной руды");
     CHECK_MSG(res.countOf(ResourceKind::SulfurOre) > 0, "нет серы — нечем будет рейдить");
+    CHECK_MSG(res.countOf(ResourceKind::Boulder) == 0, "валуны должны быть убраны");
+    CHECK_MSG(res.countOf(ResourceKind::Bush) == 0, "кусты должны быть убраны");
 }
 
 TEST(поиск_ресурсов_по_радиусу_совпадает_с_перебором){

@@ -11,7 +11,7 @@ const ItemDef kItems[(int)ItemType::COUNT] = {
     { "snow",        "Снег",          Block::Snow,       1000,   0,  0,  0.94f,0.96f,0.98f },
     { "wood",        "Дерево",        Block::Wood,       1000,   0,  0,  0.55f,0.40f,0.24f },
     { "leaves",      "Листва",        Block::Leaves,     1000,   0,  0,  0.24f,0.52f,0.22f },
-    { "ore_metal",   "Металлическая руда", Block::OreMetal, 100, 0,  0,  0.62f,0.52f,0.34f },
+    { "ore_metal",   "Железная руда", Block::OreMetal,    100,   0,  0,  0.62f,0.52f,0.34f },
     { "ore_sulfur",  "Серная руда",   Block::OreSulfur,   100,   0,  0,  0.78f,0.74f,0.28f },
     { "planks",      "Доски",         Block::Planks,     1000,   0,  0,  0.72f,0.56f,0.34f },
     { "stone_brick", "Каменный блок", Block::StoneBrick, 1000,   0,  0,  0.62f,0.62f,0.60f },
@@ -40,6 +40,7 @@ ItemType itemFromBlock(Block b){
         case Block::Leaves:     return ItemType::Cloth;   // с листвы падает ткань, как с кустов
         case Block::OreMetal:   return ItemType::OreMetal;
         case Block::OreSulfur:  return ItemType::OreSulfur;
+        case Block::LeavesSnow: return ItemType::None;
         case Block::Planks:     return ItemType::Planks;
         case Block::StoneBrick: return ItemType::StoneBrick;
         case Block::Mud:        return ItemType::Mud;

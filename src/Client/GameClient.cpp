@@ -848,6 +848,8 @@ void GameClient::update(float dt){
     // Растекание воды: небольшими порциями за тик, чтобы залив ямы был виден, но не
     // стоил кадра. Пока очередь пуста, вызов бесплатен.
     voxels_->updateWater(96);
+    // Восстановление выбитых жил: пока очередь пуста, вызов ничего не стоит.
+    voxels_->updateRespawn(dt);
 
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
@@ -1087,15 +1089,33 @@ void GameClient::drawBar(float x, float y, float w, float h, float value01,
     if(!caption.empty()) drawText(x + 6.0f, y + h * 0.12f, h * 0.76f, caption, UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.95f);
 }
 
+// Значок предмета для ячейки. Есть только у руды: остальное рисуется цветом блока,
+// который в мире ровно такой же, поэтому предмет узнаётся и без картинки.
+GLuint GameClient::itemIcon(ItemType t) const {
+    switch(t){
+        case ItemType::OreSulfur:
+        case ItemType::Sulfur:    return texItemSulfur_;
+        case ItemType::OreMetal:
+        case ItemType::MetalFrag: return texItemIron_;
+        default:                  return 0;
+    }
+}
+
 void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, bool selected){
     drawUIRect(x, y, size, size, 0, UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.82f, false);
     if(!stack.empty()){
         const ItemDef& def = itemDef(stack.type);
-        // Иконка предмета — квадрат цвета блока: цвет однозначно читается, потому что
-        // ровно такого цвета этот блок в мире.
-        float pad = size * 0.16f;
-        drawUIRect(x + pad, y + pad, size - pad*2.0f, size - pad*2.0f, 0,
-                   def.r, def.g, def.b, 1.0f, false);
+        GLuint icon = itemIcon(stack.type);
+        if(icon){
+            // У картинок прозрачные поля, поэтому значок рисуем почти во всю ячейку.
+            float ip = size * 0.07f;
+            drawUIRect(x + ip, y + ip, size - ip*2.0f, size - ip*2.0f, icon, 1, 1, 1, 1.0f, true);
+        } else {
+            // Без картинки — квадрат цвета блока: он в мире ровно такого же цвета.
+            float pad = size * 0.16f;
+            drawUIRect(x + pad, y + pad, size - pad*2.0f, size - pad*2.0f, 0,
+                       def.r, def.g, def.b, 1.0f, false);
+        }
         char buf[16];
         snprintf(buf, sizeof(buf), "%d", stack.count);
         drawText(x + size * 0.06f, y + size * 0.62f, size * 0.30f, buf, 1.0f, 1.0f, 1.0f, 0.95f);
@@ -1849,6 +1869,8 @@ void GameClient::loadInterfaceTextures(){
         { "ui_jump.png",           &texJump_ },
         { "ui_run.png",            &texRun_ },
         { "ui_crouch.png",         &texCrouch_ },
+        { "item_sulfur.png",       &texItemSulfur_ },
+        { "item_iron.png",         &texItemIron_ },
         { "ui_joystick_base.png",  &texJoyBase_ },
         { "ui_joystick_stick.png", &texJoyStick_ },
         { "ui_player_marker.png",  &texPlayerMarker_ },
