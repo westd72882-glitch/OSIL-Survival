@@ -29,11 +29,11 @@ enum Layer {
 const char* kLayerFiles[LAYER_COUNT] = {
     "block_ground.png",
     nullptr,            // снег — тот же грунт, обесцвеченный в белый (см. makeSnowLayer)
-    "block_stone.png",
+    nullptr,            // камень: своей картинки нет, рисуется ровным серым
     "block_wood.png",
     "block_planks.png",
-    nullptr,            // серная руда — камень с вкраплениями (см. makeOreLayer)
-    nullptr,            // металлическая руда — то же, другим цветом
+    "block_sulfur.png",
+    "block_metal.png",
     "block_leaves.png",
     nullptr,            // вода рисуется процедурно, файла для неё нет
 };
@@ -83,46 +83,12 @@ void makeSnowLayer(const std::vector<uint8_t>& ground, std::vector<uint8_t>& out
     }
 }
 
-// Руда — камень с вкраплениями. Картинки руды в наборе есть, но это значки предмета на
-// прозрачном фоне: как грань блока они не тайлятся, и в мире получалась тёмная коробка
-// с каймой. Поэтому жила строится из камня: по нему детерминированно разбрасываются
-// пятна нужного цвета — так руду видно издалека и она стыкуется с соседними блоками.
-void makeOreLayer(const std::vector<uint8_t>& stone, std::vector<uint8_t>& out,
-                  float orR, float orG, float orB, uint32_t salt){
-    out = stone.empty() ? std::vector<uint8_t>((size_t)LAYER_SIZE * LAYER_SIZE * 4, 128)
-                        : stone;
-    // 14 пятен со случайным радиусом. Больше — грань становится сплошным цветом и
-    // перестаёт читаться как камень с рудой.
-    const int BLOBS = 14;
-    uint32_t st = salt * 2654435761u + 1u;
-    auto next = [&st](){ st = st * 1664525u + 1013904223u; return st; };
-    for(int b = 0; b < BLOBS; ++b){
-        int cx = (int)(next() % LAYER_SIZE);
-        int cy = (int)(next() % LAYER_SIZE);
-        int rad = 14 + (int)(next() % 18);
-        for(int dy = -rad; dy <= rad; ++dy){
-            for(int dx = -rad; dx <= rad; ++dx){
-                float d = SDL_sqrtf((float)(dx*dx + dy*dy)) / (float)rad;
-                if(d > 1.0f) continue;
-                // Края пятна размываем, иначе вкрапления выглядят наклейками. Спад
-                // пологий: при квадратичном пятно вырождалось в еле заметную точку.
-                float k = SDL_powf(1.0f - d, 0.75f) * 0.95f;
-                // Оборачиваем координаты: пятно у края переходит на другую сторону и
-                // текстура остаётся бесшовной при повторении.
-                int x = ((cx + dx) % LAYER_SIZE + LAYER_SIZE) % LAYER_SIZE;
-                int y = ((cy + dy) % LAYER_SIZE + LAYER_SIZE) % LAYER_SIZE;
-                uint8_t* p = &out[((size_t)y * LAYER_SIZE + x) * 4];
-                // Яркость камня сохраняем: вкрапление подсвечивается его же рельефом.
-                float lum = (p[0] * 0.299f + p[1] * 0.587f + p[2] * 0.114f) / 255.0f;
-                lum = 0.55f + lum * 0.75f;
-                float nr = p[0] / 255.0f * (1.0f - k) + orR * lum * k;
-                float ng = p[1] / 255.0f * (1.0f - k) + orG * lum * k;
-                float nb = p[2] / 255.0f * (1.0f - k) + orB * lum * k;
-                p[0] = (uint8_t)(SDL_min(nr, 1.0f) * 255.0f);
-                p[1] = (uint8_t)(SDL_min(ng, 1.0f) * 255.0f);
-                p[2] = (uint8_t)(SDL_min(nb, 1.0f) * 255.0f);
-            }
-        }
+// Камень. Своей картинки для него в наборе нет, поэтому слой ровный серый: с ним блок
+// выглядит так же, как выглядел до текстур, — цвет плюс затенение граней и углов.
+void makeStoneLayer(std::vector<uint8_t>& out){
+    out.assign((size_t)LAYER_SIZE * LAYER_SIZE * 4, 255);
+    for(size_t i = 0; i + 3 < out.size(); i += 4){
+        out[i] = 150; out[i+1] = 150; out[i+2] = 152; out[i+3] = 255;
     }
 }
 
@@ -156,16 +122,14 @@ bool blockTexturesInit(){
 
     int loaded = 0;
     std::vector<uint8_t> buffer;
-    std::vector<uint8_t> groundPixels, stonePixels;
+    std::vector<uint8_t> groundPixels;
     for(int i = 0; i < LAYER_COUNT; ++i){
         if(i == LAYER_WATER){
             makeWaterLayer(buffer);
         } else if(i == LAYER_SNOW){
             makeSnowLayer(groundPixels, buffer);
-        } else if(i == LAYER_SULFUR){
-            makeOreLayer(stonePixels, buffer, 0.88f, 0.82f, 0.22f, 0x53554cu);
-        } else if(i == LAYER_METAL){
-            makeOreLayer(stonePixels, buffer, 0.72f, 0.44f, 0.26f, 0x4d4554u);
+        } else if(i == LAYER_STONE){
+            makeStoneLayer(buffer);
         } else {
             SDL_Surface* raw = IMG_Load(assetPath(kLayerFiles[i]).c_str());
             if(!raw){
@@ -178,7 +142,6 @@ bool blockTexturesInit(){
             scaleInto(conv, buffer);
             SDL_FreeSurface(conv);
             if(i == LAYER_GROUND) groundPixels = buffer;   // из него делается снег
-            if(i == LAYER_STONE)  stonePixels  = buffer;   // а из камня — жилы руды
             ++loaded;
         }
         glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i, LAYER_SIZE, LAYER_SIZE, 1,
@@ -192,8 +155,7 @@ bool blockTexturesInit(){
     glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 
     g_ready = (loaded > 0);
-    SDL_Log("Текстуры блоков: загружено %d слоёв из %d, ещё 4 построено на месте",
-            loaded, LAYER_COUNT - 4);
+    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 3);
     return g_ready;
 }
 

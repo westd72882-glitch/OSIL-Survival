@@ -87,8 +87,9 @@ def write_png(path, W, H, px):
 # Размеры: блоки 256 (на телефоне больше не видно), интерфейс 128, фон меню как есть.
 JOBS = {
     'block_ground.png':  ('T_Ground_Sand_02_A_Sm.png', 256),   # песок: он же зима и земля под фильтром
-    'block_stone.png':   ('T_field_road_01_A_T.png', 256),
     'block_wood.png':    ('Trunk.png', 256),
+    'block_sulfur.png':  ('Sulfur Ore.png', 256),
+    'block_metal.png':   ('Scrap.png', 256),
     'block_planks.png':  ('Wall_Wood_0.png', 256),
     'block_leaves.png':  ('Grass_02.png', 256),
     'block_dirt.png':    ('Dirt_01.png', 256),
@@ -108,10 +109,6 @@ JOBS = {
     'ui_player_marker.png':  ('self.png', 48),
     'ui_damage.png':     ('Damage Indicator.png', 256),
     'item_torch.png':    ('Torch_0.png', 128),
-    # Значки предметов: это картинки на прозрачном фоне, гранью блока их брать нельзя —
-    # жилы руды строятся из камня прямо при загрузке (см. BlockTextures.cpp).
-    'item_sulfur.png':   ('Sulfur Ore.png', 128),
-    'item_metal.png':    ('Scrap.png', 128),
     'menu_bg.png':       ('menu-bg-update.png', 0),            # 0 — оставить как есть
 }
 

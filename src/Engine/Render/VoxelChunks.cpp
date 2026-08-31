@@ -70,14 +70,10 @@ float vertexAO(const VoxelWorld& w, int bx, int by, int bz, const FaceDef& f,
     return kAO[level];
 }
 
-// Небольшой разброс яркости от координат блока: две соседние травинки чуть разного
-// оттенка, и поле перестаёт выглядеть залитым одной краской. Разброс детерминирован,
-// поэтому при пересборке чанка картинка не «мигает» новыми пятнами.
-float blockShade(int x, int y, int z){
-    uint32_t h = (uint32_t)(x * 73856093) ^ (uint32_t)(y * 19349663) ^ (uint32_t)(z * 83492791);
-    h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
-    return 0.94f + (float)(h & 0xFF) / 255.0f * 0.10f;
-}
+// Разброса яркости по блокам больше нет. Он был нужен, пока блоки заливались одним
+// цветом: без него поле выглядело одной краской. С текстурами рисунок и так у каждого
+// блока свой, а разнобой яркости поверх него читался как грязь.
+float blockShade(int, int, int){ return 1.0f; }
 
 GLuint uploadVoxelMesh(const std::vector<VoxelVertex>& verts, GLuint& vboOut){
     GLuint vao = 0, vbo = 0;

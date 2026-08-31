@@ -1151,10 +1151,11 @@ void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, 
     drawUIRect(x, y, size, size, 0, UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.82f, false);
     if(!stack.empty()){
         const ItemDef& def = itemDef(stack.type);
-        // Иконка предмета — квадрат цвета блока: текстур у игры нет, а цвет однозначно
-        // читается, потому что тот же цвет у блока в мире.
+        // Иконка предмета — квадрат цвета блока: цвет однозначно читается, потому что
+        // ровно такого цвета этот блок в мире.
         float pad = size * 0.16f;
-        drawUIRect(x + pad, y + pad, size - pad*2.0f, size - pad*2.0f, 0, def.r, def.g, def.b, 1.0f, false);
+        drawUIRect(x + pad, y + pad, size - pad*2.0f, size - pad*2.0f, 0,
+                   def.r, def.g, def.b, 1.0f, false);
         char buf[16];
         snprintf(buf, sizeof(buf), "%d", stack.count);
         drawText(x + size * 0.06f, y + size * 0.62f, size * 0.30f, buf, 1.0f, 1.0f, 1.0f, 0.95f);
@@ -1605,12 +1606,9 @@ void GameClient::renderCompass(){
         }
     }
 
-    // Палка курса: она и есть «куда смотрит игрок». Число курса — под ней, чтобы не
-    // налезало на деления шкалы.
+    // Палка курса: она и есть «куда смотрит игрок». Точного числа градусов под ней нет —
+    // курс читается по шкале, а цифра под палкой была лишней.
     drawUIRect(x + w * 0.5f - 1.5f, y - 3.0f * s, 3.0f, h + 5.0f * s, 0, 1, 1, 1, 0.95f, false);
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%.0f", (double)heading);
-    drawText(x + w * 0.5f - 13.0f * s, y + h + 6.0f * s, 15.0f * s, buf, 1, 1, 1, 0.8f);
 }
 
 // ==================== ГЛАВНОЕ МЕНЮ ====================
