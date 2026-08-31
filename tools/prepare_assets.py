@@ -87,9 +87,10 @@ def write_png(path, W, H, px):
 # Размеры: блоки 256 (на телефоне больше не видно), интерфейс 128, фон меню как есть.
 JOBS = {
     'block_ground.png':  ('T_Ground_Sand_02_A_Sm.png', 256),   # песок: он же зима и земля под фильтром
+    'block_stone.png':   ('tex_stone.png', 256),
     'block_wood.png':    ('Trunk.png', 256),
-    'block_sulfur.png':  ('Sulfur Ore.png', 256),
-    'block_metal.png':   ('Scrap.png', 256),
+    'block_sulfur.png':  ('tex_sulfur_ore.png', 256),
+    'block_metal.png':   ('tex_iron_ore.png', 256),
     'block_planks.png':  ('Wall_Wood_0.png', 256),
     'block_leaves.png':  ('Grass_02.png', 256),
     'block_dirt.png':    ('Dirt_01.png', 256),

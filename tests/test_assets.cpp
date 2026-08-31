@@ -32,11 +32,11 @@ bool readPngSize(const std::string& path, int& w, int& h){
     return w > 0 && h > 0;
 }
 
-// Слои снега, воды и камня строятся на месте, своих файлов у них нет — см.
-// BlockTextures.cpp.
+// Слои снега, заснеженной листвы и воды строятся на месте, своих файлов у них нет —
+// см. BlockTextures.cpp.
 const char* BLOCK_TEXTURES[] = {
-    "block_ground.png", "block_wood.png", "block_planks.png", "block_leaves.png",
-    "block_dirt.png", "block_sulfur.png", "block_metal.png"
+    "block_ground.png", "block_stone.png", "block_wood.png", "block_planks.png",
+    "block_leaves.png", "block_dirt.png", "block_sulfur.png", "block_metal.png"
 };
 
 const char* UI_TEXTURES[] = {

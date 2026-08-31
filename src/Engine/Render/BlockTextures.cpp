@@ -30,7 +30,7 @@ enum Layer {
 const char* kLayerFiles[LAYER_COUNT] = {
     "block_ground.png",
     nullptr,            // снег — тот же грунт, обесцвеченный в белый (см. makeSnowLayer)
-    nullptr,            // камень: своей картинки нет, рисуется ровным серым
+    "block_stone.png",
     "block_wood.png",
     "block_planks.png",
     "block_sulfur.png",
@@ -86,15 +86,6 @@ void makeSnowLayer(const std::vector<uint8_t>& ground, std::vector<uint8_t>& out
     }
 }
 
-// Камень. Своей картинки для него в наборе нет, поэтому слой ровный серый: с ним блок
-// выглядит так же, как выглядел до текстур, — цвет плюс затенение граней и углов.
-void makeStoneLayer(std::vector<uint8_t>& out){
-    out.assign((size_t)LAYER_SIZE * LAYER_SIZE * 4, 255);
-    for(size_t i = 0; i + 3 < out.size(); i += 4){
-        out[i] = 150; out[i+1] = 150; out[i+2] = 152; out[i+3] = 255;
-    }
-}
-
 // Процедурная вода: спокойная рябь. Отдельной картинки для неё нет, а плоская заливка
 // на большой глади выглядит как пластик.
 void makeWaterLayer(std::vector<uint8_t>& out){
@@ -137,8 +128,6 @@ bool blockTexturesInit(){
             makeSnowLayer(groundPixels, buffer, 0.34f);
         } else if(i == LAYER_LEAVES_SNOW){
             makeSnowLayer(leavesPixels, buffer, 0.80f);
-        } else if(i == LAYER_STONE){
-            makeStoneLayer(buffer);
         } else {
             SDL_Surface* raw = IMG_Load(assetPath(kLayerFiles[i]).c_str());
             if(!raw){
@@ -165,7 +154,7 @@ bool blockTexturesInit(){
     glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 
     g_ready = (loaded > 0);
-    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 4);
+    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 3);
     return g_ready;
 }
 
