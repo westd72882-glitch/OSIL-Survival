@@ -319,11 +319,14 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
 
     // Бруски топорика в своей плоской системе: x поперёк рукояти, y вдоль неё.
     struct Part { float cx, cy, hx, hy, hz; Block block; };
+    // Пропорции сняты с картинки предмета: длинное топорище и широкая каменная голова,
+    // насаженная сбоку и перевязанная у обуха.
     const Part parts[] = {
-        { 0.000f, -0.090f, 0.0085f, 0.075f, 0.0085f, Block::Wood },
-        { 0.000f,  0.035f, 0.0085f, 0.055f, 0.0085f, Block::Wood },
-        { -0.012f, 0.098f, 0.021f,  0.026f, 0.011f,  Block::Stone },
-        { -0.040f, 0.104f, 0.014f,  0.019f, 0.009f,  Block::Stone },
+        { 0.000f, -0.105f, 0.0105f, 0.090f, 0.0105f, Block::Wood },   // топорище, низ
+        { 0.000f,  0.040f, 0.0095f, 0.062f, 0.0095f, Block::Wood },   // топорище, верх
+        { -0.006f, 0.112f, 0.0150f, 0.018f, 0.0135f, Block::Wood },   // перевязка у обуха
+        { -0.040f, 0.118f, 0.0360f, 0.030f, 0.0140f, Block::Stone },  // каменная голова
+        { -0.082f, 0.120f, 0.0140f, 0.022f, 0.0105f, Block::Stone },  // скошенное лезвие
     };
     const float S = 0.86f;
     float angle = 0.42f - swing * 3.2f;
@@ -498,14 +501,34 @@ void GameClient::hotbarGeometry(float& x, float& y, float& slot, float& gap) con
     y = (float)SCR_H - slot - 14.0f * s;
 }
 
+// Пояс отделён от основной сетки: в Rust это две разные вещи, и слипшись в один
+// прямоугольник они путают — непонятно, что окажется в руке.
+float GameClient::inventoryBeltGap() const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    return 26.0f * s;
+}
+
 void GameClient::inventoryGeometry(float& x, float& y, float& slot, float& gap) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    slot = clampf(fminf((float)SCR_W, (float)SCR_H) * 0.095f, 44.0f, 104.0f * s);
-    gap = slot * 0.12f;
+    // Ячейка крупнее прежней: в 44 пикселя пальцем не попасть, а место на экране есть.
+    slot = clampf((float)SCR_H * 0.145f, 58.0f, 132.0f * s);
+    gap = slot * 0.09f;
     float totalW = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
-    float totalH = slot * Inventory::ROWS + gap * (Inventory::ROWS - 1);
+    float totalH = slot * Inventory::ROWS + gap * (Inventory::ROWS - 1) + inventoryBeltGap();
     x = ((float)SCR_W - totalW) * 0.5f;
-    y = ((float)SCR_H - totalH) * 0.5f + 10.0f * s;
+    y = ((float)SCR_H - totalH) * 0.5f + 16.0f * s;
+}
+
+// Экранная позиция ячейки инвентаря с учётом отступа перед поясом.
+void GameClient::inventorySlotPos(int i, float& sx, float& sy) const {
+    float gx, gy, slot, gap;
+    inventoryGeometry(gx, gy, slot, gap);
+    int col = i % Inventory::COLS, row = i / Inventory::COLS;
+    // Пояс — ПОСЛЕДНИЙ ряд и стоит ниже с отступом; основная сетка выше него.
+    bool belt = (row == 0);
+    int visualRow = belt ? (Inventory::ROWS - 1) : (row - 1);
+    sx = gx + col * (slot + gap);
+    sy = gy + visualRow * (slot + gap) + (belt ? inventoryBeltGap() : 0.0f);
 }
 
 // ==================== ВВОД ====================
@@ -736,6 +759,21 @@ bool GameClient::handleOverlayTouch(float x, float y){
 
     // Обычный перенос: палец лёг на ячейку с предметом — берём её, ведём — предмет
     // едет за пальцем, отпустили над другой ячейкой — кладём туда.
+    // Крестик выхода: его геометрия повторяет отрисовку.
+    {
+        float gx, gy, slot, gap;
+        inventoryGeometry(gx, gy, slot, gap);
+        float sc = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+        float w = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
+        float closeSize = 54.0f * sc;
+        float cx = gx + w - closeSize, cy = gy - 52.0f * sc;
+        if(x >= cx && x <= cx + closeSize && y >= cy && y <= cy + closeSize){
+            overlay_ = Overlay::None;
+            dragSlot_ = -1; dragActive_ = false;
+            return true;
+        }
+    }
+
     int i = slotAtPoint(x, y);
     if(i >= 0 && !inventory_.slot(i).empty()){
         dragSlot_ = i;
@@ -753,9 +791,8 @@ int GameClient::slotAtPoint(float x, float y) const {
     float gx, gy, slot, gap;
     inventoryGeometry(gx, gy, slot, gap);
     for(int i = 0; i < Inventory::SIZE; ++i){
-        int col = i % Inventory::COLS, row = i / Inventory::COLS;
-        float sx = gx + col * (slot + gap);
-        float sy = gy + row * (slot + gap);
+        float sx, sy;
+        inventorySlotPos(i, sx, sy);
         if(x >= sx && x <= sx + slot && y >= sy && y <= sy + slot) return i;
     }
     return -1;
@@ -1322,10 +1359,16 @@ void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, 
             drawText(x + size - tw - size * 0.06f, y + size - fh * 1.15f, fh, buf, 1, 1, 1, 0.95f);
         }
     }
-    // Выбранная ячейка помечается жёлтой полосой слева — как в Rust на поясе.
-    if(selected)
-        drawUIRect(x, y, size * 0.055f, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
-    uiThinFrame(x, y, size, size, UI_LINE, 0.45f);
+    // Выбранная ячейка — сплошная светлая рамка по контуру, а не полоса сбоку.
+    if(selected){
+        float t = fmaxf(2.0f, size * 0.045f);
+        drawUIRect(x, y, size, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        drawUIRect(x, y + size - t, size, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        drawUIRect(x, y, t, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        drawUIRect(x + size - t, y, t, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+    } else {
+        uiThinFrame(x, y, size, size, UI_LINE, 0.40f);
+    }
 }
 
 void GameClient::renderHud(){
@@ -1526,22 +1569,34 @@ void GameClient::renderOverlay(){
         float gx, gy, slot, gap;
         inventoryGeometry(gx, gy, slot, gap);
         float w = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
-        float h = slot * Inventory::ROWS + gap * (Inventory::ROWS - 1);
-        // Экран инвентаря: затемнение на весь экран, заголовок и сплошная сетка ячеек
-        // без рамки-окна и без подсказок под ней — что делать, видно по самой сетке.
-        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.72f, false);
-        drawText(gx, gy - 44.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
-        // Подложка сетки одним куском: у Rust ячейки стоят вплотную, а не плитками
-        // с зазором, и сетка читается как один блок.
-        drawUIRect(gx - 3.0f * s, gy - 3.0f * s, w + 6.0f * s, h + 6.0f * s, 0,
-                   0.30f, 0.30f, 0.31f, 0.55f, false);
+        float mainH = slot * (Inventory::ROWS - 1) + gap * (Inventory::ROWS - 2);
+        // Экран инвентаря: затемнение на весь экран, заголовок, крестик выхода, сетка
+        // рюкзака и отдельной полосой ниже — пояс. Подсказок нет.
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.78f, false);
+        drawText(gx, gy - 46.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
+
+        // Крестик выхода — там же, где на карте и в настройках.
+        float closeSize = 54.0f * s;
+        float closeX = gx + w - closeSize, closeY = gy - 52.0f * s;
+        if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
+        else {
+            drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
+            drawText(closeX + closeSize * 0.3f, closeY + closeSize * 0.2f, 26.0f * s, "X", 1, 1, 1, 0.95f);
+        }
+
+        // Подложки: отдельная у рюкзака, отдельная у пояса — это разные вещи.
+        drawUIRect(gx - 4.0f * s, gy - 4.0f * s, w + 8.0f * s, mainH + 8.0f * s, 0,
+                   0.26f, 0.26f, 0.27f, 0.55f, false);
+        float beltY = gy + mainH + gap + inventoryBeltGap();
+        drawUIRect(gx - 4.0f * s, beltY - 4.0f * s, w + 8.0f * s, slot + 8.0f * s, 0,
+                   0.34f, 0.32f, 0.22f, 0.55f, false);
+
         for(int i = 0; i < Inventory::SIZE; ++i){
-            int col = i % Inventory::COLS, row = i / Inventory::COLS;
-            float sx = gx + col * (slot + gap);
-            float sy = gy + row * (slot + gap);
+            float sx, sy;
+            inventorySlotPos(i, sx, sy);
             // Пока предмет тащат, его ячейка стоит пустой: он «в руке» у пальца.
             ItemStack shown = (dragActive_ && i == dragSlot_) ? ItemStack{} : inventory_.slot(i);
-            drawSlot(sx, sy, slot, shown, row == 0 && col == inventory_.selected());
+            drawSlot(sx, sy, slot, shown, i < Inventory::HOTBAR && i == inventory_.selected());
         }
         if(dragActive_ && dragSlot_ >= 0){
             // Предмет под пальцем, со смещением вверх: иначе его закрывает сам палец.
@@ -1727,7 +1782,9 @@ void GameClient::renderMap(){
     if(ax >= 0.0f && ax <= (float)SCR_W && ay >= 0.0f && ay <= (float)SCR_H){
         float m = clampf(11.0f * s * SDL_powf(mapZoom_, 0.40f), 9.0f * s, 34.0f * s);
         if(texPlayerMarker_){
-            drawUIRectRotated(ax, ay, m * 2.0f, m * 2.0f, texPlayerMarker_, yaw_, 1.0f);
+            // Знак минус обязателен: на карте ось Y растёт вниз, поэтому поворот экранного
+            // спрайта идёт против курса — без него право и лево на метке менялись местами.
+            drawUIRectRotated(ax, ay, m * 2.0f, m * 2.0f, texPlayerMarker_, -yaw_, 1.0f);
         } else {
             drawUICircle(ax, ay, m * 0.5f, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
         }

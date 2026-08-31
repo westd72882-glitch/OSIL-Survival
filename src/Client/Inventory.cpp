@@ -4,23 +4,23 @@ namespace {
 const ItemDef kItems[(int)ItemType::COUNT] = {
     // id            имя              ставится как        стак  еда вода  цвет
     { "none",        "—",             Block::Air,           0,   0,  0,  0.0f,0.0f,0.0f },
-    { "grass",       "Дёрн",          Block::Grass,      1000,   0,  0,  0.42f,0.68f,0.30f },
-    { "dirt",        "Земля",         Block::Dirt,       1000,   0,  0,  0.48f,0.36f,0.24f },
-    { "stone",       "Камень",        Block::Stone,      1000,   0,  0,  0.58f,0.58f,0.58f },
-    { "sand",        "Песок",         Block::Sand,       1000,   0,  0,  0.86f,0.78f,0.52f },
-    { "snow",        "Снег",          Block::Snow,       1000,   0,  0,  0.94f,0.96f,0.98f },
-    { "wood",        "Дерево",        Block::Wood,       1000,   0,  0,  0.55f,0.40f,0.24f },
-    { "leaves",      "Листва",        Block::Leaves,     1000,   0,  0,  0.24f,0.52f,0.22f },
+    { "grass",       "Дёрн",          Block::Grass,       100,   0,  0,  0.42f,0.68f,0.30f },
+    { "dirt",        "Земля",         Block::Dirt,        100,   0,  0,  0.48f,0.36f,0.24f },
+    { "stone",       "Камень",        Block::Stone,       100,   0,  0,  0.58f,0.58f,0.58f },
+    { "sand",        "Песок",         Block::Sand,        100,   0,  0,  0.86f,0.78f,0.52f },
+    { "snow",        "Снег",          Block::Snow,        100,   0,  0,  0.94f,0.96f,0.98f },
+    { "wood",        "Дерево",        Block::Wood,        100,   0,  0,  0.55f,0.40f,0.24f },
+    { "leaves",      "Листва",        Block::Leaves,      100,   0,  0,  0.24f,0.52f,0.22f },
     { "ore_metal",   "Железная руда", Block::OreMetal,    100,   0,  0,  0.62f,0.52f,0.34f },
     { "ore_sulfur",  "Серная руда",   Block::OreSulfur,   100,   0,  0,  0.78f,0.74f,0.28f },
-    { "planks",      "Доски",         Block::Planks,     1000,   0,  0,  0.72f,0.56f,0.34f },
-    { "stone_brick", "Каменный блок", Block::StoneBrick, 1000,   0,  0,  0.62f,0.62f,0.60f },
-    { "mud",         "Жижа",          Block::Mud,        1000,   0,  0,  0.34f,0.32f,0.22f },
-    { "cloth",       "Ткань",         Block::Air,        1000,   0,  0,  0.80f,0.76f,0.66f },
+    { "planks",      "Доски",         Block::Planks,      100,   0,  0,  0.72f,0.56f,0.34f },
+    { "stone_brick", "Каменный блок", Block::StoneBrick,  100,   0,  0,  0.62f,0.62f,0.60f },
+    { "mud",         "Жижа",          Block::Mud,         100,   0,  0,  0.34f,0.32f,0.22f },
+    { "cloth",       "Ткань",         Block::Air,         100,   0,  0,  0.80f,0.76f,0.66f },
     { "berry",       "Ягоды",         Block::Air,         100,  12,  6,  0.72f,0.20f,0.32f },
     { "metal_frag",  "Металл",        Block::Air,         100,   0,  0,  0.70f,0.70f,0.74f },
-    { "sulfur",      "Сера",          Block::Air,        1000,   0,  0,  0.85f,0.82f,0.30f },
-    { "scrap",       "Скрап",         Block::Air,        1000,   0,  0,  0.60f,0.42f,0.28f },
+    { "sulfur",      "Сера",          Block::Air,         100,   0,  0,  0.85f,0.82f,0.30f },
+    { "scrap",       "Скрап",         Block::Air,         100,   0,  0,  0.60f,0.42f,0.28f },
     { "axe",         "Каменный топор",Block::Air,           1,   0,  0,  0.70f,0.66f,0.60f },
     { "torch",       "Факел",         Block::Air,          20,   0,  0,  0.95f,0.72f,0.32f },
 };
@@ -55,8 +55,9 @@ int Inventory::add(ItemType type, int count){
     if(type == ItemType::None || count <= 0) return count;
     const ItemDef& def = itemDef(type);
 
-    // Сначала докладываем в уже начатые стаки — иначе инвентарь забивается огрызками
-    // по одной единице, и через пять минут игры класть новое становится некуда.
+    // Сначала докладываем в уже начатые стаки, идя от первой ячейки: ближний стак
+    // добирается доверху, и только когда он полон, заводится следующий. Стаки нарочно
+    // невелики (сотня), чтобы добыча ложилась в несколько ячеек, а не сливалась в одну.
     for(int i = 0; i < SIZE && count > 0; ++i){
         if(slots_[i].type != type) continue;
         int space = def.maxStack - slots_[i].count;

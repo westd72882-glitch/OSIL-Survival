@@ -137,6 +137,8 @@ private:
     Vec2 dragPos_{0,0};          // где сейчас палец: под ним рисуется сам предмет
     bool dragActive_ = false;    // палец действительно тащит, а не просто коснулся
     int  slotAtPoint(float x, float y) const;
+    float inventoryBeltGap() const;
+    void inventorySlotPos(int i, float& sx, float& sy) const;
 
     GLuint skyVao_ = 0;   // пустой VAO для полноэкранного треугольника неба
     GLuint minimapTex_ = 0;

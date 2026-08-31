@@ -114,7 +114,7 @@ JOBS = {
     # Значки предметов для ячеек инвентаря: те же картинки, что и у блоков жил.
     'item_sulfur.png':   ('Sulfur Ore.png', 128),
     'item_scrap.png':    ('Scrap.png', 128),
-    'item_axe.png':      ('crafting-button.png', 128),
+    'item_axe.png':      ('Stone Hatchet_0.png', 128),
     # Значки ресурсов-блоков — те же картинки, что и у самих блоков: предмет в ячейке
     # выглядит ровно тем, что игрок только что выбил.
     'item_iron.png':     ('tex_iron_ore.png', 128),
