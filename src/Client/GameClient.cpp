@@ -33,12 +33,14 @@ const char* WORLD_SEED_TEXT = "osil";
 // которое надо собрать и нарисовать.
 
 // Рецепты: минимальный набор, чтобы добытое сырьё уже приносило пользу.
+// В списке только то, что действительно работает прямо сейчас. Доски и каменные блоки
+// убраны — их некуда ставить, строительства нет; переплавка руды и порох ждут печи и
+// верстака. Пустых строчек «на будущее» в крафте быть не должно.
 const Recipe kRecipes[] = {
-    { ItemType::Planks,     4, ItemType::Wood,      1, ItemType::None,  0, "Из дерева" },
-    { ItemType::StoneBrick, 1, ItemType::Stone,     2, ItemType::None,  0, "Прочнее досок" },
-    { ItemType::MetalFrag,  1, ItemType::OreMetal,  2, ItemType::None,  0, "Переплавка руды" },
-    { ItemType::Sulfur,     1, ItemType::OreSulfur, 2, ItemType::None,  0, "Для пороха (этап 4)" },
-    { ItemType::Cloth,      2, ItemType::Leaves,    3, ItemType::None,  0, "Из листвы" },
+    { ItemType::Torch, 1, ItemType::Wood,  2, ItemType::None,  0,
+      "Светит в темноте. Возьмите в руки, выбрав в поясе." },
+    { ItemType::Axe,   1, ItemType::Wood, 10, ItemType::Stone, 6,
+      "Каменный топор. С ним добыча идёт вдвое быстрее, чем голыми руками." },
 };
 const int kRecipeCount = (int)(sizeof(kRecipes)/sizeof(kRecipes[0]));
 
@@ -307,7 +309,9 @@ void GameClient::renderParticles(const Mat4& view, const Mat4& proj){
 // проход (вода) теряет глубину и рисуется поверх всего.
 void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, float dt){
     const ItemStack& sel = inventory_.selectedStack();
-    if(sel.empty() || sel.type != ItemType::Axe) return;
+    bool axe = !sel.empty() && sel.type == ItemType::Axe;
+    bool torch = !sel.empty() && sel.type == ItemType::Torch;
+    if(!axe && !torch) return;
 
     heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
     float bob = (player_->speed() > 0.4f && player_->onGround())
@@ -319,27 +323,45 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
 
     // Бруски топорика в своей плоской системе: x поперёк рукояти, y вдоль неё.
     struct Part { float cx, cy, hx, hy, hz; Block block; };
-    // Пропорции сняты с картинки предмета: длинное топорище и широкая каменная голова,
-    // насаженная сбоку и перевязанная у обуха.
-    const Part parts[] = {
+    // Пропорции сняты с картинок предметов. Топор: длинное топорище и широкая каменная
+    // голова, насаженная сбоку и перевязанная у обуха. Факел: палка с горящим навершием.
+    const Part axeParts[] = {
         { 0.000f, -0.105f, 0.0105f, 0.090f, 0.0105f, Block::Wood },   // топорище, низ
         { 0.000f,  0.040f, 0.0095f, 0.062f, 0.0095f, Block::Wood },   // топорище, верх
         { -0.006f, 0.112f, 0.0150f, 0.018f, 0.0135f, Block::Wood },   // перевязка у обуха
         { -0.040f, 0.118f, 0.0360f, 0.030f, 0.0140f, Block::Stone },  // каменная голова
         { -0.082f, 0.120f, 0.0140f, 0.022f, 0.0105f, Block::Stone },  // скошенное лезвие
     };
+    const Part torchParts[] = {
+        { 0.000f, -0.095f, 0.0100f, 0.100f, 0.0100f, Block::Wood },   // палка, низ
+        { 0.000f,  0.035f, 0.0095f, 0.032f, 0.0095f, Block::Wood },   // палка, верх
+        { 0.000f,  0.078f, 0.0140f, 0.016f, 0.0140f, Block::Wood },   // обмотка под пламенем
+        { 0.000f,  0.104f, 0.0125f, 0.018f, 0.0125f, Block::Sand },   // пламя, ядро
+        { 0.000f,  0.130f, 0.0075f, 0.014f, 0.0075f, Block::Sand },   // пламя, язык
+    };
+    const Part* parts = axe ? axeParts : torchParts;
+    const int partCount = 5;
     const float S = 0.86f;
-    float angle = 0.42f - swing * 3.2f;
+    // Факел держат почти прямо: с наклоном топора пламя уезжает к центру экрана и
+    // теряется в пейзаже.
+    float angle = (axe ? 0.42f : 0.20f) - swing * 3.2f;
     float ca = cosf(angle), sa = sinf(angle);
     float offX = 0.172f, offZ = 0.52f;
-    float offY = -0.186f + bob - swing * 0.35f;
+    float offY = (axe ? -0.186f : -0.150f) + bob - swing * 0.35f;
 
     std::vector<VoxelVertex> verts;
     verts.reserve(4 * 36);
-    for(const Part& part : parts){
+    for(int pi = 0; pi < partCount; ++pi){
+        const Part& part = parts[pi];
         float tr, tg, tb;
         blockTextureTint(part.block, tr, tg, tb);
         float layer = (float)blockTextureLayer(part.block);
+        // Пламя факела — два верхних бруска: красим их в огонь и чуть качаем яркостью,
+        // чтобы оно не выглядело жёлтым кубиком.
+        if(torch && pi >= 3){
+            float flick = 0.85f + 0.15f * sinf(heldBobPhase_ * 11.0f + (float)pi);
+            tr = 1.9f * flick; tg = (pi == 3 ? 1.15f : 1.45f) * flick; tb = 0.35f * flick;
+        }
         // Брусок собираем как «кубик» с разными полуразмерами: pushCube даёт куб, а
         // тут нужен вытянутый, поэтому строим грани здесь же по тем же правилам.
         float lx = part.cx * S * ca - part.cy * S * sa + offX;
@@ -444,6 +466,7 @@ void GameClient::initWorld(){
     // добыча идёт вдвое быстрее.
     inventory_.add(ItemType::Axe, 1);
     inventory_.add(ItemType::Torch, 1);
+    if(startSlot_ >= 0) inventory_.select(startSlot_);
 
     buildMinimapTexture();
     LOG_INFO("мир клиента готов: сид %llu, кубический слой включён",
@@ -547,19 +570,38 @@ bool GameClient::handleHotbarTouch(float x, float y){
     return false;
 }
 
-// Геометрия окна крафта: как и везде, одна функция и для отрисовки, и для попаданий.
-namespace {
-float craftRowH(int screenH){
-    float s = clampf((float)screenH / 720.0f, 0.7f, 2.2f);
-    return 62.0f * s;
+// Геометрия крафта: сетка квадратных плиток слева, описание справа. Одна функция и для
+// отрисовки, и для попаданий — иначе они разъезжаются при первом же правке.
+const int CRAFT_COLS = 4;
+
+void GameClient::craftGridGeometry(float& x, float& y, float& tile, float& gap) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    tile = clampf((float)SCR_H * 0.145f, 58.0f, 132.0f * s);
+    gap = tile * 0.09f;
+    int rows = (kRecipeCount + CRAFT_COLS - 1) / CRAFT_COLS;
+    if(rows < 1) rows = 1;
+    float gridH = tile * rows + gap * (rows - 1);
+    x = 40.0f * s;
+    y = ((float)SCR_H - gridH) * 0.5f + 16.0f * s;
 }
-void craftPanelRect(int screenW, int screenH, float& x, float& y, float& w, float& h){
-    w = clampf((float)screenW * 0.74f, 420.0f, 980.0f);
-    h = (float)screenH * 0.78f;
-    x = ((float)screenW - w) * 0.5f;
-    y = ((float)screenH - h) * 0.5f;
+
+void GameClient::craftTilePos(int i, float& tx, float& ty) const {
+    float gx, gy, tile, gap;
+    craftGridGeometry(gx, gy, tile, gap);
+    tx = gx + (i % CRAFT_COLS) * (tile + gap);
+    ty = gy + (i / CRAFT_COLS) * (tile + gap);
 }
-} // namespace
+
+void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float gx, gy, tile, gap;
+    craftGridGeometry(gx, gy, tile, gap);
+    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    x = gx + gridW + 28.0f * s;
+    w = fminf((float)SCR_W - x - 24.0f * s, 320.0f * s);
+    h = 58.0f * s;
+    y = gy + tile * 2.6f + 18.0f * s;
+}
 
 // Строки окна настроек считаются одной функцией и для отрисовки, и для попаданий.
 namespace {
@@ -728,29 +770,37 @@ bool GameClient::handleOverlayTouch(float x, float y){
 
     if(overlay_ == Overlay::Craft){
         float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-        float px, py, w, h;
-        craftPanelRect(SCR_W, SCR_H, px, py, w, h);
-        if(x < px || x > px + w || y < py || y > py + h){ overlay_ = Overlay::None; return true; }
-
-        // «ЗАКРЫТЬ» в правом верхнем углу панели.
-        if(y <= py + 50.0f * s && x >= px + w - 170.0f * s){ overlay_ = Overlay::None; return true; }
-
-        float rowH = craftRowH(SCR_H);
-        float listTop = py + 62.0f * s;
-        float listH = h - 78.0f * s;
-        if(y < listTop || y > listTop + listH) return true;
-
-        craftDragging_ = true;   // палец на списке: возможно, его будут листать
-
-        int index = (int)((y - listTop + craftScroll_) / rowH);
-        if(index < 0 || index >= kRecipeCount) return true;
-        const Recipe& r = kRecipes[index];
-        bool okA = inventory_.countOf(r.costA) >= r.costACount;
-        bool okB = (r.costB == ItemType::None) || inventory_.countOf(r.costB) >= r.costBCount;
-        if(okA && okB){
-            inventory_.remove(r.costA, r.costACount);
-            if(r.costB != ItemType::None) inventory_.remove(r.costB, r.costBCount);
-            inventory_.add(r.result, r.resultCount);
+        // Крестик выхода.
+        float closeSize = 54.0f * s;
+        float gx, gy, tile, gap;
+        craftGridGeometry(gx, gy, tile, gap);
+        float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = gy - 52.0f * s;
+        if(x >= closeX && x <= closeX + closeSize && y >= closeY && y <= closeY + closeSize){
+            overlay_ = Overlay::None;
+            return true;
+        }
+        // Плитка рецепта — выбор, а не мгновенный крафт: сначала посмотреть, что нужно.
+        for(int i = 0; i < kRecipeCount; ++i){
+            float tx, ty;
+            craftTilePos(i, tx, ty);
+            if(x >= tx && x <= tx + tile && y >= ty && y <= ty + tile){
+                craftSelected_ = i;
+                return true;
+            }
+        }
+        // Кнопка «Создать».
+        float bx, by, bw, bh;
+        craftButtonRect(bx, by, bw, bh);
+        if(x >= bx && x <= bx + bw && y >= by && y <= by + bh &&
+           craftSelected_ >= 0 && craftSelected_ < kRecipeCount){
+            const Recipe& r = kRecipes[craftSelected_];
+            bool okA = inventory_.countOf(r.costA) >= r.costACount;
+            bool okB = (r.costB == ItemType::None) || inventory_.countOf(r.costB) >= r.costBCount;
+            if(okA && okB){
+                inventory_.remove(r.costA, r.costACount);
+                if(r.costB != ItemType::None) inventory_.remove(r.costB, r.costBCount);
+                inventory_.add(r.result, r.resultCount);
+            }
         }
         return true;
     }
@@ -822,8 +872,10 @@ void GameClient::toggleMapMark(float screenX, float screenY){
             return;
         }
     }
-    // Больше сотни флажков — это уже не ориентиры, а мусор на карте.
-    if(mapMarks_.size() < 100) mapMarks_.push_back(Vec2{ wx, wz });
+    // Меток не больше трёх: они висят ещё и на компасе, и четвёртая там уже не читается.
+    // Ставим четвёртую — самая старая уходит.
+    mapMarks_.push_back(Vec2{ wx, wz });
+    if(mapMarks_.size() > 3) mapMarks_.erase(mapMarks_.begin());
 }
 
 bool GameClient::handleMapEvent(const SDL_Event& e){
@@ -947,11 +999,6 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
 }
 
 void GameClient::handleOverlayDrag(float x, float y, float dx, float dy){
-    if(overlay_ == Overlay::Craft && craftDragging_){
-        (void)x; (void)y; (void)dx;
-        craftScroll_ -= dy;
-        return;
-    }
     if(overlay_ == Overlay::Inventory && dragSlot_ >= 0){
         dragPos_ = Vec2{ x, y };
         // Порог в несколько пикселей: случайное дрожание пальца не должно считаться
@@ -962,7 +1009,7 @@ void GameClient::handleOverlayDrag(float x, float y, float dx, float dy){
 
 void GameClient::handleOverlayRelease(){
     mapDragging_ = false;
-    craftDragging_ = false;
+
 
     if(overlay_ == Overlay::Inventory && dragSlot_ >= 0){
         int target = slotAtPoint(dragPos_.x, dragPos_.y);
@@ -1096,7 +1143,8 @@ void GameClient::update(float dt){
     if(overlay_ != Overlay::None) controls_.releaseAllTouches();
     if(controls_.craftPressed())     overlay_ = (overlay_ == Overlay::Craft)     ? Overlay::None : Overlay::Craft;
     if(controls_.mapPressed())       overlay_ = (overlay_ == Overlay::Map)       ? Overlay::None : Overlay::Map;
-    if(controls_.settingsPressed())  overlay_ = (overlay_ == Overlay::Settings)  ? Overlay::None : Overlay::Settings;
+    // Настройки в игре не открываются: их кнопки на экране нет, вход только из меню.
+    (void)controls_.settingsPressed();
 
     SurvivorInput in;
     // В режиме расстановки кнопок игра стоит: иначе игрок, двигая кнопку «копать»,
@@ -1617,59 +1665,97 @@ void GameClient::renderOverlay(){
 
 void GameClient::renderCraft(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float px, py, w, h;
-    craftPanelRect(SCR_W, SCR_H, px, py, w, h);
-    uiPanel(px, py, w, h, 0.97f);
-    drawText(px + 22.0f * s, py + 16.0f * s, 28.0f * s, "КРАФТ", UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
-    drawText(px + w - 150.0f * s, py + 20.0f * s, 20.0f * s, "ЗАКРЫТЬ",
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+    // Экран крафта: слева квадратные плитки рецептов, справа — описание выбранного.
+    // Строчки во всю ширину читались как список настроек, а не как крафт.
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.78f, false);
 
-    float rowH = craftRowH(SCR_H);
-    float listTop = py + 62.0f * s;
-    float listH = h - 78.0f * s;
-    float contentH = rowH * (float)kRecipeCount;
-    // Зажимаем прокрутку: список не должен уезжать выше первой строки и ниже последней.
-    float maxScroll = contentH > listH ? contentH - listH : 0.0f;
-    craftScroll_ = clampf(craftScroll_, 0.0f, maxScroll);
+    float gx, gy, tile, gap;
+    craftGridGeometry(gx, gy, tile, gap);
+    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    drawText(gx, gy - 46.0f * s, 30.0f * s, "КРАФТ", 1, 1, 1, 0.96f);
+
+    float closeSize = 54.0f * s;
+    float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = gy - 52.0f * s;
+    if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
+    else {
+        drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
+        drawText(closeX + closeSize * 0.3f, closeY + closeSize * 0.2f, 26.0f * s, "X", 1, 1, 1, 0.95f);
+    }
+
+    if(craftSelected_ >= kRecipeCount) craftSelected_ = kRecipeCount - 1;
+    if(craftSelected_ < 0) craftSelected_ = 0;
 
     char buf[192];
     for(int i = 0; i < kRecipeCount; ++i){
-        float ry = listTop + i * rowH - craftScroll_;
-        if(ry + rowH < listTop || ry > listTop + listH) continue;   // строка вне окна списка
+        float tx, ty;
+        craftTilePos(i, tx, ty);
         const Recipe& r = kRecipes[i];
         bool ok = inventory_.countOf(r.costA) >= r.costACount &&
                   (r.costB == ItemType::None || inventory_.countOf(r.costB) >= r.costBCount);
-
-        drawUIRect(px + 14.0f * s, ry, w - 28.0f * s, rowH - 8.0f * s, 0,
-                   UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, ok ? 0.8f : 0.45f, false);
-        uiThinFrame(px + 14.0f * s, ry, w - 28.0f * s, rowH - 8.0f * s, ok ? UI_ACCENT : UI_LINE, ok ? 0.85f : 0.45f);
-
         const ItemDef& res = itemDef(r.result);
-        float icon = rowH - 26.0f * s;
-        drawUIRect(px + 26.0f * s, ry + 9.0f * s, icon, icon, 0, res.r, res.g, res.b, ok ? 1.0f : 0.4f, false);
 
-        snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
-        const UIColor& c = ok ? UI_TEXT : UI_TEXT_DIM;
-        drawText(px + 34.0f * s + icon, ry + 8.0f * s, 23.0f * s, buf, c.r, c.g, c.b, ok ? 1.0f : 0.7f);
-
-        snprintf(buf, sizeof(buf), "нужно: %s x%d  (в наличии %d) — %s",
-                 itemDef(r.costA).nameRu, r.costACount, inventory_.countOf(r.costA), r.note);
-        drawText(px + 34.0f * s + icon, ry + 32.0f * s, 17.0f * s, buf,
-                 UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.85f);
+        drawUIRect(tx, ty, tile, tile, 0, 0.16f, 0.16f, 0.17f, 0.92f, false);
+        GLuint icon = itemIcon(r.result);
+        float ip = tile * 0.12f;
+        if(icon) drawUIRect(tx + ip, ty + ip, tile - ip * 2.0f, tile - ip * 2.0f, icon,
+                            1, 1, 1, ok ? 1.0f : 0.35f, true);
+        else     drawUIRect(tx + ip, ty + ip, tile - ip * 2.0f, tile - ip * 2.0f, 0,
+                            res.r, res.g, res.b, ok ? 1.0f : 0.35f, false);
+        if(r.resultCount > 1){
+            snprintf(buf, sizeof(buf), "x%d", r.resultCount);
+            float fh = tile * 0.22f;
+            drawText(tx + tile - fh * 1.5f, ty + tile - fh * 1.2f, fh, buf, 1, 1, 1, 0.95f);
+        }
+        // Выбранная плитка обведена, недоступная — приглушена.
+        if(i == craftSelected_){
+            float t = fmaxf(2.0f, tile * 0.045f);
+            drawUIRect(tx, ty, tile, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+            drawUIRect(tx, ty + tile - t, tile, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+            drawUIRect(tx, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+            drawUIRect(tx + tile - t, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        } else {
+            uiThinFrame(tx, ty, tile, tile, UI_LINE, 0.40f);
+        }
     }
 
-    // Полоса прокрутки справа — единственный признак, что список длиннее экрана.
-    if(maxScroll > 0.0f){
-        float barX = px + w - 12.0f * s;
-        drawUIRect(barX, listTop, 5.0f * s, listH, 0, UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.6f, false);
-        float thumbH = listH * (listH / contentH);
-        float thumbY = listTop + (listH - thumbH) * (craftScroll_ / maxScroll);
-        drawUIRect(barX, thumbY, 5.0f * s, thumbH, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.85f, false);
+    // ---- Описание выбранного рецепта справа от сетки.
+    const Recipe& r = kRecipes[craftSelected_];
+    const ItemDef& res = itemDef(r.result);
+    float dx = gx + gridW + 28.0f * s;
+    float dw = (float)SCR_W - dx - 24.0f * s;
+    float dy = gy;
+    drawUIRect(dx, dy, dw, tile * 2.6f, 0, 0.12f, 0.12f, 0.13f, 0.85f, false);
+
+    snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
+    drawText(dx + 18.0f * s, dy + 16.0f * s, 27.0f * s, buf, 1, 1, 1, 0.96f);
+
+    float ly = dy + 56.0f * s;
+    // Стоимость: сколько нужно и сколько есть — по строке на составляющую.
+    for(int k = 0; k < 2; ++k){
+        ItemType cost = (k == 0) ? r.costA : r.costB;
+        int need = (k == 0) ? r.costACount : r.costBCount;
+        if(cost == ItemType::None) continue;
+        int have = inventory_.countOf(cost);
+        bool enough = have >= need;
+        snprintf(buf, sizeof(buf), "%s  %d / %d", itemDef(cost).nameRu, have, need);
+        drawText(dx + 18.0f * s, ly, 21.0f * s, buf,
+                 enough ? 0.62f : 0.85f, enough ? 0.85f : 0.45f, 0.45f, 0.95f);
+        ly += 28.0f * s;
     }
 
-    drawText(px + 22.0f * s, py + h - 26.0f * s, 17.0f * s,
-             "Проведите пальцем, чтобы листать. Верстаки 1-3 и очередь крафта — этап 3",
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.85f);
+    drawText(dx + 18.0f * s, ly + 6.0f * s, 18.0f * s, r.note,
+             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+
+    // Кнопка «Создать» — она же и есть действие крафта.
+    bool ok = inventory_.countOf(r.costA) >= r.costACount &&
+              (r.costB == ItemType::None || inventory_.countOf(r.costB) >= r.costBCount);
+    float bx, by, bw, bh;
+    craftButtonRect(bx, by, bw, bh);
+    drawUIRect(bx, by, bw, bh, 0, ok ? 0.18f : 0.14f, ok ? 0.26f : 0.14f, ok ? 0.18f : 0.15f, 0.95f, false);
+    uiThinFrame(bx, by, bw, bh, ok ? UI_ACCENT : UI_LINE, ok ? 0.9f : 0.4f);
+    drawText(bx + bw * 0.5f - 46.0f * s, by + bh * 0.28f, 23.0f * s, "СОЗДАТЬ",
+             ok ? UI_ACCENT.r : UI_TEXT_DIM.r, ok ? UI_ACCENT.g : UI_TEXT_DIM.g,
+             ok ? UI_ACCENT.b : UI_TEXT_DIM.b, ok ? 1.0f : 0.7f);
 }
 
 // ==================== КАРТА ====================
@@ -1855,6 +1941,28 @@ void GameClient::renderCompass(){
         }
     }
 
+    // ---- Метки с карты на той же шкале: жёлтый штрих на своём азимуте и метры до
+    // неё. Без этого метку ставишь и тут же теряешь — на карту приходится лезть заново.
+    Vec3 p = player_->position();
+    char distBuf[16];
+    for(const Vec2& m : mapMarks_){
+        float dx = m.x - p.x, dz = m.y - p.z;
+        float dist = sqrtf(dx * dx + dz * dz);
+        // Азимут метки в той же системе, что и курс игрока: 0 — на север (-Z).
+        float bearing = atan2f(dx, -dz) * 180.0f / 3.14159265f;
+        float delta = bearing - heading;
+        while(delta > 180.0f) delta -= 360.0f;
+        while(delta < -180.0f) delta += 360.0f;
+        if(fabsf(delta) > VISIBLE * 0.5f) continue;
+
+        float px = x + w * 0.5f + delta / VISIBLE * w;
+        drawUIRect(px - 2.0f, y - 2.0f * s, 4.0f, h + 4.0f * s, 0,
+                   1.0f, 0.85f, 0.25f, 0.95f, false);
+        snprintf(distBuf, sizeof(distBuf), "%d м", (int)(dist + 0.5f));
+        float tw = 9.0f * s * (float)strlen(distBuf) * 0.55f;
+        drawText(px - tw * 0.5f, y + h + 2.0f * s, 16.0f * s, distBuf, 1.0f, 0.9f, 0.45f, 0.95f);
+    }
+
     // Палка курса: она и есть «куда смотрит игрок». Точного числа градусов под ней нет —
     // курс читается по шкале, а цифра под палкой была лишней.
     drawUIRect(x + w * 0.5f - 1.5f, y - 3.0f * s, 3.0f, h + 5.0f * s, 0, 1, 1, 1, 0.95f, false);
@@ -1985,6 +2093,8 @@ int GameClient::run(int argc, char** argv){
             startInGame_ = true;   // пропустить главное меню (отладка)
         } else if(a == "--debug"){
             settings.showDebugInfo = true;
+        } else if(a == "--slot" && i + 1 < argc){
+            startSlot_ = atoi(argv[++i]);   // отладка: что взять в руку на старте
         } else if(a == "--pos" && i + 1 < argc){
             // Отладка: встать в заданной точке карты, чтобы снять зиму или пустыню,
             // не бегая туда полчаса.

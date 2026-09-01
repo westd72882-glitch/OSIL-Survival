@@ -80,8 +80,9 @@ void TouchControls::layout(int screenW, int screenH){
     place(craft_, settings.craftNormX, settings.craftNormY, r * 0.8f, "КРАФТ", false);
     map_.cx = (float)screenW - r * 5.0f - pad;     map_.cy = topY;
     place(map_, settings.mapNormX, settings.mapNormY, r * 0.8f, "КАРТА", false);
-    options_.cx = (float)screenW - r * 7.0f - pad;  options_.cy = topY;
-    place(options_, settings.optionsNormX, settings.optionsNormY, r * 0.8f, "НАСТР", false);
+    // Настройки из игры убраны: в них заходят только из главного меню, иначе кнопка
+    // висит на экране и её задевают пальцем во время боя. Гасим нулевым радиусом.
+    options_.cx = -1000.0f; options_.cy = -1000.0f; options_.radius = 0.0f; options_.label = "";
 }
 
 TouchButton* TouchControls::buttonAt(float x, float y){

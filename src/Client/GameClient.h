@@ -130,8 +130,10 @@ private:
     float pinchBaseDist_ = 0.0f;
     float pinchBaseZoom_ = 1.0f;
     // ---- Крафт: прокрутка списка
-    float craftScroll_ = 0.0f;
-    bool  craftDragging_ = false;
+    int   craftSelected_ = 0;    // какой рецепт открыт в описании справа
+    void  craftGridGeometry(float& x, float& y, float& tile, float& gap) const;
+    void  craftTilePos(int i, float& tx, float& ty) const;
+    void  craftButtonRect(float& x, float& y, float& w, float& h) const;
     Overlay overlayOverride_ = Overlay::None;  // ключ --overlay: снять окно на скриншот
     int dragSlot_ = -1;          // ячейка, которую тащим пальцем
     Vec2 dragPos_{0,0};          // где сейчас палец: под ним рисуется сам предмет
@@ -157,6 +159,7 @@ private:
     GLuint heldVao_ = 0, heldVbo_ = 0;
     float  heldBobPhase_ = 0.0f;
 
+    int startSlot_ = -1;
     int forcedW_ = 0, forcedH_ = 0;   // --size: проверка раскладки под экран телефона
     float startX_ = -1.0f, startZ_ = -1.0f;   // --pos: старт в заданной точке карты
     GLuint highlightVao_ = 0, highlightVbo_ = 0;
