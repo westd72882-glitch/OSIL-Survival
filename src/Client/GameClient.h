@@ -59,6 +59,7 @@ private:
     bool  mapTapValid_ = false;
     void  toggleMapMark(float screenX, float screenY);
     void drawMenuBackground();
+    void drawCloseCross(float cx, float cy, float size, float thickness);
     // Частицы от разбитой жилы и модель топора в руке рисуются одним и тем же
     // воксельным шейдером: это те же кубы, только маленькие.
     void spawnBreakParticles(Block block, int x, int y, int z);
@@ -106,6 +107,7 @@ private:
     // пальца, чтобы нарисованное и нажимаемое никогда не разъезжались (приём из A.N.O.D.E).
     void hotbarGeometry(float& x, float& y, float& slot, float& gap) const;
     void inventoryGeometry(float& x, float& y, float& slot, float& gap) const;
+    void inventoryGeometryOld(float& x, float& y, float& slot, float& gap) const;
 
     std::unique_ptr<World> world_;
     std::unique_ptr<ResourceMap> resources_;
@@ -134,6 +136,7 @@ private:
     void  craftGridGeometry(float& x, float& y, float& tile, float& gap) const;
     void  craftTilePos(int i, float& tx, float& ty) const;
     void  craftButtonRect(float& x, float& y, float& w, float& h) const;
+    void  craftInfoRect(float& x, float& y, float& w, float& h) const;
     // Меню паузы: открывается тапом по полосам состояния слева сверху — отдельной
     // кнопки под него на экране нет.
     void  renderPause();

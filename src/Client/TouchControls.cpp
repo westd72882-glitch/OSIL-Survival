@@ -1,4 +1,5 @@
 #include "TouchControls.h"
+#include "UiLayout.h"
 #include "../Engine/Core/Settings.h"
 #include "../Engine/Core/Window.h"
 #include "../Engine/Render/UIDraw.h"
@@ -48,55 +49,59 @@ void TouchControls::layout(int screenW, int screenH){
         if(ny >= 0.0f){ b.cx = nx * (float)screenW; b.cy = ny * (float)screenH; }
     };
 
-    // Раскладка снята с телефонных выживалок: обе руки заняты одинаково, а середина
-    // экрана свободна. Слева — джойстик у нижнего угла и бег над ним, справа — столбик
-    // действий под большой палец, сверху справа — окна.
-    float leftX   = rBig + pad;
-    float rightX  = (float)screenW - rBig - pad;
-    float bottomY = (float)screenH - rBig - pad;
+    // Раскладка снята с эталона 1536x689 и масштабируется одним множителем по ширине.
+    // Элементы у правого и нижнего краёв отсчитываются от своего края: эталон снят с
+    // телефона (2.23:1), и на другом соотношении сторон «эталонный низ» экраном быть
+    // перестаёт — кнопки уехали бы в середину.
+    UiRef ui(screenW, screenH);
+    auto placeAt = [&](TouchButton& b, float refCX, float refCY, float refDia,
+                       const char* label, bool toggle, bool fromRight, bool fromBottom){
+        b.radius = ui.s(refDia * 0.5f);
+        b.label = label;
+        b.toggle = toggle;
+        b.cx = fromRight  ? ui.xr(refCX) : ui.x(refCX);
+        b.cy = fromBottom ? ui.yb(refCY) : ui.y(refCY);
+    };
+    // Сохранённая раскладка игрока перекрывает эталон: её он расставлял сам.
+    auto override = [&](TouchButton& b, float nx, float ny){
+        if(ny >= 0.0f){ b.cx = nx * (float)screenW; b.cy = ny * (float)screenH; }
+    };
 
-    // Удар — самая частая кнопка, поэтому она крупная и стоит там, где палец лежит.
-    attack_.cx = rightX;                 attack_.cy = (float)screenH * 0.50f;
-    place(attack_, settings.attackNormX, settings.attackNormY, rBig, "КОПАТЬ", false);
+    // ---- Правый верх: прицел (карта), инструменты (крафт), рюкзак (инвентарь).
+    placeAt(map_,       1215.0f, 120.0f, 86.0f, "КАРТА",  false, true,  false);
+    placeAt(craft_,     1325.0f, 120.0f, 86.0f, "КРАФТ",  false, true,  false);
+    placeAt(inventory_, 1447.0f, 120.0f, 86.0f, "ИНВ",    false, true,  false);
+    override(map_,       settings.mapNormX,   settings.mapNormY);
+    override(craft_,     settings.craftNormX, settings.craftNormY);
+    override(inventory_, settings.invNormX,   settings.invNormY);
 
-    // Кнопки «Ставить» больше нет: блоки в мир не ставятся, игрок только добывает.
-    // Саму кнопку не выпиливаем из списков — просто гасим нулевым радиусом, и она
-    // перестаёт и рисоваться, и ловить касания.
-    place_.cx = -1000.0f; place_.cy = -1000.0f; place_.radius = 0.0f; place_.label = "";
+    // ---- Правый столбик: рука, удар, прыжок, присед.
+    placeAt(action_, 1438.0f, 244.0f, 88.0f, "E",       false, true, false);
+    placeAt(attack_, 1438.0f, 343.0f, 88.0f, "КОПАТЬ",  false, true, false);
+    placeAt(jump_,   1419.0f, 431.0f, 87.0f, "ПРЫЖОК",  false, true, true);
+    placeAt(crouch_, 1419.0f, 565.0f, 87.0f, "СЕСТЬ",   true,  true, true);
+    override(action_, settings.actionNormX, settings.actionNormY);
+    override(attack_, settings.attackNormX, settings.attackNormY);
+    override(jump_,   settings.jumpNormX,   settings.jumpNormY);
+    override(crouch_, settings.crouchNormX, settings.crouchNormY);
 
-    // Взаимодействие — над ударом: обе «рабочие» кнопки рядом, но не слипаются.
-    action_.cx = rightX;                 action_.cy = (float)screenH * 0.36f;
-    place(action_, settings.actionNormX, settings.actionNormY, r, "E", false);
+    // ---- Левая сторона: бег над джойстиком.
+    placeAt(sprint_, 159.0f, 442.0f, 82.0f, "БЕГ", true, false, true);
+    override(sprint_, settings.sprintNormX, settings.sprintNormY);
 
-    // Прыжок и присед — стрелки вверх и вниз в правом нижнем углу, друг над другом.
-    jump_.cx = rightX;                   jump_.cy = bottomY - rBig * 1.9f;
-    place(jump_, settings.jumpNormX, settings.jumpNormY, r, "ПРЫЖОК", false);
-    crouch_.cx = rightX;                 crouch_.cy = bottomY;
-    place(crouch_, settings.crouchNormX, settings.crouchNormY, r, "СЕСТЬ", true);
+    // Кнопки «Ставить» и «Настройки» на экране нет: блоки не ставятся, а настройки
+    // открываются из меню паузы. Гасим нулевым радиусом — из списков не выпиливаем.
+    place_.cx   = -1000.0f; place_.cy   = -1000.0f; place_.radius   = 0.0f; place_.label = "";
+    options_.cx = -1000.0f; options_.cy = -1000.0f; options_.radius = 0.0f; options_.label = "";
 
-    // Бег — слева над джойстиком: его жмут большим пальцем той же руки, что и движение.
-    sprint_.cx = leftX;                  sprint_.cy = (float)screenH * 0.64f;
-    place(sprint_, settings.sprintNormX, settings.sprintNormY, r, "БЕГ", true);
-
-    // Правый верх — окна (инвентарь, крафт, карта).
-    float topY = r + pad * 2.0f;
-    inventory_.cx = (float)screenW - r - pad;      inventory_.cy = topY;
-    place(inventory_, settings.invNormX, settings.invNormY, r * 0.85f, "ИНВ", false);
-    craft_.cx = (float)screenW - r * 3.0f - pad;   craft_.cy = topY;
-    place(craft_, settings.craftNormX, settings.craftNormY, r * 0.85f, "КРАФТ", false);
-    map_.cx = (float)screenW - r * 5.0f - pad;     map_.cy = topY;
-    place(map_, settings.mapNormX, settings.mapNormY, r * 0.85f, "КАРТА", false);
-
-    // Настройки из игры убраны: в них заходят только из меню паузы.
-
-    // Постоянное место джойстика — нижний левый угол.
-    stickHomeX_ = stickRadius_ + pad * 1.6f;
-    stickHomeY_ = (float)screenH - stickRadius_ - pad * 1.6f;
+    // Джойстик: внешнее кольцо 220 в поперечнике, центр 234,514.
+    stickRadius_ = ui.s(110.0f);
+    stickHomeX_ = ui.x(234.0f);
+    stickHomeY_ = ui.yb(514.0f);
     if(!stickActive_){
         stickBaseX_ = stickCurX_ = stickHomeX_;
         stickBaseY_ = stickCurY_ = stickHomeY_;
     }
-    options_.cx = -1000.0f; options_.cy = -1000.0f; options_.radius = 0.0f; options_.label = "";
 }
 
 TouchButton* TouchControls::buttonAt(float x, float y){
