@@ -600,10 +600,14 @@ void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
     float gx, gy, tile, gap;
     craftGridGeometry(gx, gy, tile, gap);
     float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
-    x = gx + gridW + 28.0f * s;
-    w = fminf((float)SCR_W - x - 24.0f * s, 320.0f * s);
-    h = 58.0f * s;
-    y = gy + tile * 2.6f + 18.0f * s;
+    // Кнопка стоит ВНУТРИ панели описания, в её правом нижнем углу: снаружи она
+    // налезала на пояс быстрого доступа.
+    float dx = gx + gridW + 28.0f * s;
+    float dw = (float)SCR_W - dx - 24.0f * s;
+    w = fminf(dw * 0.45f, 300.0f * s);
+    h = 54.0f * s;
+    x = dx + dw - w - 16.0f * s;
+    y = gy + tile * 2.6f - h - 16.0f * s;
 }
 
 // Панель состояния слева сверху: она же кнопка меню паузы. Геометрия совпадает с
@@ -621,23 +625,26 @@ const int PAUSE_ROW_COUNT = 4;
 
 void GameClient::pauseRowRect(int i, float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    w = clampf((float)SCR_W * 0.30f, 260.0f, 460.0f);
-    h = 62.0f * s;
-    x = (float)SCR_W * 0.10f;
-    float total = h * PAUSE_ROW_COUNT + 14.0f * s * (PAUSE_ROW_COUNT - 1);
-    y = ((float)SCR_H - total) * 0.5f + i * (h + 14.0f * s);
+    // Список идёт от верхней трети вниз по левому краю, а не висит по центру экрана:
+    // так до него дотягивается большой палец, и он не закрывает вид.
+    w = clampf((float)SCR_W * 0.28f, 240.0f, 420.0f);
+    h = 56.0f * s;
+    x = 44.0f * s;
+    y = (float)SCR_H * 0.40f + i * (h + 10.0f * s);
 }
 
 void GameClient::renderPause(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     // Мир под меню виден, но приглушён: пауза — это не отдельный экран, а остановка.
-    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.02f, 0.03f, 0.66f, false);
-    drawText((float)SCR_W * 0.10f, (float)SCR_H * 0.13f, 46.0f * s, "OSIL SURVIVAL",
-             UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+    // Затемнение лёгкое: пауза не прячет игру, она её останавливает.
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.42f, false);
+    drawText(44.0f * s, (float)SCR_H * 0.10f, 52.0f * s, "OSIL", 1, 1, 1, 0.97f);
+    drawText(44.0f * s, (float)SCR_H * 0.19f, 26.0f * s, "SURVIVAL",
+             UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f);
     for(int i = 0; i < PAUSE_ROW_COUNT; ++i){
         float x, y, w, h;
         pauseRowRect(i, x, y, w, h);
-        drawText(x, y + h * 0.24f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 0.94f);
+        drawText(x, y + h * 0.22f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 0.94f);
     }
 }
 
@@ -1449,9 +1456,9 @@ GLuint GameClient::itemIcon(ItemType t) const {
 }
 
 void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, bool selected){
-    // Ячейка как в Rust: ровный тёмный квадрат, значок во всю плитку, количество в
-    // правом нижнем углу. Ни подписей, ни рамок-украшений.
-    drawUIRect(x, y, size, size, 0, 0.16f, 0.16f, 0.17f, 0.92f, false);
+    // Ячейка светлая и прозрачная: сквозь неё виден мир, как в телефонных выживалках.
+    // Тёмный непрозрачный квадрат превращал интерфейс в глухую панель.
+    drawUIRect(x, y, size, size, 0, 0.78f, 0.77f, 0.73f, 0.34f, false);
     if(!stack.empty()){
         const ItemDef& def = itemDef(stack.type);
         GLuint icon = itemIcon(stack.type);
@@ -1480,7 +1487,7 @@ void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, 
         drawUIRect(x, y, t, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
         drawUIRect(x + size - t, y, t, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
     } else {
-        uiThinFrame(x, y, size, size, UI_LINE, 0.40f);
+        uiThinFrame(x, y, size, size, UIColor{1.0f, 1.0f, 1.0f}, 0.30f);
     }
 }
 
@@ -1688,7 +1695,8 @@ void GameClient::renderOverlay(){
         float mainH = slot * (Inventory::ROWS - 1) + gap * (Inventory::ROWS - 2);
         // Экран инвентаря: затемнение на весь экран, заголовок, крестик выхода, сетка
         // рюкзака и отдельной полосой ниже — пояс. Подсказок нет.
-        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.78f, false);
+        // Экран не затемняется в глухую: за интерфейсом остаётся видна игра.
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
         drawText(gx, gy - 46.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
 
         // Крестик выхода — там же, где на карте и в настройках.
@@ -1702,10 +1710,10 @@ void GameClient::renderOverlay(){
 
         // Подложки: отдельная у рюкзака, отдельная у пояса — это разные вещи.
         drawUIRect(gx - 4.0f * s, gy - 4.0f * s, w + 8.0f * s, mainH + 8.0f * s, 0,
-                   0.26f, 0.26f, 0.27f, 0.55f, false);
+                   0.85f, 0.83f, 0.79f, 0.20f, false);
         float beltY = gy + mainH + gap + inventoryBeltGap();
         drawUIRect(gx - 4.0f * s, beltY - 4.0f * s, w + 8.0f * s, slot + 8.0f * s, 0,
-                   0.34f, 0.32f, 0.22f, 0.55f, false);
+                   0.95f, 0.88f, 0.60f, 0.22f, false);
 
         for(int i = 0; i < Inventory::SIZE; ++i){
             float sx, sy;
@@ -1735,7 +1743,7 @@ void GameClient::renderCraft(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     // Экран крафта: слева квадратные плитки рецептов, справа — описание выбранного.
     // Строчки во всю ширину читались как список настроек, а не как крафт.
-    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.78f, false);
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
 
     float gx, gy, tile, gap;
     craftGridGeometry(gx, gy, tile, gap);
@@ -1762,7 +1770,7 @@ void GameClient::renderCraft(){
                   (r.costB == ItemType::None || inventory_.countOf(r.costB) >= r.costBCount);
         const ItemDef& res = itemDef(r.result);
 
-        drawUIRect(tx, ty, tile, tile, 0, 0.16f, 0.16f, 0.17f, 0.92f, false);
+        drawUIRect(tx, ty, tile, tile, 0, 0.78f, 0.77f, 0.73f, 0.34f, false);
         GLuint icon = itemIcon(r.result);
         float ip = tile * 0.12f;
         if(icon) drawUIRect(tx + ip, ty + ip, tile - ip * 2.0f, tile - ip * 2.0f, icon,
@@ -1778,7 +1786,7 @@ void GameClient::renderCraft(){
         // подписи налезали друг на друга, потому что плитки стоят вплотную.
         float nameH = tile * 0.135f;
         drawUIRect(tx, ty + tile - nameH * 1.7f, tile, nameH * 1.7f, 0,
-                   0.05f, 0.05f, 0.06f, 0.72f, false);
+                   0.10f, 0.10f, 0.11f, 0.45f, false);
         float tw = nameH * 0.5f * (float)strlen(res.nameRu);
         float nx = tw > tile ? tx + 3.0f * s : tx + tile * 0.5f - tw * 0.5f;
         drawText(nx, ty + tile - nameH * 1.4f, nameH, res.nameRu, 1, 1, 1, ok ? 0.9f : 0.45f);
@@ -1791,7 +1799,7 @@ void GameClient::renderCraft(){
             drawUIRect(tx, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
             drawUIRect(tx + tile - t, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
         } else {
-            uiThinFrame(tx, ty, tile, tile, UI_LINE, 0.40f);
+            uiThinFrame(tx, ty, tile, tile, UIColor{1.0f, 1.0f, 1.0f}, 0.30f);
         }
     }
 
@@ -1801,7 +1809,7 @@ void GameClient::renderCraft(){
     float dx = gx + gridW + 28.0f * s;
     float dw = (float)SCR_W - dx - 24.0f * s;
     float dy = gy;
-    drawUIRect(dx, dy, dw, tile * 2.6f, 0, 0.12f, 0.12f, 0.13f, 0.85f, false);
+    drawUIRect(dx, dy, dw, tile * 2.6f, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
 
     // Заголовок описания: название слева, крупный значок предмета справа.
     snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
@@ -1812,19 +1820,15 @@ void GameClient::renderCraft(){
         drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 12.0f * s, bigIcon, bigIcon,
                    resIcon, 1, 1, 1, 1.0f, true);
 
-    drawText(dx + 18.0f * s, dy + 50.0f * s, 18.0f * s, r.note,
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+    drawText(dx + 18.0f * s, dy + 50.0f * s, 18.0f * s, r.note, 0.90f, 0.90f, 0.88f, 0.95f);
 
     // Таблица стоимости с шапкой: сколько нужно, чего и сколько есть на руках.
     float ly = dy + 92.0f * s;
     drawUIRect(dx + 14.0f * s, ly - 6.0f * s, dw - 28.0f * s, 26.0f * s, 0,
-               0.20f, 0.20f, 0.21f, 0.9f, false);
-    drawText(dx + 22.0f * s, ly - 3.0f * s, 16.0f * s, "НУЖНО",
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
-    drawText(dx + 100.0f * s, ly - 3.0f * s, 16.0f * s, "МАТЕРИАЛ",
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
-    drawText(dx + dw - 96.0f * s, ly - 3.0f * s, 16.0f * s, "ЕСТЬ",
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+               0.85f, 0.84f, 0.80f, 0.28f, false);
+    drawText(dx + 22.0f * s, ly - 3.0f * s, 16.0f * s, "НУЖНО", 0.15f, 0.15f, 0.16f, 0.95f);
+    drawText(dx + 100.0f * s, ly - 3.0f * s, 16.0f * s, "МАТЕРИАЛ", 0.15f, 0.15f, 0.16f, 0.95f);
+    drawText(dx + dw - 96.0f * s, ly - 3.0f * s, 16.0f * s, "ЕСТЬ", 0.15f, 0.15f, 0.16f, 0.95f);
     ly += 28.0f * s;
     for(int k = 0; k < 2; ++k){
         ItemType cost = (k == 0) ? r.costA : r.costB;
@@ -1847,7 +1851,8 @@ void GameClient::renderCraft(){
               (r.costB == ItemType::None || inventory_.countOf(r.costB) >= r.costBCount);
     float bx, by, bw, bh;
     craftButtonRect(bx, by, bw, bh);
-    drawUIRect(bx, by, bw, bh, 0, ok ? 0.18f : 0.14f, ok ? 0.26f : 0.14f, ok ? 0.18f : 0.15f, 0.95f, false);
+    drawUIRect(bx, by, bw, bh, 0, ok ? 0.24f : 0.20f, ok ? 0.34f : 0.20f, ok ? 0.24f : 0.21f,
+               ok ? 0.72f : 0.55f, false);
     uiThinFrame(bx, by, bw, bh, ok ? UI_ACCENT : UI_LINE, ok ? 0.9f : 0.4f);
     drawText(bx + bw * 0.5f - 46.0f * s, by + bh * 0.28f, 23.0f * s, "СОЗДАТЬ",
              ok ? UI_ACCENT.r : UI_TEXT_DIM.r, ok ? UI_ACCENT.g : UI_TEXT_DIM.g,

@@ -167,11 +167,11 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 // заново, и управление возвращается — а не «бежит само».
                 stickActive_ = true;
                 stickFinger_ = e.tfinger.fingerId;
-                // База всегда на своём месте: кольцо не прыгает под палец, как раньше,
-                // иначе на экране два разных джойстика — нарисованный и настоящий.
-                stickBaseX_ = stickHomeX_;
-                stickBaseY_ = stickHomeY_;
-                stickCurX_ = x; stickCurY_ = y;
+                // Джойстик плавающий: кольцо переезжает туда, где лёг палец. Искать
+                // его глазами не надо, а в покое он стоит на своём месте у угла — так
+                // видно, где именно он появится.
+                stickBaseX_ = stickCurX_ = x;
+                stickBaseY_ = stickCurY_ = y;
                 return true;
             }
             if(!lookActive_){

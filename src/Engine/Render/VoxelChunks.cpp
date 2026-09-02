@@ -233,6 +233,10 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                         if(face.dx != 0){ u = face.verts[k][2]; v = face.verts[k][1]; }
                         else if(face.dy != 0){ u = face.verts[k][0]; v = face.verts[k][2]; }
                         else { u = face.verts[k][0]; v = face.verts[k][1]; }
+                        // Дорога идёт с запада на восток, а её картинка нарисована
+                        // «полотном вверх». Без этого разворота рисунок ложился поперёк
+                        // дороги — колея шла не туда, куда едут.
+                        if(b == Block::Road){ float t = u; u = v; v = t; }
 
                         quad[k] = VoxelVertex{
                             (float)wx + face.verts[k][0],
