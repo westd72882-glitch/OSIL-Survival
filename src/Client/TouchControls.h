@@ -93,6 +93,9 @@ private:
     // Джойстик движения
     bool stickActive_ = false;
     SDL_FingerID stickFinger_ = -1;
+    // Джойстик стоит на постоянном месте у нижнего левого угла и виден всегда: искать
+    // его глазами не надо, а палец ложится туда же, что и в других выживалках.
+    float stickHomeX_ = 0, stickHomeY_ = 0;
     float stickBaseX_ = 0, stickBaseY_ = 0, stickCurX_ = 0, stickCurY_ = 0, stickRadius_ = 120.0f;
 
     // Обзор

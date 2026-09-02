@@ -39,8 +39,6 @@ void TouchControls::layout(int screenW, int screenH){
     stickRadius_ = clampf(mmToPx(15.0f), 62.0f * uiScale_, 128.0f * uiScale_);
 
     float pad = r * 0.55f;
-    float rightX = (float)screenW - rBig - pad;
-    float bottomY = (float)screenH - rBig - pad;
 
     auto place = [&](TouchButton& b, float nx, float ny, float radius, const char* label, bool toggle){
         b.radius = radius;
@@ -50,9 +48,15 @@ void TouchControls::layout(int screenW, int screenH){
         if(ny >= 0.0f){ b.cx = nx * (float)screenW; b.cy = ny * (float)screenH; }
     };
 
-    // Правая нижняя зона — основные действия под большой палец правой руки. Копать и
-    // ставить рядом и крупные: это две самые частые операции в кубическом мире.
-    attack_.cx = rightX;                 attack_.cy = bottomY;
+    // Раскладка снята с телефонных выживалок: обе руки заняты одинаково, а середина
+    // экрана свободна. Слева — джойстик у нижнего угла и бег над ним, справа — столбик
+    // действий под большой палец, сверху справа — окна.
+    float leftX   = rBig + pad;
+    float rightX  = (float)screenW - rBig - pad;
+    float bottomY = (float)screenH - rBig - pad;
+
+    // Удар — самая частая кнопка, поэтому она крупная и стоит там, где палец лежит.
+    attack_.cx = rightX;                 attack_.cy = (float)screenH * 0.50f;
     place(attack_, settings.attackNormX, settings.attackNormY, rBig, "КОПАТЬ", false);
 
     // Кнопки «Ставить» больше нет: блоки в мир не ставятся, игрок только добывает.
@@ -60,28 +64,38 @@ void TouchControls::layout(int screenW, int screenH){
     // перестаёт и рисоваться, и ловить касания.
     place_.cx = -1000.0f; place_.cy = -1000.0f; place_.radius = 0.0f; place_.label = "";
 
-    jump_.cx = rightX;                   jump_.cy = bottomY - rBig * 2.2f;
-    place(jump_, settings.jumpNormX, settings.jumpNormY, r, "ПРЫЖОК", false);
-
-    action_.cx = rightX - rBig * 2.15f;  action_.cy = bottomY - rBig * 2.0f;
+    // Взаимодействие — над ударом: обе «рабочие» кнопки рядом, но не слипаются.
+    action_.cx = rightX;                 action_.cy = (float)screenH * 0.36f;
     place(action_, settings.actionNormX, settings.actionNormY, r, "E", false);
 
-    sprint_.cx = rightX - rBig * 3.8f;   sprint_.cy = bottomY;
-    place(sprint_, settings.sprintNormX, settings.sprintNormY, r, "БЕГ", true);
-
-    crouch_.cx = rightX - rBig * 3.8f;   crouch_.cy = bottomY - rBig * 2.0f;
+    // Прыжок и присед — стрелки вверх и вниз в правом нижнем углу, друг над другом.
+    jump_.cx = rightX;                   jump_.cy = bottomY - rBig * 1.9f;
+    place(jump_, settings.jumpNormX, settings.jumpNormY, r, "ПРЫЖОК", false);
+    crouch_.cx = rightX;                 crouch_.cy = bottomY;
     place(crouch_, settings.crouchNormX, settings.crouchNormY, r, "СЕСТЬ", true);
+
+    // Бег — слева над джойстиком: его жмут большим пальцем той же руки, что и движение.
+    sprint_.cx = leftX;                  sprint_.cy = (float)screenH * 0.64f;
+    place(sprint_, settings.sprintNormX, settings.sprintNormY, r, "БЕГ", true);
 
     // Правый верх — окна (инвентарь, крафт, карта).
     float topY = r + pad * 2.0f;
     inventory_.cx = (float)screenW - r - pad;      inventory_.cy = topY;
-    place(inventory_, settings.invNormX, settings.invNormY, r * 0.8f, "ИНВ", false);
+    place(inventory_, settings.invNormX, settings.invNormY, r * 0.85f, "ИНВ", false);
     craft_.cx = (float)screenW - r * 3.0f - pad;   craft_.cy = topY;
-    place(craft_, settings.craftNormX, settings.craftNormY, r * 0.8f, "КРАФТ", false);
+    place(craft_, settings.craftNormX, settings.craftNormY, r * 0.85f, "КРАФТ", false);
     map_.cx = (float)screenW - r * 5.0f - pad;     map_.cy = topY;
-    place(map_, settings.mapNormX, settings.mapNormY, r * 0.8f, "КАРТА", false);
-    // Настройки из игры убраны: в них заходят только из главного меню, иначе кнопка
-    // висит на экране и её задевают пальцем во время боя. Гасим нулевым радиусом.
+    place(map_, settings.mapNormX, settings.mapNormY, r * 0.85f, "КАРТА", false);
+
+    // Настройки из игры убраны: в них заходят только из меню паузы.
+
+    // Постоянное место джойстика — нижний левый угол.
+    stickHomeX_ = stickRadius_ + pad * 1.6f;
+    stickHomeY_ = (float)screenH - stickRadius_ - pad * 1.6f;
+    if(!stickActive_){
+        stickBaseX_ = stickCurX_ = stickHomeX_;
+        stickBaseY_ = stickCurY_ = stickHomeY_;
+    }
     options_.cx = -1000.0f; options_.cy = -1000.0f; options_.radius = 0.0f; options_.label = "";
 }
 
@@ -153,8 +167,11 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 // заново, и управление возвращается — а не «бежит само».
                 stickActive_ = true;
                 stickFinger_ = e.tfinger.fingerId;
-                stickBaseX_ = stickCurX_ = x;
-                stickBaseY_ = stickCurY_ = y;
+                // База всегда на своём месте: кольцо не прыгает под палец, как раньше,
+                // иначе на экране два разных джойстика — нарисованный и настоящий.
+                stickBaseX_ = stickHomeX_;
+                stickBaseY_ = stickHomeY_;
+                stickCurX_ = x; stickCurY_ = y;
                 return true;
             }
             if(!lookActive_){
@@ -182,6 +199,10 @@ bool TouchControls::handleEvent(const SDL_Event& e){
         case SDL_FINGERUP: {
             if(stickActive_ && e.tfinger.fingerId == stickFinger_){
                 stickActive_ = false; stickFinger_ = -1;
+    stickCurX_ = stickBaseX_ = stickHomeX_;
+    stickCurY_ = stickBaseY_ = stickHomeY_;
+                stickCurX_ = stickBaseX_ = stickHomeX_;
+                stickCurY_ = stickBaseY_ = stickHomeY_;
                 return true;
             }
             if(lookActive_ && e.tfinger.fingerId == lookFinger_){
@@ -340,7 +361,8 @@ void TouchControls::saveLayout() const {
 
 TouchControls::StickView TouchControls::stickView() const {
     StickView v{};
-    v.active = stickActive_;
+    // Кольцо джойстика видно всегда, даже когда палец его не держит.
+    v.active = true;
     v.baseX = stickBaseX_; v.baseY = stickBaseY_;
     v.curX = stickCurX_;   v.curY = stickCurY_;
     v.radius = stickRadius_;

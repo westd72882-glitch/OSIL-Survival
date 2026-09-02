@@ -26,7 +26,7 @@
 #include <vector>
 
 // Какое окно открыто поверх игры.
-enum class Overlay { None, Inventory, Craft, Map, Settings };
+enum class Overlay { None, Inventory, Craft, Map, Settings, Pause };
 
 // Состояние клиента. Главное меню — не «окно поверх игры», а отдельный режим: мир в нём
 // уже построен и медленно вращается фоном, но игрок не управляется и время не идёт.
@@ -134,6 +134,12 @@ private:
     void  craftGridGeometry(float& x, float& y, float& tile, float& gap) const;
     void  craftTilePos(int i, float& tx, float& ty) const;
     void  craftButtonRect(float& x, float& y, float& w, float& h) const;
+    // Меню паузы: открывается тапом по полосам состояния слева сверху — отдельной
+    // кнопки под него на экране нет.
+    void  renderPause();
+    bool  handlePauseTouch(float x, float y);
+    void  pauseRowRect(int i, float& x, float& y, float& w, float& h) const;
+    void  statsPanelRect(float& x, float& y, float& w, float& h) const;
     Overlay overlayOverride_ = Overlay::None;  // ключ --overlay: снять окно на скриншот
     int dragSlot_ = -1;          // ячейка, которую тащим пальцем
     Vec2 dragPos_{0,0};          // где сейчас палец: под ним рисуется сам предмет

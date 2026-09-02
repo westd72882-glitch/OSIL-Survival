@@ -494,10 +494,13 @@ void GameClient::buildMinimapTexture(){
             // склонов — казалось, что по острову идут ямы и канавы. Высоту показываем
             // ровной, спокойной градацией яркости.
             float shade = 0.78f + clampf(h / cfg.maxHeight, 0.0f, 1.0f) * 0.34f;
+            float r = bi.r * shade, g = bi.g * shade, b = bi.b * shade;
+            // Дорога рисуется прямо на карте — по ней и ориентируются, как в Rust.
+            if(voxels_->onRoad((int)wx, (int)wz)){ r = 196.0f; g = 158.0f; b = 116.0f; }
             size_t i = ((size_t)y * N + x) * 4;
-            pixels[i+0] = (unsigned char)clampf(bi.r * shade, 0, 255);
-            pixels[i+1] = (unsigned char)clampf(bi.g * shade, 0, 255);
-            pixels[i+2] = (unsigned char)clampf(bi.b * shade, 0, 255);
+            pixels[i+0] = (unsigned char)clampf(r, 0, 255);
+            pixels[i+1] = (unsigned char)clampf(g, 0, 255);
+            pixels[i+2] = (unsigned char)clampf(b, 0, 255);
             pixels[i+3] = 255;
         }
     }
@@ -601,6 +604,57 @@ void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
     w = fminf((float)SCR_W - x - 24.0f * s, 320.0f * s);
     h = 58.0f * s;
     y = gy + tile * 2.6f + 18.0f * s;
+}
+
+// Панель состояния слева сверху: она же кнопка меню паузы. Геометрия совпадает с
+// отрисовкой полос в renderHud.
+void GameClient::statsPanelRect(float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float pad = 14.0f * s;
+    x = pad; y = pad;
+    w = 200.0f * s;
+    h = (21.0f * s + 5.0f * s) * 4.0f + 22.0f * s;
+}
+
+const char* const PAUSE_ROWS[] = { "ПРОДОЛЖИТЬ", "КАРТА", "НАСТРОЙКИ", "ВЫЙТИ В МЕНЮ" };
+const int PAUSE_ROW_COUNT = 4;
+
+void GameClient::pauseRowRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    w = clampf((float)SCR_W * 0.30f, 260.0f, 460.0f);
+    h = 62.0f * s;
+    x = (float)SCR_W * 0.10f;
+    float total = h * PAUSE_ROW_COUNT + 14.0f * s * (PAUSE_ROW_COUNT - 1);
+    y = ((float)SCR_H - total) * 0.5f + i * (h + 14.0f * s);
+}
+
+void GameClient::renderPause(){
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    // Мир под меню виден, но приглушён: пауза — это не отдельный экран, а остановка.
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.02f, 0.03f, 0.66f, false);
+    drawText((float)SCR_W * 0.10f, (float)SCR_H * 0.13f, 46.0f * s, "OSIL SURVIVAL",
+             UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+    for(int i = 0; i < PAUSE_ROW_COUNT; ++i){
+        float x, y, w, h;
+        pauseRowRect(i, x, y, w, h);
+        drawText(x, y + h * 0.24f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 0.94f);
+    }
+}
+
+bool GameClient::handlePauseTouch(float x, float y){
+    for(int i = 0; i < PAUSE_ROW_COUNT; ++i){
+        float rx, ry, rw, rh;
+        pauseRowRect(i, rx, ry, rw, rh);
+        if(x < rx || x > rx + rw || y < ry || y > ry + rh) continue;
+        switch(i){
+            case 0: overlay_ = Overlay::None; break;
+            case 1: overlay_ = Overlay::Map; break;
+            case 2: overlay_ = Overlay::Settings; break;
+            case 3: overlay_ = Overlay::None; state_ = GameState::MainMenu; break;
+        }
+        return true;
+    }
+    return true;   // касание мимо строк меню не закрывает его
 }
 
 // Строки окна настроек считаются одной функцией и для отрисовки, и для попаданий.
@@ -766,6 +820,7 @@ void GameClient::renderSettings(){
 }
 
 bool GameClient::handleOverlayTouch(float x, float y){
+    if(overlay_ == Overlay::Pause) return handlePauseTouch(x, y);
     if(overlay_ == Overlay::Settings) return handleSettingsTouch(x, y);
 
     if(overlay_ == Overlay::Craft){
@@ -1114,6 +1169,16 @@ void GameClient::handleEvents(){
             continue;
         }
 
+        if(down && overlay_ == Overlay::None){
+            // Тап по полосам состояния слева сверху — меню паузы. Отдельной кнопки
+            // под него на экране нет: место занято, а полосы всё равно не нажимаются.
+            float sx, sy, sw, sh;
+            statsPanelRect(sx, sy, sw, sh);
+            if(tx >= sx && tx <= sx + sw && ty >= sy && ty <= sy + sh){
+                overlay_ = Overlay::Pause;
+                continue;
+            }
+        }
         if(down && handleHotbarTouch(tx, ty)) continue;
         controls_.handleEvent(e);
     }
@@ -1515,7 +1580,9 @@ void GameClient::renderHud(){
     }
 
     renderCompass();
-    renderTouchControls();
+    // Кнопки управления не нужны, пока открыто окно: они просвечивают сквозь него и
+    // выглядят как часть окна.
+    if(overlay_ == Overlay::None) renderTouchControls();
 }
 
 // ==================== СЕНСОРНОЕ УПРАВЛЕНИЕ: ИКОНКИ ====================
@@ -1610,6 +1677,7 @@ void GameClient::renderOverlay(){
         return;
     }
     if(overlay_ == Overlay::None) return;
+    if(overlay_ == Overlay::Pause){ renderPause(); return; }
     if(overlay_ == Overlay::Settings){ renderSettings(); return; }
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
 
@@ -1706,6 +1774,15 @@ void GameClient::renderCraft(){
             float fh = tile * 0.22f;
             drawText(tx + tile - fh * 1.5f, ty + tile - fh * 1.2f, fh, buf, 1, 1, 1, 0.95f);
         }
+        // Название — полосой ВНУТРИ плитки по нижнему краю: под плиткой соседние
+        // подписи налезали друг на друга, потому что плитки стоят вплотную.
+        float nameH = tile * 0.135f;
+        drawUIRect(tx, ty + tile - nameH * 1.7f, tile, nameH * 1.7f, 0,
+                   0.05f, 0.05f, 0.06f, 0.72f, false);
+        float tw = nameH * 0.5f * (float)strlen(res.nameRu);
+        float nx = tw > tile ? tx + 3.0f * s : tx + tile * 0.5f - tw * 0.5f;
+        drawText(nx, ty + tile - nameH * 1.4f, nameH, res.nameRu, 1, 1, 1, ok ? 0.9f : 0.45f);
+
         // Выбранная плитка обведена, недоступная — приглушена.
         if(i == craftSelected_){
             float t = fmaxf(2.0f, tile * 0.045f);
@@ -1726,25 +1803,44 @@ void GameClient::renderCraft(){
     float dy = gy;
     drawUIRect(dx, dy, dw, tile * 2.6f, 0, 0.12f, 0.12f, 0.13f, 0.85f, false);
 
+    // Заголовок описания: название слева, крупный значок предмета справа.
     snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
     drawText(dx + 18.0f * s, dy + 16.0f * s, 27.0f * s, buf, 1, 1, 1, 0.96f);
+    float bigIcon = tile * 0.9f;
+    GLuint resIcon = itemIcon(r.result);
+    if(resIcon)
+        drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 12.0f * s, bigIcon, bigIcon,
+                   resIcon, 1, 1, 1, 1.0f, true);
 
-    float ly = dy + 56.0f * s;
-    // Стоимость: сколько нужно и сколько есть — по строке на составляющую.
+    drawText(dx + 18.0f * s, dy + 50.0f * s, 18.0f * s, r.note,
+             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+
+    // Таблица стоимости с шапкой: сколько нужно, чего и сколько есть на руках.
+    float ly = dy + 92.0f * s;
+    drawUIRect(dx + 14.0f * s, ly - 6.0f * s, dw - 28.0f * s, 26.0f * s, 0,
+               0.20f, 0.20f, 0.21f, 0.9f, false);
+    drawText(dx + 22.0f * s, ly - 3.0f * s, 16.0f * s, "НУЖНО",
+             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+    drawText(dx + 100.0f * s, ly - 3.0f * s, 16.0f * s, "МАТЕРИАЛ",
+             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+    drawText(dx + dw - 96.0f * s, ly - 3.0f * s, 16.0f * s, "ЕСТЬ",
+             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+    ly += 28.0f * s;
     for(int k = 0; k < 2; ++k){
         ItemType cost = (k == 0) ? r.costA : r.costB;
         int need = (k == 0) ? r.costACount : r.costBCount;
         if(cost == ItemType::None) continue;
         int have = inventory_.countOf(cost);
         bool enough = have >= need;
-        snprintf(buf, sizeof(buf), "%s  %d / %d", itemDef(cost).nameRu, have, need);
-        drawText(dx + 18.0f * s, ly, 21.0f * s, buf,
-                 enough ? 0.62f : 0.85f, enough ? 0.85f : 0.45f, 0.45f, 0.95f);
+        snprintf(buf, sizeof(buf), "%d", need);
+        drawText(dx + 22.0f * s, ly, 20.0f * s, buf, 1, 1, 1, 0.9f);
+        drawText(dx + 100.0f * s, ly, 20.0f * s, itemDef(cost).nameRu, 1, 1, 1, 0.9f);
+        snprintf(buf, sizeof(buf), "%d", have);
+        // Хватает — зелёным, не хватает — красным: это всё, что нужно знать до крафта.
+        drawText(dx + dw - 96.0f * s, ly, 20.0f * s, buf,
+                 enough ? 0.55f : 0.90f, enough ? 0.85f : 0.35f, 0.40f, 0.95f);
         ly += 28.0f * s;
     }
-
-    drawText(dx + 18.0f * s, ly + 6.0f * s, 18.0f * s, r.note,
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
 
     // Кнопка «Создать» — она же и есть действие крафта.
     bool ok = inventory_.countOf(r.costA) >= r.costACount &&
@@ -1821,24 +1917,22 @@ void GameClient::renderMap(){
         if(ly >= 0.0f && ly <= (float)SCR_H)
             drawUIRect(worldL, ly, worldR - worldL, 1.0f, 0, 1, 1, 1, 0.25f, false);
     }
+    // Подписей A1/B2 в клетках больше нет: они рябили поверх карты. Вместо них — номера
+    // рядов справа и столбцов сверху, как на бумажной карте.
     float cellW = CELL / spanX * (float)SCR_W;
     float cellH = CELL / spanZ * (float)SCR_H;
-    float fontH = clampf(fminf(cellW, cellH) * 0.22f, 13.0f * s, 30.0f * s);
+    float fontH = clampf(fminf(cellW, cellH) * 0.20f, 14.0f * s, 34.0f * s);
+    for(int r = 0; r < 10; ++r){
+        float ly = toScreenY(((float)r + 0.5f) * CELL);
+        if(ly < worldT || ly > worldB) continue;
+        snprintf(label, sizeof(label), "%d", r + 1);
+        drawText((float)SCR_W - 34.0f * s, ly - fontH * 0.5f, fontH, label, 1, 1, 1, 0.55f);
+    }
     for(int c = 0; c < 10; ++c){
-        for(int r = 0; r < 10; ++r){
-            float lx = toScreenX((float)c * CELL);
-            float ly = toScreenY((float)r * CELL);
-            if(lx + cellW < 0.0f || lx > (float)SCR_W) continue;
-            if(ly + cellH < 0.0f || ly > (float)SCR_H) continue;
-            snprintf(label, sizeof(label), "%c%d", 'A' + c, r + 1);
-            // Подпись стоит в своём углу квадрата и НИКУДА не едет: раньше её
-            // подтягивало к краю экрана, и при перетаскивании карты буквы ползали
-            // сами по себе. Не поместилась целиком — просто не рисуем.
-            float tx = lx + 6.0f * s, ty = ly + 5.0f * s;
-            if(tx < 2.0f || tx + fontH * 2.2f > (float)SCR_W) continue;
-            if(ty < 2.0f || ty + fontH * 1.4f > (float)SCR_H) continue;
-            drawText(tx, ty, fontH, label, 1, 1, 1, 0.7f);
-        }
+        float lx = toScreenX(((float)c + 0.5f) * CELL);
+        if(lx < worldL || lx > worldR) continue;
+        snprintf(label, sizeof(label), "%c", 'A' + c);
+        drawText(lx - fontH * 0.3f, 10.0f * s, fontH, label, 1, 1, 1, 0.55f);
     }
 
     // ---- Метки игрока: касание по карте ставит флажок, касание по нему — снимает.
