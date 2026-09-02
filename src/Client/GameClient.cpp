@@ -41,6 +41,8 @@ const Recipe kRecipes[] = {
       "Светит в темноте. Возьмите в руки, выбрав в поясе." },
     { ItemType::Axe,   1, ItemType::Wood, 10, ItemType::Stone, 6,
       "Каменный топор. С ним добыча идёт вдвое быстрее, чем голыми руками." },
+    { ItemType::Furnace, 1, ItemType::Stone, 50, ItemType::None, 0,
+      "Печь. Поставьте её на землю и плавьте серную руду, топя дровами." },
 };
 const int kRecipeCount = (int)(sizeof(kRecipes)/sizeof(kRecipes[0]));
 
@@ -497,6 +499,7 @@ void GameClient::buildMinimapTexture(){
             float r = bi.r * shade, g = bi.g * shade, b = bi.b * shade;
             // Дорога рисуется прямо на карте — по ней и ориентируются, как в Rust.
             if(voxels_->onRoad((int)wx, (int)wz)){ r = 196.0f; g = 158.0f; b = 116.0f; }
+            if(voxels_->inGasStation((int)wx, (int)wz)){ r = 214.0f; g = 96.0f; b = 74.0f; }
             size_t i = ((size_t)y * N + x) * 4;
             pixels[i+0] = (unsigned char)clampf(r, 0, 255);
             pixels[i+1] = (unsigned char)clampf(g, 0, 255);
@@ -520,7 +523,9 @@ void GameClient::buildMinimapTexture(){
 
 void GameClient::hotbarGeometry(float& x, float& y, float& slot, float& gap) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    slot = clampf(fminf((float)SCR_W, (float)SCR_H) * 0.085f, 44.0f, 96.0f * s);
+    // Размер ячейки пояса — посередине между прежним поясом и ячейкой инвентаря:
+    // мелкий пояс терялся внизу экрана, а размер инвентарной ячейки занимал полэкрана.
+    slot = clampf(fminf((float)SCR_W, (float)SCR_H) * 0.115f, 52.0f, 118.0f * s);
     gap = slot * 0.10f;
     float total = slot * Inventory::HOTBAR + gap * (Inventory::HOTBAR - 1);
     x = ((float)SCR_W - total) * 0.5f;
@@ -546,15 +551,15 @@ void GameClient::inventoryGeometry(float& x, float& y, float& slot, float& gap) 
 }
 
 // Экранная позиция ячейки инвентаря с учётом отступа перед поясом.
+// В окне инвентаря лежит ТОЛЬКО рюкзак — 24 ячейки. Пояс не дублируется: он и так
+// нарисован внизу экрана и не пропадает при открытии рюкзака.
 void GameClient::inventorySlotPos(int i, float& sx, float& sy) const {
     float gx, gy, slot, gap;
     inventoryGeometry(gx, gy, slot, gap);
-    int col = i % Inventory::COLS, row = i / Inventory::COLS;
-    // Пояс — ПОСЛЕДНИЙ ряд и стоит ниже с отступом; основная сетка выше него.
-    bool belt = (row == 0);
-    int visualRow = belt ? (Inventory::ROWS - 1) : (row - 1);
+    int backpack = i - Inventory::HOTBAR;         // 0..23
+    int col = backpack % Inventory::COLS, row = backpack / Inventory::COLS;
     sx = gx + col * (slot + gap);
-    sy = gy + visualRow * (slot + gap) + (belt ? inventoryBeltGap() : 0.0f);
+    sy = gy + row * (slot + gap);
 }
 
 // ==================== ВВОД ====================
@@ -592,7 +597,8 @@ void GameClient::craftTilePos(int i, float& tx, float& ty) const {
     float gx, gy, tile, gap;
     craftGridGeometry(gx, gy, tile, gap);
     tx = gx + (i % CRAFT_COLS) * (tile + gap);
-    ty = gy + (i / CRAFT_COLS) * (tile + gap);
+    // Список прокручивается пальцем: рецептов со временем станет больше, чем влезает.
+    ty = gy + (i / CRAFT_COLS) * (tile + gap) - craftScroll_;
 }
 
 void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
@@ -836,11 +842,12 @@ bool GameClient::handleOverlayTouch(float x, float y){
         float closeSize = 54.0f * s;
         float gx, gy, tile, gap;
         craftGridGeometry(gx, gy, tile, gap);
-        float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = gy - 52.0f * s;
+        float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = 18.0f * s;
         if(x >= closeX && x <= closeX + closeSize && y >= closeY && y <= closeY + closeSize){
             overlay_ = Overlay::None;
             return true;
         }
+        craftDragging_ = true;   // палец на экране крафта: возможно, список будут листать
         // Плитка рецепта — выбор, а не мгновенный крафт: сначала посмотреть, что нужно.
         for(int i = 0; i < kRecipeCount; ++i){
             float tx, ty;
@@ -871,6 +878,8 @@ bool GameClient::handleOverlayTouch(float x, float y){
 
     // Обычный перенос: палец лёг на ячейку с предметом — берём её, ведём — предмет
     // едет за пальцем, отпустили над другой ячейкой — кладём туда.
+    if(itemMenuSlot_ >= 0) return handleItemMenuTouch(x, y);
+
     // Крестик выхода: его геометрия повторяет отрисовку.
     {
         float gx, gy, slot, gap;
@@ -899,13 +908,86 @@ bool GameClient::handleOverlayTouch(float x, float y){
 }
 
 // Ячейка под точкой экрана, или -1.
+// ---- Окошко предмета. Короткое касание по ячейке открывает его: название, сколько
+// в стаке и что с ним можно сделать. Перетаскивание при этом остаётся перетаскиванием —
+// окно открывается только если палец не поехал.
+void GameClient::itemMenuRect(float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    w = clampf((float)SCR_W * 0.26f, 230.0f, 380.0f);
+    h = 210.0f * s;
+    x = ((float)SCR_W - w) * 0.5f;
+    y = ((float)SCR_H - h) * 0.5f;
+}
+
+void GameClient::itemMenuButtonRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float mx, my, mw, mh;
+    itemMenuRect(mx, my, mw, mh);
+    w = mw - 24.0f * s;
+    h = 42.0f * s;
+    x = mx + 12.0f * s;
+    y = my + 84.0f * s + i * (h + 8.0f * s);
+}
+
+void GameClient::renderItemMenu(){
+    if(itemMenuSlot_ < 0) return;
+    const ItemStack& st = inventory_.slot(itemMenuSlot_);
+    if(st.empty()){ itemMenuSlot_ = -1; return; }
+
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float x, y, w, h;
+    itemMenuRect(x, y, w, h);
+    drawUIRect(x, y, w, h, 0, 0.10f, 0.10f, 0.11f, 0.92f, false);
+    uiThinFrame(x, y, w, h, UIColor{1.0f, 1.0f, 1.0f}, 0.35f);
+
+    const ItemDef& def = itemDef(st.type);
+    drawText(x + 14.0f * s, y + 12.0f * s, 24.0f * s, def.nameRu, 1, 1, 1, 0.97f);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "в стаке: %d", st.count);
+    drawText(x + 14.0f * s, y + 46.0f * s, 17.0f * s, buf, 1, 1, 1, 0.65f);
+
+    const char* labels[3] = { "ВЫБРОСИТЬ", "РАЗДЕЛИТЬ ПОПОЛАМ", "ЗАКРЫТЬ" };
+    for(int i = 0; i < 3; ++i){
+        float bx, by, bw, bh;
+        itemMenuButtonRect(i, bx, by, bw, bh);
+        bool can = (i != 1) || st.count >= 2;
+        drawUIRect(bx, by, bw, bh, 0, 0.16f, 0.16f, 0.17f, can ? 0.92f : 0.55f, false);
+        uiThinFrame(bx, by, bw, bh, UIColor{1.0f, 1.0f, 1.0f}, can ? 0.30f : 0.12f);
+        drawText(bx + 14.0f * s, by + bh * 0.26f, 19.0f * s, labels[i], 1, 1, 1, can ? 0.95f : 0.4f);
+    }
+}
+
+bool GameClient::handleItemMenuTouch(float x, float y){
+    for(int i = 0; i < 3; ++i){
+        float bx, by, bw, bh;
+        itemMenuButtonRect(i, bx, by, bw, bh);
+        if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
+        if(i == 0)      inventory_.dropSlot(itemMenuSlot_);
+        else if(i == 1) inventory_.splitSlot(itemMenuSlot_);
+        itemMenuSlot_ = -1;
+        return true;
+    }
+    // Касание мимо кнопок закрывает окно: отдельного крестика ему не нужно.
+    float mx, my, mw, mh;
+    itemMenuRect(mx, my, mw, mh);
+    if(x < mx || x > mx + mw || y < my || y > my + mh) itemMenuSlot_ = -1;
+    return true;
+}
+
 int GameClient::slotAtPoint(float x, float y) const {
     float gx, gy, slot, gap;
     inventoryGeometry(gx, gy, slot, gap);
-    for(int i = 0; i < Inventory::SIZE; ++i){
+    for(int i = Inventory::HOTBAR; i < Inventory::SIZE; ++i){
         float sx, sy;
         inventorySlotPos(i, sx, sy);
         if(x >= sx && x <= sx + slot && y >= sy && y <= sy + slot) return i;
+    }
+    // Ячейки пояса внизу экрана — часть того же инвентаря: в них тоже можно бросить.
+    float hx, hy, hslot, hgap;
+    hotbarGeometry(hx, hy, hslot, hgap);
+    for(int i = 0; i < Inventory::HOTBAR; ++i){
+        float sx = hx + i * (hslot + hgap);
+        if(x >= sx && x <= sx + hslot && y >= hy && y <= hy + hslot) return i;
     }
     return -1;
 }
@@ -1061,6 +1143,16 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
 }
 
 void GameClient::handleOverlayDrag(float x, float y, float dx, float dy){
+    if(overlay_ == Overlay::Craft && craftDragging_){
+        float gx, gy, tile, gap;
+        craftGridGeometry(gx, gy, tile, gap);
+        int rows = (kRecipeCount + CRAFT_COLS - 1) / CRAFT_COLS;
+        float contentH = rows * (tile + gap);
+        float viewH = (float)SCR_H - gy - tile * 0.4f;
+        float maxScroll = contentH > viewH ? contentH - viewH : 0.0f;
+        craftScroll_ = clampf(craftScroll_ - dy, 0.0f, maxScroll);
+        return;
+    }
     if(overlay_ == Overlay::Inventory && dragSlot_ >= 0){
         dragPos_ = Vec2{ x, y };
         // Порог в несколько пикселей: случайное дрожание пальца не должно считаться
@@ -1071,15 +1163,18 @@ void GameClient::handleOverlayDrag(float x, float y, float dx, float dy){
 
 void GameClient::handleOverlayRelease(){
     mapDragging_ = false;
+    craftDragging_ = false;
 
 
     if(overlay_ == Overlay::Inventory && dragSlot_ >= 0){
         int target = slotAtPoint(dragPos_.x, dragPos_.y);
         if(dragActive_ && target >= 0 && target != dragSlot_){
             inventory_.moveOrSwap(dragSlot_, target);
-        } else if(!dragActive_ && dragSlot_ < Inventory::COLS){
-            // Короткое касание по ячейке пояса — выбрать её в руку.
-            inventory_.select(dragSlot_);
+        } else if(!dragActive_){
+            // Палец не поехал — это не перенос, а тычок по предмету. Ячейка пояса
+            // берётся в руку, ячейка рюкзака открывает окошко предмета.
+            if(dragSlot_ < Inventory::HOTBAR) inventory_.select(dragSlot_);
+            else                              itemMenuSlot_ = dragSlot_;
         }
         dragSlot_ = -1;
         dragActive_ = false;
@@ -1209,7 +1304,7 @@ void GameClient::update(float dt){
     pitch_ -= controls_.lookDY * sens;
     pitch_ = clampf(pitch_, -1.50f, 1.50f);
 
-    if(controls_.inventoryPressed()){ overlay_ = (overlay_ == Overlay::Inventory) ? Overlay::None : Overlay::Inventory; dragSlot_ = -1; }
+    if(controls_.inventoryPressed()){ overlay_ = (overlay_ == Overlay::Inventory) ? Overlay::None : Overlay::Inventory; dragSlot_ = -1; itemMenuSlot_ = -1; }
     // Открывая окно, отпускаем все касания: палец, лежавший на джойстике, иначе
     // остаётся «нажатым» и игрок продолжает идти, пока окно открыто.
     if(overlay_ != Overlay::None) controls_.releaseAllTouches();
@@ -1491,6 +1586,29 @@ void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, 
     }
 }
 
+// Пояс рисуется отдельным проходом ПОСЛЕ окон: он виден всегда, в том числе поверх
+// инвентаря, и не должен уходить под их затемнение.
+void GameClient::renderHotbar(){
+    if(state_ != GameState::Playing || overlay_ == Overlay::Pause) return;
+    glDisable(GL_DEPTH_TEST);
+    Mat4 uiProjM = mat4Ortho(0, (float)SCR_W, (float)SCR_H, 0, -1, 1);
+    glUseProgram(uiProg);
+    glUniformMatrix4fv(uiProjLoc, 1, GL_FALSE, uiProjM.m);
+
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float hx, hy, slot, hgap;
+    hotbarGeometry(hx, hy, slot, hgap);
+    for(int i = 0; i < Inventory::HOTBAR; ++i){
+        float sx = hx + i * (slot + hgap);
+        ItemStack shown = (dragActive_ && i == dragSlot_) ? ItemStack{} : inventory_.slot(i);
+        drawSlot(sx, hy, slot, shown, i == inventory_.selected());
+    }
+    const ItemStack& sel = inventory_.selectedStack();
+    if(!sel.empty())
+        drawText(hx, hy - 24.0f * s, 20.0f * s, itemDef(sel.type).nameRu,
+                 UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.9f);
+}
+
 void GameClient::renderHud(){
     // В паузе интерфейса игры на экране нет вообще: пауза — это отдельный экран, а не
     // окно поверх боя, и полосы с кнопками за ним только мешают читать меню.
@@ -1556,27 +1674,10 @@ void GameClient::renderHud(){
                 0.75f, 0.65f, 0.25f, "");
     }
 
-    // ---- Пояс быстрого доступа. В открытом инвентаре его не рисуем: у окна свой ряд
-    // пояса, и игровой просвечивал сквозь затемнение вторым, притухшим.
-    float hx, hy, slot, hgap;
-    hotbarGeometry(hx, hy, slot, hgap);
-    bool showHotbar = (overlay_ != Overlay::Inventory);
-    if(showHotbar){
-        for(int i = 0; i < Inventory::HOTBAR; ++i){
-            float sx = hx + i * (slot + hgap);
-            drawSlot(sx, hy, slot, inventory_.slot(i), i == inventory_.selected());
-        }
-    }
-    const ItemStack& sel = inventory_.selectedStack();
-    if(showHotbar && !sel.empty()){
-        const char* name = itemDef(sel.type).nameRu;
-        drawText(hx, hy - 24.0f * s, 20.0f * s, name, UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.9f);
-    }
-
     // ---- Последнее событие
     if(player_->messageAge() < 4.0f){
         float alpha = clampf(1.0f - (player_->messageAge() - 3.0f), 0.0f, 1.0f);
-        drawText(pad, hy - 34.0f * s, 21.0f * s, player_->lastMessage(),
+        drawText(pad, (float)SCR_H - 120.0f * s, 21.0f * s, player_->lastMessage(),
                  UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, alpha);
     }
 
@@ -1701,13 +1802,10 @@ void GameClient::renderOverlay(){
         inventoryGeometry(gx, gy, slot, gap);
         float w = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
         float mainH = slot * (Inventory::ROWS - 1) + gap * (Inventory::ROWS - 2);
-        // Экран инвентаря: затемнение на весь экран, заголовок, крестик выхода, сетка
-        // рюкзака и отдельной полосой ниже — пояс. Подсказок нет.
         // Экран не затемняется в глухую: за интерфейсом остаётся видна игра.
         drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
         drawText(gx, gy - 46.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
 
-        // Крестик выхода — там же, где на карте и в настройках.
         float closeSize = 54.0f * s;
         float closeX = gx + w - closeSize, closeY = gy - 52.0f * s;
         if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
@@ -1716,19 +1814,15 @@ void GameClient::renderOverlay(){
             drawText(closeX + closeSize * 0.3f, closeY + closeSize * 0.2f, 26.0f * s, "X", 1, 1, 1, 0.95f);
         }
 
-        // Подложки: отдельная у рюкзака, отдельная у пояса — это разные вещи.
         drawUIRect(gx - 4.0f * s, gy - 4.0f * s, w + 8.0f * s, mainH + 8.0f * s, 0,
                    0.85f, 0.83f, 0.79f, 0.20f, false);
-        float beltY = gy + mainH + gap + inventoryBeltGap();
-        drawUIRect(gx - 4.0f * s, beltY - 4.0f * s, w + 8.0f * s, slot + 8.0f * s, 0,
-                   0.95f, 0.88f, 0.60f, 0.22f, false);
 
-        for(int i = 0; i < Inventory::SIZE; ++i){
+        // Только рюкзак: пояс живёт внизу экрана и рисуется отдельным проходом.
+        for(int i = Inventory::HOTBAR; i < Inventory::SIZE; ++i){
             float sx, sy;
             inventorySlotPos(i, sx, sy);
-            // Пока предмет тащат, его ячейка стоит пустой: он «в руке» у пальца.
             ItemStack shown = (dragActive_ && i == dragSlot_) ? ItemStack{} : inventory_.slot(i);
-            drawSlot(sx, sy, slot, shown, i < Inventory::HOTBAR && i == inventory_.selected());
+            drawSlot(sx, sy, slot, shown, false);
         }
         if(dragActive_ && dragSlot_ >= 0){
             // Предмет под пальцем, со смещением вверх: иначе его закрывает сам палец.
@@ -1736,6 +1830,7 @@ void GameClient::renderOverlay(){
             drawSlot(dragPos_.x - dsz * 0.5f, dragPos_.y - dsz * 1.15f, dsz,
                      inventory_.slot(dragSlot_), false);
         }
+        renderItemMenu();
         return;
     }
 
@@ -1751,15 +1846,16 @@ void GameClient::renderCraft(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     // Экран крафта: слева квадратные плитки рецептов, справа — описание выбранного.
     // Строчки во всю ширину читались как список настроек, а не как крафт.
-    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
-
+    // Затемнения нет: панели крафта и так полупрозрачные, а глухая шторка поверх мира
+    // в образце отсутствует.
     float gx, gy, tile, gap;
     craftGridGeometry(gx, gy, tile, gap);
     float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
     drawText(gx, gy - 46.0f * s, 30.0f * s, "КРАФТ", 1, 1, 1, 0.96f);
 
+    // Крестик — В САМОМ ВЕРХУ экрана справа, а не у сетки: так он не спорит с панелью.
     float closeSize = 54.0f * s;
-    float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = gy - 52.0f * s;
+    float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = 18.0f * s;
     if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
     else {
         drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
@@ -1946,6 +2042,21 @@ void GameClient::renderMap(){
         if(lx < worldL || lx > worldR) continue;
         snprintf(label, sizeof(label), "%c", 'A' + c);
         drawText(lx - fontH * 0.3f, 10.0f * s, fontH, label, 1, 1, 1, 0.55f);
+    }
+
+    // ---- Заправка: значок и подпись. Пока это единственная локация, и без подписи
+    // красное пятно на карте ничего не говорит.
+    {
+        float sx, sz;
+        voxels_->gasStationCentre(sx, sz);
+        float gx = toScreenX(sx), gy2 = toScreenY(sz);
+        if(gx > worldL && gx < worldR && gy2 > worldT && gy2 < worldB){
+            float r0 = 7.0f * s;
+            drawUICircleOutline(gx, gy2, r0, 1.0f, 0.55f, 0.35f, 0.95f, 2.5f);
+            drawUIRect(gx - r0 * 0.35f, gy2 - r0 * 0.35f, r0 * 0.7f, r0 * 0.7f, 0,
+                       1.0f, 0.55f, 0.35f, 0.95f, false);
+            drawText(gx + r0 * 1.6f, gy2 - 9.0f * s, 16.0f * s, "Заправка", 1, 0.8f, 0.7f, 0.95f);
+        }
     }
 
     // ---- Метки игрока: касание по карте ставит флажок, касание по нему — снимает.
@@ -2157,6 +2268,7 @@ void GameClient::render(){
     if(state_ == GameState::Playing){
         renderHud();
         renderOverlay();
+        renderHotbar();
     } else {
         // В меню поверх сцены рисуем только само меню (и настройки, если открыты).
         glDisable(GL_DEPTH_TEST);

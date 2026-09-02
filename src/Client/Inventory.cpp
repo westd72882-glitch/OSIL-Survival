@@ -23,6 +23,7 @@ const ItemDef kItems[(int)ItemType::COUNT] = {
     { "scrap",       "Скрап",         Block::Air,         100,   0,  0,  0.60f,0.42f,0.28f },
     { "axe",         "Каменный топор",Block::Air,           1,   0,  0,  0.70f,0.66f,0.60f },
     { "torch",       "Факел",         Block::Air,          20,   0,  0,  0.95f,0.72f,0.32f },
+    { "furnace",     "Печь",          Block::Furnace,       5,   0,  0,  0.52f,0.50f,0.48f },
 };
 } // namespace
 
@@ -44,6 +45,7 @@ ItemType itemFromBlock(Block b){
         case Block::OreMetal:   return ItemType::OreMetal;
         case Block::OreSulfur:  return ItemType::OreSulfur;
         case Block::LeavesSnow: return ItemType::None;
+        case Block::Furnace:    return ItemType::Furnace;
         case Block::Planks:     return ItemType::Planks;
         case Block::StoneBrick: return ItemType::StoneBrick;
         case Block::Mud:        return ItemType::Mud;
@@ -147,4 +149,26 @@ int Inventory::usedSlots() const {
     int n = 0;
     for(int i = 0; i < SIZE; ++i) if(!slots_[i].empty()) ++n;
     return n;
+}
+
+void Inventory::dropSlot(int index){
+    if(index < 0 || index >= SIZE) return;
+    slots_[index] = ItemStack{};
+}
+
+bool Inventory::splitSlot(int index){
+    if(index < 0 || index >= SIZE) return false;
+    ItemStack& src = slots_[index];
+    if(src.empty() || src.count < 2) return false;
+    // Ищем ближайшую свободную ячейку от начала: половина должна лечь рядом, а не
+    // улететь в конец рюкзака.
+    for(int i = 0; i < SIZE; ++i){
+        if(!slots_[i].empty()) continue;
+        int half = src.count / 2;
+        slots_[i].type = src.type;
+        slots_[i].count = half;
+        src.count -= half;
+        return true;
+    }
+    return false;
 }

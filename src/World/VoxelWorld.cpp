@@ -58,6 +58,20 @@ bool VoxelWorld::onRoad(int x, int z) const {
     return fabsf((float)z + 0.5f - roadCenterZ(x)) <= 3.5f;
 }
 
+// Заправка стоит у дороги в правой трети карты: до неё есть смысл идти, и её видно
+// с дороги. Координаты выводятся из размера мира, а не зашиты числом.
+void VoxelWorld::gasStationCentre(float& x, float& z) const {
+    float size = world_.config().size;
+    x = size * 0.70f;
+    z = roadCenterZ((int)(size * 0.70f)) + 14.0f;   // рядом с полотном, но не на нём
+}
+
+bool VoxelWorld::inGasStation(int x, int z) const {
+    float cx, cz;
+    gasStationCentre(cx, cz);
+    return fabsf((float)x - cx) <= 11.0f && fabsf((float)z - cz) <= 9.0f;
+}
+
 Block VoxelWorld::terrainBlock(int x, int y, int z, int surface) const {
     if(y > surface) return (y <= waterY_) ? Block::Water : Block::Air;
 
@@ -76,7 +90,7 @@ Block VoxelWorld::terrainBlock(int x, int y, int z, int surface) const {
 
     // Верхний слой определяется биомом: в пустыне песок, в горах снег, в болоте жижа.
     Biome b = world_.biomeAt((float)x + 0.5f, (float)z + 0.5f);
-    if(depth == 0 && onRoad(x, z)) return Block::Road;
+    if(depth == 0 && (onRoad(x, z) || inGasStation(x, z))) return Block::Road;
     if(depth == 0){
         switch(b){
             case Biome::Desert: case Biome::Beach: return Block::Sand;
@@ -177,6 +191,40 @@ void VoxelWorld::generateDecor(int cx, int cz) const {
             }
             default:
                 break;
+        }
+    }
+
+    // ---- Заправка: навес на столбах, стена сзади и ящики с лутом под ним.
+    {
+        float gcx, gcz;
+        gasStationCentre(gcx, gcz);
+        int cx0 = (int)gcx, cz0 = (int)gcz;
+        for(int dx = -10; dx <= 10; ++dx){
+            for(int dz = -8; dz <= 8; ++dz){
+                int wx = cx0 + dx, wz = cz0 + dz;
+                if(wx < cx * CHUNK_SIZE || wx >= (cx + 1) * CHUNK_SIZE) continue;
+                if(wz < cz * CHUNK_SIZE || wz >= (cz + 1) * CHUNK_SIZE) continue;
+                int sy = surfaceY(wx, wz) + 1;
+
+                bool edgeX = (dx == -10 || dx == 10);
+                bool backWall = (dz == -8);
+                // Столбы по углам и по краям навеса.
+                if(edgeX && (dz == -8 || dz == 0 || dz == 8)){
+                    for(int i = 0; i < 4; ++i) cells[packKey(wx, sy + i, wz)] = Block::StoneBrick;
+                }
+                // Задняя стена в два блока.
+                if(backWall && !edgeX){
+                    for(int i = 0; i < 2; ++i) cells[packKey(wx, sy + i, wz)] = Block::StoneBrick;
+                }
+                // Крыша навеса.
+                if(dz >= -8 && dz <= 8 && dx >= -10 && dx <= 10)
+                    cells[packKey(wx, sy + 4, wz)] = Block::Planks;
+
+                // Ящики с лутом: несколько штук вдоль задней стены и по углам.
+                bool crateSpot = (dz == -6 && (dx == -7 || dx == -2 || dx == 3 || dx == 8)) ||
+                                 (dz == 5  && (dx == -8 || dx == 7));
+                if(crateSpot) cells[packKey(wx, sy, wz)] = Block::Crate;
+            }
         }
     }
 

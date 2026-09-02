@@ -109,6 +109,9 @@ public:
     std::function<void(Block block, int x, int y, int z)> onNodeBroken;
 private:
     void  hitTarget(Block block, int x, int y, int z);
+    void  smeltInFurnace();
+    void  lootCrate(int x, int y, int z);
+    float actionCooldown_ = 0.0f;
 
     std::string message_;
     float messageAge_ = 999.0f;

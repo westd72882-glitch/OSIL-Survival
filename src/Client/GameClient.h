@@ -86,6 +86,7 @@ private:
     // Предмет в руке: каменный топорик, собранный из кубов. Рисуется в пространстве
     // камеры, поэтому всегда перед лицом и не проваливается сквозь стены.
     void renderHud();
+    void renderHotbar();
     void renderOverlay();
     void renderSettings();
     void renderMap();
@@ -130,6 +131,8 @@ private:
     float pinchBaseDist_ = 0.0f;
     float pinchBaseZoom_ = 1.0f;
     // ---- Крафт: прокрутка списка
+    float craftScroll_ = 0.0f;
+    bool  craftDragging_ = false;
     int   craftSelected_ = 0;    // какой рецепт открыт в описании справа
     void  craftGridGeometry(float& x, float& y, float& tile, float& gap) const;
     void  craftTilePos(int i, float& tx, float& ty) const;
@@ -145,6 +148,12 @@ private:
     Vec2 dragPos_{0,0};          // где сейчас палец: под ним рисуется сам предмет
     bool dragActive_ = false;    // палец действительно тащит, а не просто коснулся
     int  slotAtPoint(float x, float y) const;
+    // Окошко предмета: открывается коротким касанием по ячейке в инвентаре.
+    int  itemMenuSlot_ = -1;
+    void itemMenuRect(float& x, float& y, float& w, float& h) const;
+    void itemMenuButtonRect(int i, float& x, float& y, float& w, float& h) const;
+    void renderItemMenu();
+    bool handleItemMenuTouch(float x, float y);
     float inventoryBeltGap() const;
     void inventorySlotPos(int i, float& sx, float& sy) const;
 

@@ -209,6 +209,8 @@ int blockTextureLayer(Block b){
         case Block::Snow:       return LAYER_SNOW;
         case Block::Road:       return LAYER_ROAD;
         case Block::Barrel:     return LAYER_BARREL;
+        case Block::Furnace:    return LAYER_STONE;
+        case Block::Crate:      return LAYER_PLANKS;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
     }
 }
@@ -228,6 +230,9 @@ void blockTextureTint(Block b, float& r, float& g, float& bl){
         case Block::LeavesSnow: r = 1.00f; g = 1.01f; bl = 1.04f; break;
         case Block::Water:      r = 0.85f; g = 0.95f; bl = 1.05f; break;
         case Block::StoneBrick: r = 1.05f; g = 1.05f; bl = 1.02f; break;
+        // Печь темнее камня, ящик желтее досок: их надо отличать издалека.
+        case Block::Furnace:    r = 0.72f; g = 0.70f; bl = 0.68f; break;
+        case Block::Crate:      r = 1.15f; g = 0.98f; bl = 0.62f; break;
         default:                r = 1.00f; g = 1.00f; bl = 1.00f; break;
     }
 }

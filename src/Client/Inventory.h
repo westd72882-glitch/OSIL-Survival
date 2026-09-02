@@ -26,6 +26,7 @@ enum class ItemType : uint8_t {
     Scrap,      // скрап из бочек у дороги
     Axe,        // каменный топорик — им добывают
     Torch,      // факел
+    Furnace,    // печь: ставится на землю и плавит руду
     COUNT
 };
 
@@ -67,6 +68,11 @@ public:
     const ItemStack& slot(int index) const;
     // Перенос/объединение между слотами — то, что в интерфейсе делается перетаскиванием.
     void moveOrSwap(int from, int to);
+    // Выбросить весь стак из ячейки (предмет пропадает — сумок на земле пока нет).
+    void dropSlot(int index);
+    // Разделить стак пополам, положив половину в ближайшую свободную ячейку.
+    // false — делить нечего или некуда.
+    bool splitSlot(int index);
 
     int selected() const { return selected_; }
     void select(int hotbarIndex);

@@ -21,6 +21,8 @@ const BlockInfo kBlocks[(int)Block::COUNT] = {
     { "mud",        "Жижа",        0.34f,0.32f,0.22f,    0.30f,0.28f,0.19f,    true,  false, 0.5f, Block::Mud,       1 },
     { "road",       "Дорога",      0.46f,0.44f,0.41f,    0.40f,0.38f,0.36f,    true,  false, 0.0f, Block::Air,       0 },
     { "barrel",     "Бочка",       0.62f,0.34f,0.20f,    0.56f,0.30f,0.17f,    true,  false, 0.8f, Block::Air,       0 },
+    { "furnace",    "Печь",        0.52f,0.50f,0.48f,    0.46f,0.44f,0.42f,    true,  false, 2.0f, Block::Air,       0 },
+    { "crate",      "Ящик",        0.66f,0.52f,0.30f,    0.58f,0.45f,0.26f,    true,  false, 0.9f, Block::Air,       0 },
 };
 } // namespace
 

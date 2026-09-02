@@ -97,6 +97,10 @@ private:
     float roadCenterZ(int x) const;
 public:
     bool  onRoad(int x, int z) const;
+    // Заправка: единственная пока локация на карте. Стоит у дороги, внутри ящики с
+    // лутом, которые восстанавливаются обычным механизмом декора.
+    void  gasStationCentre(float& x, float& z) const;
+    bool  inGasStation(int x, int z) const;
 private:
     static uint64_t packKey(int x, int y, int z);
     void generateDecor(int cx, int cz) const;

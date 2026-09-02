@@ -326,6 +326,75 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
     } else {
         miningProgress_ = 0.0f;
     }
+
+    // ---- Кнопка взаимодействия: поставить печь, плавить в ней руду, забрать ящик.
+    if(in.action && actionCooldown_ <= 0.0f){
+        actionCooldown_ = 0.4f;
+        if(target_.hit && target_.block == Block::Crate){
+            lootCrate(target_.x, target_.y, target_.z);
+        } else if(target_.hit && target_.block == Block::Furnace){
+            smeltInFurnace();
+        } else {
+            const ItemStack& sel = inventory_.selectedStack();
+            if(!sel.empty() && sel.type == ItemType::Furnace && target_.hit){
+                // Печь встаёт в клетку перед блоком, куда смотрит игрок.
+                int px = target_.prevX, py = target_.prevY, pz = target_.prevZ;
+                if(voxels_.blockAt(px, py, pz) == Block::Air){
+                    voxels_.setBlock(px, py, pz, Block::Furnace);
+                    inventory_.consumeSelected();
+                    say("Печь поставлена");
+                }
+            }
+        }
+    }
+    if(actionCooldown_ > 0.0f) actionCooldown_ -= dt;
+}
+
+// Плавка: серная руда превращается в серу, железная — в металл; топливо — дрова.
+void Survivor::smeltInFurnace(){
+    if(inventory_.countOf(ItemType::Wood) < 1){
+        say("Нужны дрова, чтобы топить печь");
+        return;
+    }
+    ItemType ore = ItemType::None, result = ItemType::None;
+    if(inventory_.countOf(ItemType::OreSulfur) >= 2){ ore = ItemType::OreSulfur; result = ItemType::Sulfur; }
+    else if(inventory_.countOf(ItemType::OreMetal) >= 2){ ore = ItemType::OreMetal; result = ItemType::MetalFrag; }
+    if(ore == ItemType::None){
+        say("Нечего плавить: нужна руда");
+        return;
+    }
+    inventory_.remove(ore, 2);
+    inventory_.remove(ItemType::Wood, 1);
+    inventory_.add(result, 1);
+    char buf[96];
+    snprintf(buf, sizeof(buf), "Выплавлено: %s", itemDef(result).nameRu);
+    say(buf);
+}
+
+// Ящик на заправке: отдаёт лут и исчезает. Через полчаса вернётся сам — блок ящика
+// поставил мир, а восстановление декора уже есть.
+void Survivor::lootCrate(int x, int y, int z){
+    uint64_t h = hashCoords(x * 31 + y, z * 17 + y, 0x1007ULL, 0xC5A7EULL);
+    struct Drop { ItemType type; int min, max; };
+    const Drop table[] = {
+        { ItemType::Scrap,     4, 14 },
+        { ItemType::MetalFrag, 2,  8 },
+        { ItemType::Sulfur,    2,  8 },
+        { ItemType::Wood,      5, 20 },
+        { ItemType::Cloth,     2,  9 },
+    };
+    // Две-три позиции из таблицы: пустой ящик разочаровывает, полный обесценивает лут.
+    int rolls = 2 + (int)(h % 2);
+    char buf[128];
+    for(int i = 0; i < rolls; ++i){
+        uint64_t r = h >> (8 * (i + 1));
+        const Drop& d = table[r % (sizeof(table)/sizeof(table[0]))];
+        int count = d.min + (int)((r >> 8) % (uint64_t)(d.max - d.min + 1));
+        inventory_.add(d.type, count);
+        snprintf(buf, sizeof(buf), "+%d %s", count, itemDef(d.type).nameRu);
+        say(buf);
+    }
+    voxels_.setBlock(x, y, z, Block::Air);
 }
 
 void Survivor::say(const std::string& text){
