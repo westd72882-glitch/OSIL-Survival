@@ -1,5 +1,4 @@
 #include "GameClient.h"
-#include "UiLayout.h"
 
 #include "../Core/Log.h"
 #include "../Core/PngWriter.h"
@@ -520,36 +519,22 @@ void GameClient::buildMinimapTexture(){
 // нажимаемая зона неизбежно расходятся после первой же правки интерфейса.
 
 void GameClient::hotbarGeometry(float& x, float& y, float& slot, float& gap) const {
-    // Эталон: контейнер 608,617 размером 382x58, шесть ячеек по 57x58 с шагом 64.
-    UiRef ui(SCR_W, SCR_H);
-    slot = ui.s(57.0f);
-    gap  = ui.s(7.0f);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    slot = clampf(fminf((float)SCR_W, (float)SCR_H) * 0.085f, 44.0f, 96.0f * s);
+    gap = slot * 0.10f;
     float total = slot * Inventory::HOTBAR + gap * (Inventory::HOTBAR - 1);
-    x = ui.cx() - total * 0.5f;     // по центру экрана, как и в эталоне
-    y = ui.yb(617.0f);
+    x = ((float)SCR_W - total) * 0.5f;
+    y = (float)SCR_H - slot - 14.0f * s;
 }
 
 // Пояс отделён от основной сетки: в Rust это две разные вещи, и слипшись в один
 // прямоугольник они путают — непонятно, что окажется в руке.
 float GameClient::inventoryBeltGap() const {
-    // Эталон: сетка кончается на 508, пояс начинается с 536.
-    UiRef ui(SCR_W, SCR_H);
-    return ui.s(28.0f);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    return 26.0f * s;
 }
 
 void GameClient::inventoryGeometry(float& x, float& y, float& slot, float& gap) const {
-    // Эталон: сетка 6x4 в 473,76 (ячейка 104x100, шаг 110), пояс отдельной панелью в
-    // 473,536. Первый ряд массива — пояс, поэтому рисуется он ниже сетки (см.
-    // inventorySlotPos), а не первым.
-    UiRef ui(SCR_W, SCR_H);
-    slot = ui.s(104.0f);
-    gap  = ui.s(6.0f);
-    x = ui.cx() - (slot * Inventory::COLS + gap * (Inventory::COLS - 1)) * 0.5f;
-    y = ui.y(78.0f);
-    return;
-}
-
-void GameClient::inventoryGeometryOld(float& x, float& y, float& slot, float& gap) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     // Ячейка крупнее прежней: в 44 пикселя пальцем не попасть, а место на экране есть.
     slot = clampf((float)SCR_H * 0.145f, 58.0f, 132.0f * s);
@@ -592,15 +577,15 @@ bool GameClient::handleHotbarTouch(float x, float y){
 // отрисовки, и для попаданий — иначе они разъезжаются при первом же правке.
 const int CRAFT_COLS = 4;
 
-// Эталон крафта: заголовок 99,270; плитки 100,310 и 209,310 по 100x100 с шагом 109;
-// панель описания 553,309 размером 960x261; кнопка 553,587 размером 307x56; крестик в
-// центре 1488,285 размером 52.
 void GameClient::craftGridGeometry(float& x, float& y, float& tile, float& gap) const {
-    UiRef ui(SCR_W, SCR_H);
-    tile = ui.s(100.0f);
-    gap  = ui.s(9.0f);
-    x = ui.x(100.0f);
-    y = ui.y(310.0f);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    tile = clampf((float)SCR_H * 0.145f, 58.0f, 132.0f * s);
+    gap = tile * 0.09f;
+    int rows = (kRecipeCount + CRAFT_COLS - 1) / CRAFT_COLS;
+    if(rows < 1) rows = 1;
+    float gridH = tile * rows + gap * (rows - 1);
+    x = 40.0f * s;
+    y = ((float)SCR_H - gridH) * 0.5f + 16.0f * s;
 }
 
 void GameClient::craftTilePos(int i, float& tx, float& ty) const {
@@ -610,53 +595,56 @@ void GameClient::craftTilePos(int i, float& tx, float& ty) const {
     ty = gy + (i / CRAFT_COLS) * (tile + gap);
 }
 
-void GameClient::craftInfoRect(float& x, float& y, float& w, float& h) const {
-    UiRef ui(SCR_W, SCR_H);
-    x = ui.x(553.0f);
-    y = ui.y(309.0f);
-    w = ui.xr(1513.0f) - x;
-    h = ui.s(261.0f);
-}
-
 void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
-    UiRef ui(SCR_W, SCR_H);
-    x = ui.x(553.0f);
-    y = ui.y(587.0f);
-    w = ui.s(307.0f);
-    h = ui.s(56.0f);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float gx, gy, tile, gap;
+    craftGridGeometry(gx, gy, tile, gap);
+    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    // Кнопка стоит ВНУТРИ панели описания, в её правом нижнем углу: снаружи она
+    // налезала на пояс быстрого доступа.
+    float dx = gx + gridW + 28.0f * s;
+    float dw = (float)SCR_W - dx - 24.0f * s;
+    w = fminf(dw * 0.45f, 300.0f * s);
+    h = 54.0f * s;
+    x = dx + dw - w - 16.0f * s;
+    y = gy + tile * 2.6f - h - 16.0f * s;
 }
 
 // Панель состояния слева сверху: она же кнопка меню паузы. Геометрия совпадает с
-// отрисовкой полос в renderHud (эталон: X=76, Y=14, четыре строки по 19 с шагом 23.5).
+// отрисовкой полос в renderHud.
 void GameClient::statsPanelRect(float& x, float& y, float& w, float& h) const {
-    UiRef ui(SCR_W, SCR_H);
-    x = ui.x(70.0f);
-    y = ui.y(10.0f);
-    w = ui.s(200.0f);
-    h = ui.s(104.0f);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float pad = 14.0f * s;
+    x = pad; y = pad;
+    w = 200.0f * s;
+    h = (21.0f * s + 5.0f * s) * 4.0f + 22.0f * s;
 }
 
 const char* const PAUSE_ROWS[] = { "ПРОДОЛЖИТЬ", "КАРТА", "НАСТРОЙКИ", "ВЫЙТИ В МЕНЮ" };
 const int PAUSE_ROW_COUNT = 4;
 
 void GameClient::pauseRowRect(int i, float& x, float& y, float& w, float& h) const {
-    UiRef ui(SCR_W, SCR_H);
-    w = ui.s(320.0f);
-    h = ui.s(56.0f);
-    x = ui.x(75.0f);
-    y = ui.y(300.0f) + i * (h + ui.s(10.0f));
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    // Список идёт от верхней трети вниз по левому краю, а не висит по центру экрана:
+    // так до него дотягивается большой палец, и он не закрывает вид.
+    w = clampf((float)SCR_W * 0.28f, 240.0f, 420.0f);
+    h = 56.0f * s;
+    x = 44.0f * s;
+    y = (float)SCR_H * 0.40f + i * (h + 10.0f * s);
 }
 
 void GameClient::renderPause(){
-    UiRef ui(SCR_W, SCR_H);
-    // Затемнение то же, что у остальных экранов: мир под меню виден.
-    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0, 0, 0, 0.60f, false);
-    drawText(ui.x(75.0f), ui.y(120.0f), ui.s(52.0f), "OSIL", 1, 1, 1, 0.97f);
-    drawText(ui.x(75.0f), ui.y(180.0f), ui.s(24.0f), "SURVIVAL", 1, 1, 1, 0.75f);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    // Мир под меню виден, но приглушён: пауза — это не отдельный экран, а остановка.
+    // Затемнение лёгкое: пауза не прячет игру, она её останавливает.
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.03f, 0.03f, 0.04f, 0.42f, false);
+    drawText(44.0f * s, (float)SCR_H * 0.10f, 52.0f * s, "OSIL", 1, 1, 1, 0.97f);
+    drawText(44.0f * s, (float)SCR_H * 0.19f, 26.0f * s, "SURVIVAL",
+             UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f);
     for(int i = 0; i < PAUSE_ROW_COUNT; ++i){
         float x, y, w, h;
         pauseRowRect(i, x, y, w, h);
-        drawText(x, y + h * 0.22f, ui.s(28.0f), PAUSE_ROWS[i], 1, 1, 1, 0.94f);
+        drawText(x, y + h * 0.22f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 0.94f);
     }
 }
 
@@ -673,7 +661,7 @@ bool GameClient::handlePauseTouch(float x, float y){
         }
         return true;
     }
-    return true;   // касание мимо строк меню его не закрывает
+    return true;   // касание мимо строк меню не закрывает его
 }
 
 // Строки окна настроек считаются одной функцией и для отрисовки, и для попаданий.
@@ -845,11 +833,10 @@ bool GameClient::handleOverlayTouch(float x, float y){
     if(overlay_ == Overlay::Craft){
         float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
         // Крестик выхода.
-        UiRef ui(SCR_W, SCR_H);
-        float closeSize = ui.s(60.0f);
+        float closeSize = 54.0f * s;
         float gx, gy, tile, gap;
         craftGridGeometry(gx, gy, tile, gap);
-        float closeX = ui.xr(1488.0f) - closeSize * 0.5f, closeY = ui.y(285.0f) - closeSize * 0.5f;
+        float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = gy - 52.0f * s;
         if(x >= closeX && x <= closeX + closeSize && y >= closeY && y <= closeY + closeSize){
             overlay_ = Overlay::None;
             return true;
@@ -888,10 +875,10 @@ bool GameClient::handleOverlayTouch(float x, float y){
     {
         float gx, gy, slot, gap;
         inventoryGeometry(gx, gy, slot, gap);
-        UiRef ui(SCR_W, SCR_H);
+        float sc = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
         float w = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
-        float closeSize = ui.s(56.0f);
-        float cx = gx + w + ui.s(40.0f) - closeSize * 0.5f, cy = ui.y(54.0f) - closeSize * 0.5f;
+        float closeSize = 54.0f * sc;
+        float cx = gx + w - closeSize, cy = gy - 52.0f * sc;
         if(x >= cx && x <= cx + closeSize && y >= cy && y <= cy + closeSize){
             overlay_ = Overlay::None;
             dragSlot_ = -1; dragActive_ = false;
@@ -1469,10 +1456,9 @@ GLuint GameClient::itemIcon(ItemType t) const {
 }
 
 void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, bool selected){
-    UiRef ui(SCR_W, SCR_H);
-    // Эталон: фон ячейки rgba(35,36,39,0.82), рамка белая на 0.12, у выбранной —
-    // зелёная #A7D95B толщиной 3.
-    drawUIRect(x, y, size, size, 0, 0.137f, 0.141f, 0.153f, 0.82f, false);
+    // Ячейка светлая и прозрачная: сквозь неё виден мир, как в телефонных выживалках.
+    // Тёмный непрозрачный квадрат превращал интерфейс в глухую панель.
+    drawUIRect(x, y, size, size, 0, 0.78f, 0.77f, 0.73f, 0.34f, false);
     if(!stack.empty()){
         const ItemDef& def = itemDef(stack.type);
         GLuint icon = itemIcon(stack.type);
@@ -1487,20 +1473,21 @@ void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, 
         if(stack.count > 1){
             char buf[16];
             snprintf(buf, sizeof(buf), "x%d", stack.count);
-            float fh = size * 0.24f;
+            float fh = size * 0.26f;
+            // Число прижато к правому нижнему углу: слева от него — сам предмет.
             float tw = fh * 0.55f * (float)strlen(buf);
             drawText(x + size - tw - size * 0.06f, y + size - fh * 1.15f, fh, buf, 1, 1, 1, 0.95f);
         }
     }
+    // Выбранная ячейка — сплошная светлая рамка по контуру, а не полоса сбоку.
     if(selected){
-        float t = fmaxf(2.0f, ui.s(3.0f));
-        const float* g = UiRefColors::SELECTED;
-        drawUIRect(x, y, size, t, 0, g[0], g[1], g[2], 1.0f, false);
-        drawUIRect(x, y + size - t, size, t, 0, g[0], g[1], g[2], 1.0f, false);
-        drawUIRect(x, y, t, size, 0, g[0], g[1], g[2], 1.0f, false);
-        drawUIRect(x + size - t, y, t, size, 0, g[0], g[1], g[2], 1.0f, false);
+        float t = fmaxf(2.0f, size * 0.045f);
+        drawUIRect(x, y, size, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        drawUIRect(x, y + size - t, size, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        drawUIRect(x, y, t, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+        drawUIRect(x + size - t, y, t, size, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
     } else {
-        uiThinFrame(x, y, size, size, UIColor{1.0f, 1.0f, 1.0f}, 0.12f);
+        uiThinFrame(x, y, size, size, UIColor{1.0f, 1.0f, 1.0f}, 0.30f);
     }
 }
 
@@ -1510,59 +1497,58 @@ void GameClient::renderHud(){
     glUseProgram(uiProg);
     glUniformMatrix4fv(uiProjLoc, 1, GL_FALSE, uiProjM.m);
 
-    UiRef ui(SCR_W, SCR_H);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float pad = 14.0f * s;
+    float barW = 200.0f * s, barH = 21.0f * s, gap = 5.0f * s;
     char buf[128];
 
-    // ---- Полосы состояния. Эталон: X=76, первая строка Y=14, шаг 23.5, размер 190x19.
-    const float BAR_X = 76.0f, BAR_W = 190.0f, BAR_H = 19.0f, BAR_STEP = 23.5f;
-    float barX = ui.x(BAR_X), barW = ui.s(BAR_W), barH = ui.s(BAR_H), barStep = ui.s(BAR_STEP);
-    float y = ui.y(14.0f);
-    using namespace UiRefColors;
+    // ---- Полосы состояния
+    float y = pad;
     snprintf(buf, sizeof(buf), "HP %.0f", (double)player_->health());
-    drawBar(barX, y, barW, barH, player_->health() / 100.0f, HP[0], HP[1], HP[2], buf);
-    y += barStep;
+    drawBar(pad, y, barW, barH, player_->health() / 100.0f, 0.62f, 0.18f, 0.16f, buf); y += barH + gap;
     snprintf(buf, sizeof(buf), "Голод %.0f", (double)player_->hunger());
-    drawBar(barX, y, barW, barH, player_->hunger() / 100.0f, HUNGER[0], HUNGER[1], HUNGER[2], buf);
-    y += barStep;
+    drawBar(pad, y, barW, barH, player_->hunger() / 100.0f, 0.55f, 0.40f, 0.14f, buf); y += barH + gap;
     snprintf(buf, sizeof(buf), "Жажда %.0f", (double)player_->thirst());
-    drawBar(barX, y, barW, barH, player_->thirst() / 100.0f, THIRST[0], THIRST[1], THIRST[2], buf);
-    y += barStep;
+    drawBar(pad, y, barW, barH, player_->thirst() / 100.0f, 0.16f, 0.38f, 0.58f, buf); y += barH + gap;
     snprintf(buf, sizeof(buf), "Силы %.0f", (double)player_->stamina());
-    drawBar(barX, y, barW, barH, player_->stamina() / 100.0f, STRENGTH[0], STRENGTH[1], STRENGTH[2], buf);
-    y += barStep;
-    // Воздух показываем только когда он тратится: пятой полосы в эталоне нет, и висеть
-    // на экране постоянно ей незачем.
+    drawBar(pad, y, barW, barH, player_->stamina() / 100.0f, 0.32f, 0.48f, 0.24f, buf); y += barH + gap;
+    // Воздух показываем только когда он тратится: лишняя полоса на экране мешает.
     if(player_->headUnderwater() || player_->oxygen() < 99.5f){
         snprintf(buf, sizeof(buf), "Воздух %.0f", (double)player_->oxygen());
-        drawBar(barX, y, barW, barH, player_->oxygen() / 100.0f, 0.30f, 0.62f, 0.72f, buf);
-        y += barStep;
+        drawBar(pad, y, barW, barH, player_->oxygen() / 100.0f, 0.30f, 0.62f, 0.72f, buf);
+        y += barH + gap;
     }
 
-    // ---- Строка мира под полосами: эталон X=75, Y=116, кегль 13, прозрачность ~0.5.
     Vec3 p = player_->position();
     snprintf(buf, sizeof(buf), "%s | %s | %s", env_->timeString(), weatherName(env_->weather()),
              biomeName(world_->biomeAt(p.x, p.z)));
-    drawText(ui.x(75.0f), ui.y(116.0f), ui.s(13.0f), buf, 1, 1, 1, 0.50f);
+    drawText(pad, y + 2.0f * s, 19.0f * s, buf, UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
 
-    // ---- Счётчик кадров: эталон X=1448, Y=18, кегль 19, цвет #8DD63F.
+    // ---- Счётчик кадров в правом верхнем углу. Вертикальная синхронизация выключена,
+    // поэтому число показывает НАСТОЯЩУЮ скорость отрисовки, а не частоту экрана.
     const VoxelRenderStats& st = chunks_.stats();
     snprintf(buf, sizeof(buf), "%.0f FPS", (double)fps_);
-    drawText(ui.xr(1448.0f), ui.y(18.0f), ui.s(19.0f), buf, FPS[0], FPS[1], FPS[2], 0.95f);
+    drawText((float)SCR_W - 92.0f * s, pad, 26.0f * s, buf,
+             fps_ >= 50.0f ? 0.55f : 0.85f, fps_ >= 50.0f ? 0.85f : 0.55f, 0.45f, 0.95f);
+    // Счётчик чанков — только в отладке: иначе строка налезает на ряд иконок справа.
     if(settings.showDebugInfo){
         snprintf(buf, sizeof(buf), "чанков %d/%d  граней %d", st.chunksDrawn, st.chunksLoaded,
                  st.trianglesDrawn / 2);
-        drawText(ui.xr(1290.0f), ui.y(44.0f), ui.s(12.0f), buf, 1, 1, 1, 0.55f);
+        drawText((float)SCR_W - 240.0f * s, pad + 28.0f * s, 16.0f * s, buf,
+                 UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.75f);
     }
 
-    // ---- Прицел: маленький белый плюс 12x12 по центру экрана.
-    float cx = ui.cx(), cy = ui.cy();
-    float chW = ui.s(12.0f), chT = fmaxf(1.0f, ui.s(2.0f));
-    drawUIRect(cx - chT * 0.5f, cy - chW * 0.5f, chT, chW, 0, 1, 1, 1, 0.75f, false);
-    drawUIRect(cx - chW * 0.5f, cy - chT * 0.5f, chW, chT, 0, 1, 1, 1, 0.75f, false);
+    // ---- Прицел и подсказка по блоку
+    float cx = (float)SCR_W * 0.5f, cy = (float)SCR_H * 0.5f;
+    drawUIRect(cx - 1.5f, cy - 9.0f, 3.0f, 18.0f, 0, 1,1,1, 0.55f, false);
+    drawUIRect(cx - 9.0f, cy - 1.5f, 18.0f, 3.0f, 0, 1,1,1, 0.55f, false);
 
+    // Название блока под прицелом не выводится намеренно: подпись висела в центре
+    // экрана постоянно и мешала смотреть. Что за блок — видно по цвету, а что удар
+    // засчитан — по рамке и полосе добычи.
     if(player_->miningProgress() > 0.01f){
-        float w = ui.s(160.0f);
-        drawBar(cx - w * 0.5f, cy + ui.s(46.0f), w, ui.s(10.0f), player_->miningProgress(),
+        float w = 160.0f * s;
+        drawBar(cx - w * 0.5f, cy + 46.0f * s, w, 12.0f * s, player_->miningProgress(),
                 0.75f, 0.65f, 0.25f, "");
     }
 
@@ -1573,30 +1559,31 @@ void GameClient::renderHud(){
         float sx = hx + i * (slot + hgap);
         drawSlot(sx, hy, slot, inventory_.slot(i), i == inventory_.selected());
     }
-    // Название выбранного предмета над поясом: эталон Y=596, кегль 13, прозрачность 0.6.
     const ItemStack& sel = inventory_.selectedStack();
-    if(!sel.empty())
-        drawText(hx, ui.yb(596.0f), ui.s(13.0f), itemDef(sel.type).nameRu, 1, 1, 1, 0.60f);
+    if(!sel.empty()){
+        const char* name = itemDef(sel.type).nameRu;
+        drawText(hx, hy - 24.0f * s, 20.0f * s, name, UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.9f);
+    }
 
     // ---- Последнее событие
     if(player_->messageAge() < 4.0f){
         float alpha = clampf(1.0f - (player_->messageAge() - 3.0f), 0.0f, 1.0f);
-        drawText(ui.x(75.0f), ui.yb(590.0f), ui.s(14.0f), player_->lastMessage(),
-                 1, 1, 1, alpha * 0.55f);
+        drawText(pad, hy - 34.0f * s, 21.0f * s, player_->lastMessage(),
+                 UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, alpha);
     }
 
     if(player_->isDead()){
         drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.35f, 0.02f, 0.02f, 0.55f, false);
-        drawText(cx - ui.s(140.0f), cy - ui.s(46.0f), ui.s(44.0f), "ВЫ ПОГИБЛИ",
-                 0.9f, 0.35f, 0.3f, 1.0f);
-        drawText(cx - ui.s(200.0f), cy + ui.s(24.0f), ui.s(22.0f),
-                 "Нажмите E, чтобы возродиться", 1, 1, 1, 1.0f);
+        drawText(cx - 120.0f * s, cy - 40.0f * s, 44.0f * s, "ВЫ ПОГИБЛИ", 0.9f, 0.35f, 0.3f, 1.0f);
+        drawText(cx - 190.0f * s, cy + 20.0f * s, 24.0f * s,
+                 "Нажмите E, чтобы возродиться", UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 1.0f);
     }
 
     if(settings.showDebugInfo){
         snprintf(buf, sizeof(buf), "XZ %.0f,%.0f Y %.1f | правок мира %zu | слотов занято %d",
                  (double)p.x, (double)p.z, (double)p.y, voxels_->editCount(), inventory_.usedSlots());
-        drawText(ui.x(75.0f), (float)SCR_H - ui.s(26.0f), ui.s(13.0f), buf, 1, 1, 1, 0.6f);
+        drawText(pad, (float)SCR_H - 26.0f * s, 16.0f * s, buf,
+                 UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.8f);
     }
 
     renderCompass();
@@ -1609,43 +1596,24 @@ void GameClient::renderHud(){
 // Подписи на кнопках заменены иконками: слово «СТАВИТЬ» на круге в 11 мм читается плохо,
 // а знак понятен без чтения и не зависит от языка. Если иконки не нашлось (сборка без
 // ассетов), кнопка рисуется прежним кругом с текстом — игра обязана запускаться всегда.
-// Крестик закрытия экрана: две толстые белые полосы крест-накрест, без подложки —
-// в эталоне у него нет ни круга, ни рамки.
-void GameClient::drawCloseCross(float cx, float cy, float size, float thickness){
-    float half = size * 0.5f;
-    int steps = (int)(size);
-    if(steps < 8) steps = 8;
-    float step = size / (float)steps;
-    for(int i = 0; i <= steps; ++i){
-        float t = -half + step * (float)i;
-        drawUIRect(cx + t - thickness * 0.5f, cy + t - thickness * 0.5f, thickness, thickness,
-                   0, 1, 1, 1, 0.95f, false);
-        drawUIRect(cx + t - thickness * 0.5f, cy - t - thickness * 0.5f, thickness, thickness,
-                   0, 1, 1, 1, 0.95f, false);
-    }
-}
-
 void GameClient::renderTouchControls(){
-    UiRef ui(SCR_W, SCR_H);
     TouchControls::StickView stick = controls_.stickView();
     if(stick.active){
-        // Джойстик эталона: внешнее кольцо 220 в поперечнике, ручка 86.
         float r = stick.radius;
         if(texJoyBase_){
-            drawUIRect(stick.baseX - r, stick.baseY - r, r * 2.0f, r * 2.0f, texJoyBase_,
-                       1, 1, 1, 0.75f, true);
+            drawUIRect(stick.baseX - r, stick.baseY - r, r * 2.0f, r * 2.0f, texJoyBase_, 1, 1, 1, 0.55f, true);
         } else {
-            drawUICircleOutline(stick.baseX, stick.baseY, r, 1, 1, 1, 0.75f, ui.s(6.0f));
+            drawUICircleOutline(stick.baseX, stick.baseY, r, UI_LINE.r, UI_LINE.g, UI_LINE.b, 0.35f, 3.0f);
         }
         float dx = stick.curX - stick.baseX, dy = stick.curY - stick.baseY;
         float len = sqrtf(dx*dx + dy*dy);
         if(len > r){ dx *= r / len; dy *= r / len; }
-        float knob = ui.s(43.0f);   // 86 в поперечнике
+        float knob = r * 0.44f;
         if(texJoyStick_){
             drawUIRect(stick.baseX + dx - knob, stick.baseY + dy - knob, knob * 2.0f, knob * 2.0f,
-                       texJoyStick_, 1, 1, 1, 0.90f, true);
+                       texJoyStick_, 1, 1, 1, 0.85f, true);
         } else {
-            drawUICircleOutline(stick.baseX + dx, stick.baseY + dy, knob, 1, 1, 1, 0.9f, ui.s(5.0f));
+            drawUICircle(stick.baseX + dx, stick.baseY + dy, knob, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.45f);
         }
     }
 
@@ -1663,12 +1631,10 @@ void GameClient::renderTouchControls(){
         else if(label == "БЕГ")      icon = texRun_;
         else if(label == "СЕСТЬ")    icon = texCrouch_;
 
-        // Кнопка эталона: прозрачная заливка, белое кольцо толщиной ~6 и белый знак.
-        float alpha = b.active ? 0.95f : 0.88f;
-        drawUICircleOutline(b.cx, b.cy, b.radius, 1, 1, 1, b.active ? 0.95f : 0.80f, ui.s(6.0f));
+        float alpha = b.active ? 0.95f : 0.62f;
         if(icon){
-            float ic = b.radius * 0.98f;
-            drawUIRect(b.cx - ic, b.cy - ic, ic * 2.0f, ic * 2.0f, icon, 1, 1, 1, alpha, true);
+            drawUIRect(b.cx - b.radius, b.cy - b.radius, b.radius * 2.0f, b.radius * 2.0f,
+                       icon, 1, 1, 1, alpha, true);
             continue;
         }
 
@@ -1729,15 +1695,25 @@ void GameClient::renderOverlay(){
         float mainH = slot * (Inventory::ROWS - 1) + gap * (Inventory::ROWS - 2);
         // Экран инвентаря: затемнение на весь экран, заголовок, крестик выхода, сетка
         // рюкзака и отдельной полосой ниже — пояс. Подсказок нет.
-        UiRef ui(SCR_W, SCR_H);
-        // Эталон: затемнение экрана 0.60, заголовок «ИНВЕНТАРЬ» кеглем 25 над сеткой,
-        // крестик закрытия — голая белая X.
-        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0, 0, 0, 0.60f, false);
-        drawText(gx, ui.y(39.0f), ui.s(25.0f), "ИНВЕНТАРЬ", 1, 1, 1, 0.97f);
+        // Экран не затемняется в глухую: за интерфейсом остаётся видна игра.
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
+        drawText(gx, gy - 46.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
 
-        float crossSize = ui.s(50.0f);
-        float crossCX = gx + w + ui.s(40.0f), crossCY = ui.y(54.0f);
-        drawCloseCross(crossCX, crossCY, crossSize, ui.s(8.0f));
+        // Крестик выхода — там же, где на карте и в настройках.
+        float closeSize = 54.0f * s;
+        float closeX = gx + w - closeSize, closeY = gy - 52.0f * s;
+        if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
+        else {
+            drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
+            drawText(closeX + closeSize * 0.3f, closeY + closeSize * 0.2f, 26.0f * s, "X", 1, 1, 1, 0.95f);
+        }
+
+        // Подложки: отдельная у рюкзака, отдельная у пояса — это разные вещи.
+        drawUIRect(gx - 4.0f * s, gy - 4.0f * s, w + 8.0f * s, mainH + 8.0f * s, 0,
+                   0.85f, 0.83f, 0.79f, 0.20f, false);
+        float beltY = gy + mainH + gap + inventoryBeltGap();
+        drawUIRect(gx - 4.0f * s, beltY - 4.0f * s, w + 8.0f * s, slot + 8.0f * s, 0,
+                   0.95f, 0.88f, 0.60f, 0.22f, false);
 
         for(int i = 0; i < Inventory::SIZE; ++i){
             float sx, sy;
@@ -1764,16 +1740,23 @@ void GameClient::renderOverlay(){
 // десятков, и они не влезут ни в один экран телефона.
 
 void GameClient::renderCraft(){
-    UiRef ui(SCR_W, SCR_H);
-    // Затемнение на весь экран, но не в чёрный: игровой мир должен просматриваться.
-    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0, 0, 0, 0.60f, false);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    // Экран крафта: слева квадратные плитки рецептов, справа — описание выбранного.
+    // Строчки во всю ширину читались как список настроек, а не как крафт.
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
 
     float gx, gy, tile, gap;
     craftGridGeometry(gx, gy, tile, gap);
-    drawText(ui.x(99.0f), ui.y(270.0f), ui.s(24.0f), "КРАФТ", 1, 1, 1, 0.97f);
+    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    drawText(gx, gy - 46.0f * s, 30.0f * s, "КРАФТ", 1, 1, 1, 0.96f);
 
-    // Крестик закрытия: голая белая X в центре 1488,285.
-    drawCloseCross(ui.xr(1488.0f), ui.y(285.0f), ui.s(52.0f), ui.s(8.0f));
+    float closeSize = 54.0f * s;
+    float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = gy - 52.0f * s;
+    if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
+    else {
+        drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
+        drawText(closeX + closeSize * 0.3f, closeY + closeSize * 0.2f, 26.0f * s, "X", 1, 1, 1, 0.95f);
+    }
 
     if(craftSelected_ >= kRecipeCount) craftSelected_ = kRecipeCount - 1;
     if(craftSelected_ < 0) craftSelected_ = 0;
@@ -1787,79 +1770,93 @@ void GameClient::renderCraft(){
                   (r.costB == ItemType::None || inventory_.countOf(r.costB) >= r.costBCount);
         const ItemDef& res = itemDef(r.result);
 
-        // Плитка: rgba(40,40,45,0.80), рамка белая на 0.15.
-        drawUIRect(tx, ty, tile, tile, 0, 0.157f, 0.157f, 0.176f, 0.80f, false);
+        drawUIRect(tx, ty, tile, tile, 0, 0.78f, 0.77f, 0.73f, 0.34f, false);
         GLuint icon = itemIcon(r.result);
-        float ip = tile * 0.14f;
+        float ip = tile * 0.12f;
         if(icon) drawUIRect(tx + ip, ty + ip, tile - ip * 2.0f, tile - ip * 2.0f, icon,
                             1, 1, 1, ok ? 1.0f : 0.35f, true);
         else     drawUIRect(tx + ip, ty + ip, tile - ip * 2.0f, tile - ip * 2.0f, 0,
                             res.r, res.g, res.b, ok ? 1.0f : 0.35f, false);
-
-        // Название — мелким текстом внутри плитки по нижнему краю.
-        float nameH = ui.s(12.0f);
+        if(r.resultCount > 1){
+            snprintf(buf, sizeof(buf), "x%d", r.resultCount);
+            float fh = tile * 0.22f;
+            drawText(tx + tile - fh * 1.5f, ty + tile - fh * 1.2f, fh, buf, 1, 1, 1, 0.95f);
+        }
+        // Название — полосой ВНУТРИ плитки по нижнему краю: под плиткой соседние
+        // подписи налезали друг на друга, потому что плитки стоят вплотную.
+        float nameH = tile * 0.135f;
+        drawUIRect(tx, ty + tile - nameH * 1.7f, tile, nameH * 1.7f, 0,
+                   0.10f, 0.10f, 0.11f, 0.45f, false);
         float tw = nameH * 0.5f * (float)strlen(res.nameRu);
-        float nx = tw > tile ? tx + ui.s(3.0f) : tx + tile * 0.5f - tw * 0.5f;
-        drawText(nx, ty + tile - nameH * 1.6f, nameH, res.nameRu, 1, 1, 1, ok ? 0.9f : 0.45f);
+        float nx = tw > tile ? tx + 3.0f * s : tx + tile * 0.5f - tw * 0.5f;
+        drawText(nx, ty + tile - nameH * 1.4f, nameH, res.nameRu, 1, 1, 1, ok ? 0.9f : 0.45f);
 
+        // Выбранная плитка обведена, недоступная — приглушена.
         if(i == craftSelected_){
-            float t = fmaxf(2.0f, ui.s(5.0f));
-            const float* g = UiRefColors::SELECTED;
-            drawUIRect(tx, ty, tile, t, 0, g[0], g[1], g[2], 1.0f, false);
-            drawUIRect(tx, ty + tile - t, tile, t, 0, g[0], g[1], g[2], 1.0f, false);
-            drawUIRect(tx, ty, t, tile, 0, g[0], g[1], g[2], 1.0f, false);
-            drawUIRect(tx + tile - t, ty, t, tile, 0, g[0], g[1], g[2], 1.0f, false);
+            float t = fmaxf(2.0f, tile * 0.045f);
+            drawUIRect(tx, ty, tile, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+            drawUIRect(tx, ty + tile - t, tile, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+            drawUIRect(tx, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+            drawUIRect(tx + tile - t, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
         } else {
-            uiThinFrame(tx, ty, tile, tile, UIColor{1.0f, 1.0f, 1.0f}, 0.15f);
+            uiThinFrame(tx, ty, tile, tile, UIColor{1.0f, 1.0f, 1.0f}, 0.30f);
         }
     }
 
-    // ---- Панель описания: rgba(20,20,23,0.80).
+    // ---- Описание выбранного рецепта справа от сетки.
     const Recipe& r = kRecipes[craftSelected_];
     const ItemDef& res = itemDef(r.result);
-    float dx, dy, dw, dh;
-    craftInfoRect(dx, dy, dw, dh);
-    drawUIRect(dx, dy, dw, dh, 0, 0.078f, 0.078f, 0.090f, 0.80f, false);
+    float dx = gx + gridW + 28.0f * s;
+    float dw = (float)SCR_W - dx - 24.0f * s;
+    float dy = gy;
+    drawUIRect(dx, dy, dw, tile * 2.6f, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
 
+    // Заголовок описания: название слева, крупный значок предмета справа.
     snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
-    drawText(ui.x(570.0f), ui.y(328.0f), ui.s(21.0f), buf, 1, 1, 1, 0.97f);
-    drawText(ui.x(570.0f), ui.y(360.0f), ui.s(14.0f), r.note, 1, 1, 1, 0.55f);
+    drawText(dx + 18.0f * s, dy + 16.0f * s, 27.0f * s, buf, 1, 1, 1, 0.96f);
+    float bigIcon = tile * 0.9f;
+    GLuint resIcon = itemIcon(r.result);
+    if(resIcon)
+        drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 12.0f * s, bigIcon, bigIcon,
+                   resIcon, 1, 1, 1, 1.0f, true);
 
-    // ---- Таблица ресурсов: шапка на 568,391, колонки 574 / 648 / 1420.
-    float headY = ui.y(391.0f);
-    drawUIRect(ui.x(568.0f), headY - ui.s(4.0f), dw - ui.s(30.0f), ui.s(24.0f), 0,
-               0.05f, 0.05f, 0.06f, 0.85f, false);
-    drawText(ui.x(574.0f), headY, ui.s(12.0f), "НУЖНО",    1, 1, 1, 0.75f);
-    drawText(ui.x(648.0f), headY, ui.s(12.0f), "МАТЕРИАЛ", 1, 1, 1, 0.75f);
-    drawText(ui.xr(1420.0f), headY, ui.s(12.0f), "ЕСТЬ",   1, 1, 1, 0.75f);
+    drawText(dx + 18.0f * s, dy + 50.0f * s, 18.0f * s, r.note, 0.90f, 0.90f, 0.88f, 0.95f);
 
-    float ly = headY + ui.s(30.0f);
+    // Таблица стоимости с шапкой: сколько нужно, чего и сколько есть на руках.
+    float ly = dy + 92.0f * s;
+    drawUIRect(dx + 14.0f * s, ly - 6.0f * s, dw - 28.0f * s, 26.0f * s, 0,
+               0.85f, 0.84f, 0.80f, 0.28f, false);
+    drawText(dx + 22.0f * s, ly - 3.0f * s, 16.0f * s, "НУЖНО", 0.15f, 0.15f, 0.16f, 0.95f);
+    drawText(dx + 100.0f * s, ly - 3.0f * s, 16.0f * s, "МАТЕРИАЛ", 0.15f, 0.15f, 0.16f, 0.95f);
+    drawText(dx + dw - 96.0f * s, ly - 3.0f * s, 16.0f * s, "ЕСТЬ", 0.15f, 0.15f, 0.16f, 0.95f);
+    ly += 28.0f * s;
     for(int k = 0; k < 2; ++k){
         ItemType cost = (k == 0) ? r.costA : r.costB;
         int need = (k == 0) ? r.costACount : r.costBCount;
         if(cost == ItemType::None) continue;
         int have = inventory_.countOf(cost);
-        snprintf(buf, sizeof(buf), "%d", need);
-        drawText(ui.x(574.0f), ly, ui.s(16.0f), buf, 1, 1, 1, 0.95f);
-        drawText(ui.x(648.0f), ly, ui.s(16.0f), itemDef(cost).nameRu, 1, 1, 1, 0.95f);
-        snprintf(buf, sizeof(buf), "%d", have);
-        // Не хватает — красным, хватает — белым.
         bool enough = have >= need;
-        drawText(ui.xr(1420.0f), ly, ui.s(16.0f), buf,
-                 enough ? 1.0f : 0.85f, enough ? 1.0f : 0.20f, enough ? 1.0f : 0.18f, 0.95f);
-        ly += ui.s(26.0f);
+        snprintf(buf, sizeof(buf), "%d", need);
+        drawText(dx + 22.0f * s, ly, 20.0f * s, buf, 1, 1, 1, 0.9f);
+        drawText(dx + 100.0f * s, ly, 20.0f * s, itemDef(cost).nameRu, 1, 1, 1, 0.9f);
+        snprintf(buf, sizeof(buf), "%d", have);
+        // Хватает — зелёным, не хватает — красным: это всё, что нужно знать до крафта.
+        drawText(dx + dw - 96.0f * s, ly, 20.0f * s, buf,
+                 enough ? 0.55f : 0.90f, enough ? 0.85f : 0.35f, 0.40f, 0.95f);
+        ly += 28.0f * s;
     }
 
-    // ---- Кнопка создания.
+    // Кнопка «Создать» — она же и есть действие крафта.
     bool ok = inventory_.countOf(r.costA) >= r.costACount &&
               (r.costB == ItemType::None || inventory_.countOf(r.costB) >= r.costBCount);
     float bx, by, bw, bh;
     craftButtonRect(bx, by, bw, bh);
-    drawUIRect(bx, by, bw, bh, 0, 0.137f, 0.141f, 0.153f, ok ? 0.85f : 0.55f, false);
-    uiThinFrame(bx, by, bw, bh, UIColor{1.0f, 1.0f, 1.0f}, ok ? 0.35f : 0.15f);
-    float labelW = ui.s(18.0f) * 0.55f * 8.0f;
-    drawText(bx + bw * 0.5f - labelW * 0.5f, by + bh * 0.30f, ui.s(18.0f), "СОЗДАТЬ",
-             1, 1, 1, ok ? 0.95f : 0.45f);
+    drawUIRect(bx, by, bw, bh, 0, ok ? 0.24f : 0.20f, ok ? 0.34f : 0.20f, ok ? 0.24f : 0.21f,
+               ok ? 0.72f : 0.55f, false);
+    uiThinFrame(bx, by, bw, bh, ok ? UI_ACCENT : UI_LINE, ok ? 0.9f : 0.4f);
+    drawText(bx + bw * 0.5f - 46.0f * s, by + bh * 0.28f, 23.0f * s, "СОЗДАТЬ",
+             ok ? UI_ACCENT.r : UI_TEXT_DIM.r, ok ? UI_ACCENT.g : UI_TEXT_DIM.g,
+             ok ? UI_ACCENT.b : UI_TEXT_DIM.b, ok ? 1.0f : 0.7f);
 }
 
 // ==================== КАРТА ====================
