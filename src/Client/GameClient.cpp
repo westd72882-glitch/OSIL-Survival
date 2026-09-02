@@ -1492,6 +1492,10 @@ void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, 
 }
 
 void GameClient::renderHud(){
+    // В паузе интерфейса игры на экране нет вообще: пауза — это отдельный экран, а не
+    // окно поверх боя, и полосы с кнопками за ним только мешают читать меню.
+    if(overlay_ == Overlay::Pause) return;
+
     glDisable(GL_DEPTH_TEST);
     Mat4 uiProjM = mat4Ortho(0, (float)SCR_W, (float)SCR_H, 0, -1, 1);
     glUseProgram(uiProg);
@@ -1552,15 +1556,19 @@ void GameClient::renderHud(){
                 0.75f, 0.65f, 0.25f, "");
     }
 
-    // ---- Пояс быстрого доступа
+    // ---- Пояс быстрого доступа. В открытом инвентаре его не рисуем: у окна свой ряд
+    // пояса, и игровой просвечивал сквозь затемнение вторым, притухшим.
     float hx, hy, slot, hgap;
     hotbarGeometry(hx, hy, slot, hgap);
-    for(int i = 0; i < Inventory::HOTBAR; ++i){
-        float sx = hx + i * (slot + hgap);
-        drawSlot(sx, hy, slot, inventory_.slot(i), i == inventory_.selected());
+    bool showHotbar = (overlay_ != Overlay::Inventory);
+    if(showHotbar){
+        for(int i = 0; i < Inventory::HOTBAR; ++i){
+            float sx = hx + i * (slot + hgap);
+            drawSlot(sx, hy, slot, inventory_.slot(i), i == inventory_.selected());
+        }
     }
     const ItemStack& sel = inventory_.selectedStack();
-    if(!sel.empty()){
+    if(showHotbar && !sel.empty()){
         const char* name = itemDef(sel.type).nameRu;
         drawText(hx, hy - 24.0f * s, 20.0f * s, name, UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.9f);
     }
