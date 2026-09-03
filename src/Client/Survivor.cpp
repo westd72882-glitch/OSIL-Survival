@@ -326,6 +326,12 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
     // Добывается только то, что стоит НА земле: дерево, жила, бочка. Каждый удар даёт
     // ресурс, а когда объект выработан — дерево падает, жила и бочка исчезают.
     bool canHit = target_.hit && isHarvestable(target_.block);
+    // Замах идёт и в пустоту: игрок должен видеть, что он бьёт, даже если перед ним
+    // ничего добываемого нет. Ресурс при этом, конечно, не капает.
+    if(in.attack && !canHit){
+        miningProgress_ += dt * (hasAxe() ? 2.0f : 1.0f) / SWING_TIME;
+        if(miningProgress_ >= 1.0f) miningProgress_ = 0.0f;
+    }
     if(in.attack && canHit){
         if(target_.x != miningX_ || target_.y != miningY_ || target_.z != miningZ_){
             miningX_ = target_.x; miningY_ = target_.y; miningZ_ = target_.z;

@@ -137,6 +137,8 @@ private:
     void  craftGridGeometry(float& x, float& y, float& tile, float& gap) const;
     void  craftTilePos(int i, float& tx, float& ty) const;
     void  craftButtonRect(float& x, float& y, float& w, float& h) const;
+    void  craftInfoRect(float& x, float& y, float& w, float& h) const;
+    float craftPanelWidth() const;
     // Меню паузы: открывается тапом по полосам состояния слева сверху — отдельной
     // кнопки под него на экране нет.
     void  renderPause();
@@ -154,6 +156,17 @@ private:
     void itemMenuButtonRect(int i, float& x, float& y, float& w, float& h) const;
     void renderItemMenu();
     // Окно печи: плавка руды за дрова.
+    // Печь: в слот кладут руду, она плавится по 5 секунд за штуку, топливо — 2 дерева
+    // на каждую. Состояние живёт в клиенте: печей пока одна на игрока.
+    struct FurnaceState {
+        ItemType ore = ItemType::None;
+        int   oreCount = 0;      // сколько ещё осталось переплавить
+        float progress = 0.0f;   // 0..1 текущей плавки
+        int   done = 0;          // готовые слитки, которые можно забрать
+        ItemType result = ItemType::None;
+    };
+    FurnaceState furnace_;
+    void  updateFurnace(float dt);
     void  renderFurnace();
     // ---- Режим стройки. Включается сам, когда в руках план постройки: снизу
     // появляется выбор части (фундамент, стена, потолок, дверь), а справа — кнопка
@@ -181,6 +194,9 @@ private:
     GLuint texCraft_ = 0, texMap_ = 0, texSettings_ = 0, texClose_ = 0;
     GLuint texJump_ = 0, texRun_ = 0, texCrouch_ = 0;
     GLuint texBlood_ = 0;
+    GLuint texMapMark_ = 0, texDeathMark_ = 0;
+    Vec2  deathMark_{0,0};
+    bool  deathMarkValid_ = false;
     GLuint texBuild_ = 0, texBuildAccept_ = 0;
     GLuint texCatFoundation_ = 0, texCatFloor_ = 0, texCatDoor_ = 0;
     // Значок на каждый вид предмета: индекс — ItemType. Чему картинки нет, тот

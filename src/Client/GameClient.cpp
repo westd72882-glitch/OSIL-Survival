@@ -211,7 +211,7 @@ bool GameClient::initGraphics(){
         glBindVertexArray(0);
     };
     makeDynamicVoxelBuffer(partVao_, partVbo_, 64 * 36);
-    makeDynamicVoxelBuffer(heldVao_, heldVbo_, 6 * 36);
+    makeDynamicVoxelBuffer(heldVao_, heldVbo_, 8 * 36);
 
     return true;
 }
@@ -331,22 +331,26 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     struct Part { float cx, cy, hx, hy, hz; Block block; };
     // Пропорции сняты с картинок предметов. Топор: длинное топорище и широкая каменная
     // голова, насаженная сбоку и перевязанная у обуха. Факел: палка с горящим навершием.
+    // Кисть — квадратный брусок у нижнего конца рукояти: без неё инструмент висел в
+    // воздухе сам по себе. Сам топор крупнее прежнего.
     const Part axeParts[] = {
-        { 0.000f, -0.105f, 0.0105f, 0.090f, 0.0105f, Block::Wood },   // топорище, низ
-        { 0.000f,  0.040f, 0.0095f, 0.062f, 0.0095f, Block::Wood },   // топорище, верх
-        { -0.006f, 0.112f, 0.0150f, 0.018f, 0.0135f, Block::Wood },   // перевязка у обуха
-        { -0.040f, 0.118f, 0.0360f, 0.030f, 0.0140f, Block::Stone },  // каменная голова
-        { -0.082f, 0.120f, 0.0140f, 0.022f, 0.0105f, Block::Stone },  // скошенное лезвие
+        { 0.000f, -0.150f, 0.0400f, 0.045f, 0.0400f, Block::Sand },   // кисть
+        { 0.000f, -0.070f, 0.0135f, 0.115f, 0.0135f, Block::Wood },   // топорище, низ
+        { 0.000f,  0.075f, 0.0125f, 0.075f, 0.0125f, Block::Wood },   // топорище, верх
+        { -0.008f, 0.152f, 0.0195f, 0.024f, 0.0175f, Block::Wood },   // перевязка у обуха
+        { -0.052f, 0.160f, 0.0470f, 0.039f, 0.0180f, Block::Stone },  // каменная голова
+        { -0.108f, 0.162f, 0.0180f, 0.029f, 0.0135f, Block::Stone },  // скошенное лезвие
     };
     const Part torchParts[] = {
-        { 0.000f, -0.095f, 0.0100f, 0.100f, 0.0100f, Block::Wood },   // палка, низ
-        { 0.000f,  0.035f, 0.0095f, 0.032f, 0.0095f, Block::Wood },   // палка, верх
-        { 0.000f,  0.078f, 0.0140f, 0.016f, 0.0140f, Block::Wood },   // обмотка под пламенем
-        { 0.000f,  0.104f, 0.0125f, 0.018f, 0.0125f, Block::Sand },   // пламя, ядро
-        { 0.000f,  0.130f, 0.0075f, 0.014f, 0.0075f, Block::Sand },   // пламя, язык
+        { 0.000f, -0.150f, 0.0400f, 0.045f, 0.0400f, Block::Sand },   // кисть
+        { 0.000f, -0.060f, 0.0130f, 0.115f, 0.0130f, Block::Wood },   // палка, низ
+        { 0.000f,  0.070f, 0.0125f, 0.042f, 0.0125f, Block::Wood },   // палка, верх
+        { 0.000f,  0.122f, 0.0180f, 0.020f, 0.0180f, Block::Wood },   // обмотка
+        { 0.000f,  0.156f, 0.0160f, 0.023f, 0.0160f, Block::Sand },   // пламя, ядро
+        { 0.000f,  0.192f, 0.0095f, 0.018f, 0.0095f, Block::Sand },   // пламя, язык
     };
     const Part* parts = axe ? axeParts : torchParts;
-    const int partCount = 5;
+    const int partCount = 6;
     const float S = 0.86f;
     // Факел держат почти прямо: с наклоном топора пламя уезжает к центру экрана и
     // теряется в пейзаже.
@@ -356,7 +360,7 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     float offY = (axe ? -0.186f : -0.150f) + bob - swing * 0.35f;
 
     std::vector<VoxelVertex> verts;
-    verts.reserve(4 * 36);
+    verts.reserve(6 * 36);
     for(int pi = 0; pi < partCount; ++pi){
         const Part& part = parts[pi];
         float tr, tg, tb;
@@ -364,9 +368,11 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
         float layer = (float)blockTextureLayer(part.block);
         // Пламя факела — два верхних бруска: красим их в огонь и чуть качаем яркостью,
         // чтобы оно не выглядело жёлтым кубиком.
-        if(torch && pi >= 3){
+        // Кисть — телесного цвета, а не песочного.
+        if(pi == 0){ tr = 0.86f; tg = 0.66f; tb = 0.50f; }
+        if(torch && pi >= 4){
             float flick = 0.85f + 0.15f * sinf(heldBobPhase_ * 11.0f + (float)pi);
-            tr = 1.9f * flick; tg = (pi == 3 ? 1.15f : 1.45f) * flick; tb = 0.35f * flick;
+            tr = 1.9f * flick; tg = (pi == 4 ? 1.15f : 1.45f) * flick; tb = 0.35f * flick;
         }
         // Брусок собираем как «кубик» с разными полуразмерами: pushCube даёт куб, а
         // тут нужен вытянутый, поэтому строим грани здесь же по тем же правилам.
@@ -459,6 +465,10 @@ void GameClient::initWorld(){
     // Отсчёт вышел — поднимаем игрока на новом месте сами, без нажатия кнопки.
     player_->onOpenFurnace = [this](){ overlay_ = Overlay::Furnace; };
     player_->onRespawn = [this](){
+        // Место гибели остаётся на карте: за вещами надо возвращаться.
+        Vec3 died = player_->position();
+        deathMark_ = Vec2{ died.x, died.z };
+        deathMarkValid_ = true;
         Rng rr(splitMix64(world_->config().seed ^ 0x1234ULL ^ (uint64_t)SDL_GetTicks()));
         player_->spawn(world_->findSpawnPoint(rr));
     };
@@ -606,8 +616,20 @@ void GameClient::craftGridGeometry(float& x, float& y, float& tile, float& gap) 
     int rows = (kRecipeCount + CRAFT_COLS - 1) / CRAFT_COLS;
     if(rows < 1) rows = 1;
     float gridH = tile * rows + gap * (rows - 1);
-    x = 40.0f * s;
-    y = ((float)SCR_H - gridH) * 0.5f + 16.0f * s;
+    // Сетка и панель описания стоят одним блоком по центру экрана, а не липнут к
+    // левому краю: раньше окно съезжало в угол и выглядело незакончённым.
+    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    float panelW = fminf((float)SCR_W * 0.42f, 560.0f * s);
+    float totalW = gridW + 28.0f * s + panelW;
+    x = ((float)SCR_W - totalW) * 0.5f;
+    y = ((float)SCR_H - gridH) * 0.5f + 10.0f * s;
+}
+
+// Панель описания: её ширина считается один раз и здесь, чтобы отрисовка и попадания
+// не разъезжались.
+float GameClient::craftPanelWidth() const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    return fminf((float)SCR_W * 0.42f, 560.0f * s);
 }
 
 void GameClient::craftTilePos(int i, float& tx, float& ty) const {
@@ -626,7 +648,7 @@ void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
     // Кнопка стоит ВНУТРИ панели описания, в её правом нижнем углу: снаружи она
     // налезала на пояс быстрого доступа.
     float dx = gx + gridW + 28.0f * s;
-    float dw = fminf((float)SCR_W - dx - 40.0f * s, 520.0f * s);
+    float dw = craftPanelWidth();
     w = fminf(dw * 0.45f, 300.0f * s);
     h = 54.0f * s;
     x = dx + dw - w - 16.0f * s;
@@ -667,8 +689,10 @@ void GameClient::renderPause(){
     for(int i = 0; i < PAUSE_ROW_COUNT; ++i){
         float x, y, w, h;
         pauseRowRect(i, x, y, w, h);
-        // Все строки одинаково светлые: «Настройки» раньше терялись на фоне.
-        drawText(x, y + h * 0.22f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 0.96f);
+        // Строки одинаково белые и с подложкой: без неё «Настройки» тонули в светлом
+        // куске пейзажа за меню, и строка казалась темнее соседних.
+        drawUIRect(x - 10.0f * s, y, w, h, 0, 0.06f, 0.06f, 0.07f, 0.55f, false);
+        drawText(x, y + h * 0.22f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 1.0f);
     }
 }
 
@@ -932,8 +956,8 @@ bool GameClient::handleOverlayTouch(float x, float y){
 // окно открывается только если палец не поехал.
 void GameClient::itemMenuRect(float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    w = clampf((float)SCR_W * 0.26f, 230.0f, 380.0f);
-    h = 210.0f * s;
+    w = clampf((float)SCR_W * 0.30f, 260.0f, 430.0f);
+    h = 268.0f * s;   // выше прежнего: в 210 не влезали название и три кнопки
     x = ((float)SCR_W - w) * 0.5f;
     y = ((float)SCR_H - h) * 0.5f;
 }
@@ -945,7 +969,7 @@ void GameClient::itemMenuButtonRect(int i, float& x, float& y, float& w, float& 
     w = mw - 24.0f * s;
     h = 42.0f * s;
     x = mx + 12.0f * s;
-    y = my + 84.0f * s + i * (h + 8.0f * s);
+    y = my + 108.0f * s + i * (h + 10.0f * s);
 }
 
 void GameClient::renderItemMenu(){
@@ -992,6 +1016,39 @@ bool GameClient::handleItemMenuTouch(float x, float y){
     if(x < mx || x > mx + mw || y < my || y > my + mh) itemMenuSlot_ = -1;
     return true;
 }
+
+// Разбивает строку на строки по ширине. Своего переноса у drawText нет, а описание
+// рецепта в одну строку не влезает и уезжает за край панели.
+namespace {
+std::vector<std::string> wrapText(const std::string& text, float fontH, float maxWidth){
+    std::vector<std::string> lines;
+    // Ширина символа оценивается как 0.5 кегля — этого хватает: шрифт узкий, а
+    // точная метрика тут не нужна, важно не вылезти за панель.
+    size_t perLine = (size_t)fmaxf(8.0f, maxWidth / (fontH * 0.5f));
+    std::string line;
+    size_t pos = 0;
+    while(pos < text.size()){
+        size_t space = text.find(' ', pos);
+        std::string word = text.substr(pos, space == std::string::npos ? std::string::npos : space - pos);
+        // В UTF-8 русская буква занимает два байта, поэтому длину считаем по символам.
+        auto charLen = [](const std::string& t){
+            size_t n = 0;
+            for(unsigned char c : t) if((c & 0xC0) != 0x80) ++n;
+            return n;
+        };
+        if(!line.empty() && charLen(line) + charLen(word) + 1 > perLine){
+            lines.push_back(line);
+            line.clear();
+        }
+        if(!line.empty()) line += ' ';
+        line += word;
+        if(space == std::string::npos) break;
+        pos = space + 1;
+    }
+    if(!line.empty()) lines.push_back(line);
+    return lines;
+}
+} // namespace
 
 // ==================== РЕЖИМ СТРОЙКИ ====================
 // В руках план постройки — значит строим. Снизу лента с частями дома, справа кнопка
@@ -1155,19 +1212,29 @@ bool GameClient::handleBuildTouch(float x, float y){
 // слиток. Очереди и таймеров пока нет — они появятся вместе с верстаками.
 void GameClient::furnaceButtonRect(int i, float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float pw = clampf((float)SCR_W * 0.42f, 360.0f, 620.0f);
-    float ph = 300.0f * s;
+    float pw = clampf((float)SCR_W * 0.46f, 400.0f, 680.0f);
+    float ph = 330.0f * s;
     float px = ((float)SCR_W - pw) * 0.5f, py = ((float)SCR_H - ph) * 0.5f;
     w = pw - 40.0f * s;
     h = 46.0f * s;
     x = px + 20.0f * s;
-    y = py + ph - (h + 16.0f * s) * (float)(3 - i);
+    y = py + ph - (h + 14.0f * s) * (float)(4 - i);
+}
+
+// Плавка идёт сама, пока в печи есть руда: пять секунд на штуку.
+void GameClient::updateFurnace(float dt){
+    if(furnace_.oreCount <= 0) return;
+    furnace_.progress += dt / 5.0f;
+    if(furnace_.progress < 1.0f) return;
+    furnace_.progress = 0.0f;
+    furnace_.oreCount -= 1;
+    furnace_.done += 1;
 }
 
 void GameClient::renderFurnace(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float pw = clampf((float)SCR_W * 0.42f, 360.0f, 620.0f);
-    float ph = 300.0f * s;
+    float pw = clampf((float)SCR_W * 0.46f, 400.0f, 680.0f);
+    float ph = 330.0f * s;
     float px = ((float)SCR_W - pw) * 0.5f, py = ((float)SCR_H - ph) * 0.5f;
 
     drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.04f, 0.04f, 0.05f, 0.45f, false);
@@ -1175,44 +1242,74 @@ void GameClient::renderFurnace(){
     uiThinFrame(px, py, pw, ph, UIColor{1.0f, 1.0f, 1.0f}, 0.35f);
     drawText(px + 20.0f * s, py + 14.0f * s, 26.0f * s, "ПЕЧЬ", 1, 1, 1, 0.97f);
 
-    // Что есть на руках: без этого непонятно, почему кнопка не работает.
-    char buf[96];
-    snprintf(buf, sizeof(buf), "Дрова: %d", inventory_.countOf(ItemType::Wood));
-    drawText(px + 20.0f * s, py + 54.0f * s, 19.0f * s, buf, 1, 0.85f, 0.55f, 0.9f);
-    snprintf(buf, sizeof(buf), "Серная руда: %d      Железная руда: %d",
-             inventory_.countOf(ItemType::OreSulfur), inventory_.countOf(ItemType::OreMetal));
-    drawText(px + 20.0f * s, py + 82.0f * s, 19.0f * s, buf, 1, 1, 1, 0.85f);
+    // Слот руды, полоса плавки и слот готового — слева направо, как в печи Rust.
+    float slot = 74.0f * s;
+    float sy = py + 56.0f * s;
+    float sx = px + 24.0f * s;
+    ItemStack inStack{ furnace_.ore, furnace_.oreCount };
+    drawSlot(sx, sy, slot, furnace_.oreCount > 0 ? inStack : ItemStack{}, false);
 
-    const char* labels[3] = { "ПЛАВИТЬ СЕРУ  (2 руды + 1 дрова)",
-                              "ПЛАВИТЬ ЖЕЛЕЗО  (2 руды + 1 дрова)",
+    float barX = sx + slot + 18.0f * s, barW = pw - slot * 2.0f - 84.0f * s;
+    drawUIRect(barX, sy + slot * 0.42f, barW, 14.0f * s, 0, 0.18f, 0.18f, 0.19f, 0.9f, false);
+    drawUIRect(barX, sy + slot * 0.42f, barW * clampf(furnace_.progress, 0.0f, 1.0f), 14.0f * s,
+               0, 0.95f, 0.55f, 0.18f, 0.95f, false);
+
+    float outX = barX + barW + 18.0f * s;
+    ItemStack outStack{ furnace_.result, furnace_.done };
+    drawSlot(outX, sy, slot, furnace_.done > 0 ? outStack : ItemStack{}, false);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "Дрова: %d      В печи: %d      Готово: %d",
+             inventory_.countOf(ItemType::Wood), furnace_.oreCount, furnace_.done);
+    drawText(px + 24.0f * s, sy + slot + 14.0f * s, 18.0f * s, buf, 1, 1, 1, 0.8f);
+
+    const char* labels[4] = { "ЗАГРУЗИТЬ СЕРНУЮ РУДУ  (1 руда + 2 дерева)",
+                              "ЗАГРУЗИТЬ ЖЕЛЕЗНУЮ РУДУ  (1 руда + 2 дерева)",
+                              "ЗАБРАТЬ ГОТОВОЕ",
                               "ЗАКРЫТЬ" };
-    bool wood = inventory_.countOf(ItemType::Wood) >= 1;
-    bool can[3] = { wood && inventory_.countOf(ItemType::OreSulfur) >= 2,
-                    wood && inventory_.countOf(ItemType::OreMetal) >= 2,
-                    true };
-    for(int i = 0; i < 3; ++i){
+    bool wood = inventory_.countOf(ItemType::Wood) >= 2;
+    bool can[4] = {
+        wood && inventory_.countOf(ItemType::OreSulfur) >= 1 &&
+            (furnace_.ore == ItemType::None || furnace_.ore == ItemType::OreSulfur || furnace_.oreCount == 0),
+        wood && inventory_.countOf(ItemType::OreMetal) >= 1 &&
+            (furnace_.ore == ItemType::None || furnace_.ore == ItemType::OreMetal || furnace_.oreCount == 0),
+        furnace_.done > 0,
+        true
+    };
+    for(int i = 0; i < 4; ++i){
         float bx, by, bw, bh;
         furnaceButtonRect(i, bx, by, bw, bh);
         drawUIRect(bx, by, bw, bh, 0, 0.16f, 0.16f, 0.17f, can[i] ? 0.92f : 0.5f, false);
         uiThinFrame(bx, by, bw, bh, UIColor{1.0f, 1.0f, 1.0f}, can[i] ? 0.3f : 0.12f);
-        drawText(bx + 14.0f * s, by + bh * 0.26f, 19.0f * s, labels[i],
+        drawText(bx + 14.0f * s, by + bh * 0.26f, 18.0f * s, labels[i],
                  1, 1, 1, can[i] ? 0.95f : 0.4f);
     }
 }
 
 bool GameClient::handleFurnaceTouch(float x, float y){
-    for(int i = 0; i < 3; ++i){
+    for(int i = 0; i < 4; ++i){
         float bx, by, bw, bh;
         furnaceButtonRect(i, bx, by, bw, bh);
         if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
-        if(i == 2){ overlay_ = Overlay::None; return true; }
+        if(i == 3){ overlay_ = Overlay::None; return true; }
+        if(i == 2){
+            if(furnace_.done > 0){
+                inventory_.add(furnace_.result, furnace_.done);
+                furnace_.done = 0;
+                if(furnace_.oreCount == 0) furnace_.result = ItemType::None;
+            }
+            return true;
+        }
         ItemType ore = (i == 0) ? ItemType::OreSulfur : ItemType::OreMetal;
         ItemType out = (i == 0) ? ItemType::Sulfur    : ItemType::MetalFrag;
-        if(inventory_.countOf(ore) >= 2 && inventory_.countOf(ItemType::Wood) >= 1){
-            inventory_.remove(ore, 2);
-            inventory_.remove(ItemType::Wood, 1);
-            inventory_.add(out, 1);
-        }
+        // В печи плавится один вид руды за раз: смешивать нечего, а путаницы много.
+        if(furnace_.oreCount > 0 && furnace_.ore != ore) return true;
+        if(inventory_.countOf(ore) < 1 || inventory_.countOf(ItemType::Wood) < 2) return true;
+        inventory_.remove(ore, 1);
+        inventory_.remove(ItemType::Wood, 2);
+        furnace_.ore = ore;
+        furnace_.result = out;
+        furnace_.oreCount += 1;
         return true;
     }
     return true;
@@ -1558,7 +1655,12 @@ void GameClient::update(float dt){
     pitch_ -= controls_.lookDY * sens;
     pitch_ = clampf(pitch_, -1.50f, 1.50f);
 
-    if(controls_.inventoryPressed()){ overlay_ = (overlay_ == Overlay::Inventory) ? Overlay::None : Overlay::Inventory; dragSlot_ = -1; itemMenuSlot_ = -1; }
+    if(controls_.inventoryPressed()){
+        // Кнопка инвентаря закрывает окно ВСЕГДА, даже если открыто окошко предмета
+        // или палец что-то тащил: раньше эти состояния перехватывали нажатие.
+        overlay_ = (overlay_ == Overlay::Inventory) ? Overlay::None : Overlay::Inventory;
+        dragSlot_ = -1; dragActive_ = false; itemMenuSlot_ = -1;
+    }
     // Открывая окно, отпускаем все касания: палец, лежавший на джойстике, иначе
     // остаётся «нажатым» и игрок продолжает идти, пока окно открыто.
     if(overlay_ != Overlay::None) controls_.releaseAllTouches();
@@ -1590,6 +1692,7 @@ void GameClient::update(float dt){
     voxels_->updateWater(96);
     // Восстановление выбитых жил: пока очередь пуста, вызов ничего не стоит.
     voxels_->updateRespawn(dt);
+    updateFurnace(dt);
     // Падение срубленного дерева и осколки от выработанной жилы.
     voxels_->updateFalling(dt);
     updateParticles(dt);
@@ -1884,19 +1987,23 @@ void GameClient::renderHud(){
 
     // ---- Полосы состояния
     float y = pad;
-    snprintf(buf, sizeof(buf), "HP %.0f", (double)player_->health());
-    drawBar(pad, y, barW, barH, player_->health() / 100.0f, 0.62f, 0.18f, 0.16f, buf); y += barH + gap;
-    snprintf(buf, sizeof(buf), "Голод %.0f", (double)player_->hunger());
-    drawBar(pad, y, barW, barH, player_->hunger() / 100.0f, 0.55f, 0.40f, 0.14f, buf); y += barH + gap;
-    snprintf(buf, sizeof(buf), "Жажда %.0f", (double)player_->thirst());
-    drawBar(pad, y, barW, barH, player_->thirst() / 100.0f, 0.16f, 0.38f, 0.58f, buf); y += barH + gap;
-    snprintf(buf, sizeof(buf), "Силы %.0f", (double)player_->stamina());
-    drawBar(pad, y, barW, barH, player_->stamina() / 100.0f, 0.32f, 0.48f, 0.24f, buf); y += barH + gap;
+    // Название слева, число — отдельным полем у правого края полосы, поэтому цифры всех
+    // строк стоят на одной вертикали, а не разъезжаются вслед за длиной слова.
+    auto statRow = [&](const char* name, float value, float r, float g, float b){
+        drawBar(pad, y, barW, barH, value / 100.0f, r, g, b, name);
+        char num[16];
+        snprintf(num, sizeof(num), "%.0f", (double)value);
+        float nw = barH * 0.55f * (float)strlen(num);
+        drawText(pad + barW - nw - 8.0f * s, y + barH * 0.16f, barH * 0.82f, num, 1, 1, 1, 0.95f);
+        y += barH + gap;
+    };
+    statRow("HP",     player_->health(),  0.62f, 0.18f, 0.16f);
+    statRow("Голод",  player_->hunger(),  0.55f, 0.40f, 0.14f);
+    statRow("Жажда",  player_->thirst(),  0.16f, 0.38f, 0.58f);
+    statRow("Силы",   player_->stamina(), 0.32f, 0.48f, 0.24f);
     // Воздух показываем только когда он тратится: лишняя полоса на экране мешает.
     if(player_->headUnderwater() || player_->oxygen() < 99.5f){
-        snprintf(buf, sizeof(buf), "Воздух %.0f", (double)player_->oxygen());
-        drawBar(pad, y, barW, barH, player_->oxygen() / 100.0f, 0.30f, 0.62f, 0.72f, buf);
-        y += barH + gap;
+        statRow("Воздух", player_->oxygen(), 0.30f, 0.62f, 0.72f);
     }
 
     Vec3 p = player_->position();
@@ -2012,7 +2119,8 @@ void GameClient::renderTouchControls(){
         else if(label == "БЕГ")      icon = texRun_;
         else if(label == "СЕСТЬ")    icon = texCrouch_;
 
-        float alpha = b.active ? 0.95f : 0.62f;
+        // Кнопка белая в покое и темнеет при нажатии: так видно, что палец попал.
+        float alpha = b.active ? 0.45f : 1.0f;
         if(icon){
             drawUIRect(b.cx - b.radius, b.cy - b.radius, b.radius * 2.0f, b.radius * 2.0f,
                        icon, 1, 1, 1, alpha, true);
@@ -2105,10 +2213,21 @@ void GameClient::renderOverlay(){
             drawSlot(sx, sy, slot, shown, false);
         }
         if(dragActive_ && dragSlot_ >= 0){
-            // Предмет под пальцем, со смещением вверх: иначе его закрывает сам палец.
-            float dsz = slot * 0.92f;
-            drawSlot(dragPos_.x - dsz * 0.5f, dragPos_.y - dsz * 1.15f, dsz,
-                     inventory_.slot(dragSlot_), false);
+            // Под пальцем едет ТОЛЬКО значок предмета, без плитки и рамки: подложка
+            // выглядела как лишняя ячейка. Значок стоит по центру пальца, а не выше.
+            const ItemStack& drag = inventory_.slot(dragSlot_);
+            if(!drag.empty()){
+                float dsz = slot * 0.80f;
+                GLuint icon = itemIcon(drag.type);
+                if(icon)
+                    drawUIRect(dragPos_.x - dsz * 0.5f, dragPos_.y - dsz * 0.5f, dsz, dsz,
+                               icon, 1, 1, 1, 0.95f, true);
+                else {
+                    const ItemDef& dd = itemDef(drag.type);
+                    drawUIRect(dragPos_.x - dsz * 0.5f, dragPos_.y - dsz * 0.5f, dsz, dsz,
+                               0, dd.r, dd.g, dd.b, 0.95f, false);
+                }
+            }
         }
         renderItemMenu();
         return;
@@ -2194,7 +2313,7 @@ void GameClient::renderCraft(){
     // Панель описания не тянется до края экрана: вытянутая на всю ширину полоса
     // выглядела шапкой сайта, а не окном крафта.
     float dx = gx + gridW + 28.0f * s;
-    float dw = fminf((float)SCR_W - dx - 40.0f * s, 520.0f * s);
+    float dw = craftPanelWidth();
     float dy = gy;
     drawUIRect(dx, dy, dw, tile * 3.0f, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
 
@@ -2207,7 +2326,17 @@ void GameClient::renderCraft(){
         drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 12.0f * s, bigIcon, bigIcon,
                    resIcon, 1, 1, 1, 1.0f, true);
 
-    drawText(dx + 18.0f * s, dy + 50.0f * s, 18.0f * s, r.note, 0.90f, 0.90f, 0.88f, 0.95f);
+    {
+        // Описание переносится по словам: в одну строку оно не влезало и уезжало за
+        // край панели.
+        float noteH = 18.0f * s;
+        std::vector<std::string> lines = wrapText(r.note, noteH, dw - 36.0f * s);
+        float ny = dy + 50.0f * s;
+        for(const std::string& line : lines){
+            drawText(dx + 18.0f * s, ny, noteH, line.c_str(), 0.90f, 0.90f, 0.88f, 0.95f);
+            ny += noteH * 1.35f;
+        }
+    }
 
     // Таблица стоимости с шапкой: сколько нужно, чего и сколько есть на руках.
     float ly = dy + 92.0f * s;
@@ -2344,10 +2473,30 @@ void GameClient::renderMap(){
 
     // ---- Метки игрока: касание по карте ставит флажок, касание по нему — снимает.
     float markR = clampf(9.0f * s * SDL_powf(mapZoom_, 0.35f), 7.0f * s, 26.0f * s);
+    // Метка смерти: где игрока убило в прошлый раз. Ставится сама и живёт до
+    // следующей смерти — за вещами надо возвращаться.
+    if(deathMarkValid_){
+        float dxs = toScreenX(deathMark_.x), dys = toScreenY(deathMark_.y);
+        if(dxs > worldL && dxs < worldR && dys > worldT && dys < worldB){
+            float dr = 14.0f * s;
+            if(texDeathMark_)
+                drawUIRect(dxs - dr, dys - dr * 2.0f, dr * 2.0f, dr * 2.0f, texDeathMark_,
+                           1, 1, 1, 0.95f, true);
+            else
+                drawUICircleOutline(dxs, dys, dr, 0.9f, 0.2f, 0.2f, 0.95f, 3.0f);
+        }
+    }
+
     for(const Vec2& m : mapMarks_){
         float mx = toScreenX(m.x), my = toScreenY(m.y);
         if(mx < -markR || mx > (float)SCR_W + markR) continue;
         if(my < -markR || my > (float)SCR_H + markR) continue;
+        if(texMapMark_){
+            // Своя картинка булавки: её острие смотрит в точку метки.
+            float pinW = markR * 1.6f, pinH = pinW * 1.12f;
+            drawUIRect(mx - pinW * 0.5f, my - pinH, pinW, pinH, texMapMark_, 1, 1, 1, 0.95f, true);
+            continue;
+        }
         // Флажок: ножка и треугольное полотнище. Рисуем примитивами — своей картинки
         // для метки в наборе нет, а цветное пятно на карте читается и так.
         drawUIRect(mx - 1.5f * s, my - markR, 3.0f * s, markR, 0, 1.0f, 0.95f, 0.35f, 0.95f, false);
@@ -2766,6 +2915,8 @@ void GameClient::loadInterfaceTextures(){
         { "ui_cat_foundation.png", &texCatFoundation_ },
         { "ui_cat_floor.png",      &texCatFloor_ },
         { "ui_cat_door.png",       &texCatDoor_ },
+        { "ui_map_mark.png",       &texMapMark_ },
+        { "ui_death_mark.png",     &texDeathMark_ },
     };
     int loaded = 0;
     for(const auto& it : items){

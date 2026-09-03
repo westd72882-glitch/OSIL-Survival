@@ -134,6 +134,8 @@ JOBS = {
     'ui_cat_foundation.png': ('Foundation_Category.png', 128),
     'ui_cat_floor.png':      ('Floor_Category.png', 128),
     'ui_cat_door.png':       ('Door_Category.png', 128),
+    'ui_map_mark.png':       ('ui-map-marker.png', 96),
+    'ui_death_mark.png':     ('ui-death-marker.png', 96),
     'ui_blood.png':      ('Blood Screen.png', 512),
     # Значки ресурсов-блоков — те же картинки, что и у самих блоков: предмет в ячейке
     # выглядит ровно тем, что игрок только что выбил.
