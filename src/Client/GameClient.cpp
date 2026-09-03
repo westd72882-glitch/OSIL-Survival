@@ -476,8 +476,10 @@ void GameClient::initWorld(){
     // Стартовый набор: пара блоков, чтобы было чем строить с первой минуты.
     // Стартовый набор: топор и факел. Топор берётся в руки выбором в поясе — с ним
     // добыча идёт вдвое быстрее.
-    inventory_.add(ItemType::Axe, 1);
-    inventory_.add(ItemType::Torch, 1);
+    // Стартовые топор и факел кладём ПРЯМО в пояс: добыча теперь уходит в рюкзак, и
+    // через общий add они бы тоже улетели туда, оставив пояс пустым.
+    inventory_.slot(0) = ItemStack{ ItemType::Axe, 1 };
+    inventory_.slot(1) = ItemStack{ ItemType::Torch, 1 };
     if(debugKit_){
         // Отладочный набор: с ним сразу видно режим стройки и печь, не набивая ресурсы.
         inventory_.add(ItemType::BuildPlan, 1);
@@ -595,7 +597,7 @@ bool GameClient::handleHotbarTouch(float x, float y){
 
 // Геометрия крафта: сетка квадратных плиток слева, описание справа. Одна функция и для
 // отрисовки, и для попаданий — иначе они разъезжаются при первом же правке.
-const int CRAFT_COLS = 4;
+const int CRAFT_COLS = 3;
 
 void GameClient::craftGridGeometry(float& x, float& y, float& tile, float& gap) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
@@ -624,11 +626,11 @@ void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
     // Кнопка стоит ВНУТРИ панели описания, в её правом нижнем углу: снаружи она
     // налезала на пояс быстрого доступа.
     float dx = gx + gridW + 28.0f * s;
-    float dw = (float)SCR_W - dx - 24.0f * s;
+    float dw = fminf((float)SCR_W - dx - 40.0f * s, 520.0f * s);
     w = fminf(dw * 0.45f, 300.0f * s);
     h = 54.0f * s;
     x = dx + dw - w - 16.0f * s;
-    y = gy + tile * 2.6f - h - 16.0f * s;
+    y = gy + tile * 3.0f - h - 16.0f * s;
 }
 
 // Панель состояния слева сверху: она же кнопка меню паузы. Геометрия совпадает с
@@ -665,7 +667,8 @@ void GameClient::renderPause(){
     for(int i = 0; i < PAUSE_ROW_COUNT; ++i){
         float x, y, w, h;
         pauseRowRect(i, x, y, w, h);
-        drawText(x, y + h * 0.22f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 0.94f);
+        // Все строки одинаково светлые: «Настройки» раньше терялись на фоне.
+        drawText(x, y + h * 0.22f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 0.96f);
     }
 }
 
@@ -858,7 +861,7 @@ bool GameClient::handleOverlayTouch(float x, float y){
         float closeSize = 54.0f * s;
         float gx, gy, tile, gap;
         craftGridGeometry(gx, gy, tile, gap);
-        float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = 18.0f * s;
+        float closeX = (float)SCR_W - closeSize - 46.0f * s, closeY = 64.0f * s;
         if(x >= closeX && x <= closeX + closeSize && y >= closeY && y <= closeY + closeSize){
             overlay_ = Overlay::None;
             return true;
@@ -1281,7 +1284,9 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
         case SDL_FINGERDOWN: {
             float x = e.tfinger.x * (float)SCR_W, y = e.tfinger.y * (float)SCR_H;
             if(x >= closeX && x <= closeX + closeW && y >= closeY && y <= closeY + closeH){
-                overlay_ = Overlay::None;
+                // Карту открывают из паузы, поэтому крестик возвращает туда же, а не
+                // выкидывает сразу в игру.
+                overlay_ = Overlay::Pause;
                 mapFingers_.clear();
                 return true;
             }
@@ -1346,7 +1351,7 @@ bool GameClient::handleMapEvent(const SDL_Event& e){
             if(e.button.which == SDL_TOUCH_MOUSEID) return true;
             float x = (float)e.button.x, y = (float)e.button.y;
             if(x >= closeX && x <= closeX + closeW && y >= closeY && y <= closeY + closeH){
-                overlay_ = Overlay::None;
+                overlay_ = Overlay::Pause;
                 return true;
             }
             mapDragging_ = true;
@@ -2081,7 +2086,8 @@ void GameClient::renderOverlay(){
         drawText(gx, gy - 46.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
 
         float closeSize = 54.0f * s;
-        float closeX = gx + w - closeSize, closeY = gy - 52.0f * s;
+        // Крестик ниже и правее: он висел выше заголовка и упирался в край сетки.
+        float closeX = gx + w + 16.0f * s, closeY = gy - 30.0f * s;
         if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
         else {
             drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
@@ -2128,8 +2134,9 @@ void GameClient::renderCraft(){
     drawText(gx, gy - 46.0f * s, 30.0f * s, "КРАФТ", 1, 1, 1, 0.96f);
 
     // Крестик — В САМОМ ВЕРХУ экрана справа, а не у сетки: так он не спорит с панелью.
+    // Крестик ниже и левее: наверху справа стоит счётчик кадров, и они перекрывались.
     float closeSize = 54.0f * s;
-    float closeX = (float)SCR_W - closeSize - 24.0f * s, closeY = 18.0f * s;
+    float closeX = (float)SCR_W - closeSize - 46.0f * s, closeY = 64.0f * s;
     if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
     else {
         drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
@@ -2184,10 +2191,12 @@ void GameClient::renderCraft(){
     // ---- Описание выбранного рецепта справа от сетки.
     const Recipe& r = kRecipes[craftSelected_];
     const ItemDef& res = itemDef(r.result);
+    // Панель описания не тянется до края экрана: вытянутая на всю ширину полоса
+    // выглядела шапкой сайта, а не окном крафта.
     float dx = gx + gridW + 28.0f * s;
-    float dw = (float)SCR_W - dx - 24.0f * s;
+    float dw = fminf((float)SCR_W - dx - 40.0f * s, 520.0f * s);
     float dy = gy;
-    drawUIRect(dx, dy, dw, tile * 2.6f, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
+    drawUIRect(dx, dy, dw, tile * 3.0f, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
 
     // Заголовок описания: название слева, крупный значок предмета справа.
     snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);

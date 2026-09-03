@@ -30,16 +30,19 @@ struct Settings {
     // Раскладка сенсорного управления: доли экрана (0..1). -1 по Y — «не задано,
     // использовать стандартную позицию».
     int   layoutVersion = 0;
-    float stickNormX = 0.15f,  stickNormY = -1.0f;   // джойстик движения
-    float jumpNormX  = 0.90f,  jumpNormY  = -1.0f;   // прыжок
-    float sprintNormX= 0.76f,  sprintNormY= -1.0f;   // бег
-    float crouchNormX= 0.62f,  crouchNormY= -1.0f;   // присед
-    float actionNormX= 0.90f,  actionNormY= -1.0f;   // действие (E): подобрать, открыть
-    float attackNormX= 0.76f,  attackNormY= -1.0f;   // удар / добыча
-    float placeNormX = 0.62f,  placeNormY = -1.0f;   // поставить блок
-    float invNormX   = 0.94f,  invNormY   = -1.0f;   // инвентарь
-    float craftNormX = 0.86f,  craftNormY = -1.0f;   // крафт
-    float mapNormX   = 0.78f,  mapNormY   = -1.0f;   // карта
+    // Раскладка по умолчанию снята с телефона игрока и округлена до ровных долей:
+    // правый столбик выстроен по одной вертикали 0.930 с шагом 0.180 по высоте, окна
+    // вверху на одной строке 0.088.
+    float stickNormX = 0.15f,  stickNormY = -1.0f;   // джойстик движения (появляется под пальцем)
+    float actionNormX= 0.930f, actionNormY= 0.340f;  // действие (E): подобрать, открыть
+    float attackNormX= 0.930f, attackNormY= 0.520f;  // удар / добыча
+    float jumpNormX  = 0.930f, jumpNormY  = 0.700f;  // прыжок
+    float crouchNormX= 0.930f, crouchNormY= 0.880f;  // присед
+    float sprintNormX= 0.853f, sprintNormY= 0.783f;  // бег
+    float placeNormX = 0.62f,  placeNormY = -1.0f;   // поставить блок (кнопки на экране нет)
+    float invNormX   = 0.886f, invNormY   = 0.088f;  // инвентарь
+    float craftNormX = 0.806f, craftNormY = 0.088f;  // крафт
+    float mapNormX   = 0.78f,  mapNormY   = -1.0f;   // карта (кнопки на экране нет, только пауза)
     float optionsNormX = 0.70f, optionsNormY = -1.0f; // настройки
 };
 extern Settings settings;

@@ -86,8 +86,9 @@ void TouchControls::layout(int screenW, int screenH){
     place(inventory_, settings.invNormX, settings.invNormY, r, "ИНВ", false);
     craft_.cx = (float)screenW - r * 3.0f - pad;   craft_.cy = topY;
     place(craft_, settings.craftNormX, settings.craftNormY, r, "КРАФТ", false);
-    map_.cx = (float)screenW - r * 5.0f - pad;     map_.cy = topY;
-    place(map_, settings.mapNormX, settings.mapNormY, r, "КАРТА", false);
+    // Кнопки карты на экране нет: карта открывается из меню паузы. Гасим нулевым
+    // радиусом, из списков не выпиливаем.
+    map_.cx = -1000.0f; map_.cy = -1000.0f; map_.radius = 0.0f; map_.label = "";
 
     // Настройки из игры убраны: в них заходят только из меню паузы.
 

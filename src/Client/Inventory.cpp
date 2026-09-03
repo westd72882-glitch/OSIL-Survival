@@ -70,12 +70,19 @@ int Inventory::add(ItemType type, int count){
         slots_[i].count += put;
         count -= put;
     }
-    for(int i = 0; i < SIZE && count > 0; ++i){
+    // Новый стак заводится В РЮКЗАКЕ, а не в поясе: пояс — это то, что игрок положил
+    // туда сам, и добыча не должна вытеснять оттуда инструмент. В пояс кладём, только
+    // если рюкзак забит целиком.
+    for(int pass = 0; pass < 2 && count > 0; ++pass){
+    int from = (pass == 0) ? HOTBAR : 0;
+    int to   = (pass == 0) ? SIZE   : HOTBAR;
+    for(int i = from; i < to && count > 0; ++i){
         if(!slots_[i].empty()) continue;
         int put = count < def.maxStack ? count : def.maxStack;
         slots_[i].type = type;
         slots_[i].count = put;
         count -= put;
+    }
     }
     return count; // не влезло
 }
