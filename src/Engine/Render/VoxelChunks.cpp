@@ -196,8 +196,11 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                     const FaceDef& face = kFaces[f];
                     Block neighbour = world_->blockAt(wx + face.dx, y + face.dy, wz + face.dz);
                     if(isWater){
-                        // У воды рисуем только грани, граничащие с воздухом: соседняя
-                        // вода не должна разделяться внутренними плоскостями.
+                        // У воды рисуем только ВЕРХНИЕ грани, граничащие с воздухом.
+                        // Боковые давали по всей глади тёмные крапинки: у каждой
+                        // ступеньки дна торчал бок водяного блока, опущенного на 0.12 м,
+                        // и эти полоски читались как мусор на воде.
+                        if(face.dy <= 0) continue;
                         if(neighbour != Block::Air) continue;
                     } else {
                         if(!blockIsTransparent(neighbour)) continue;

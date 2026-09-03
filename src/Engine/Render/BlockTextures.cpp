@@ -41,7 +41,7 @@ const char* kLayerFiles[LAYER_COUNT] = {
     nullptr,            // заснеженная листва — та же картинка, обесцвеченная
     "block_road.png",
     nullptr,            // бочка рисуется на месте: ржавый бок с обручами
-    nullptr,            // вода рисуется процедурно, файла для неё нет
+    "block_water.png",
 };
 
 GLuint g_array = 0;
@@ -149,8 +149,7 @@ bool blockTexturesInit(){
     std::vector<uint8_t> buffer;
     std::vector<uint8_t> groundPixels, leavesPixels;
     for(int i = 0; i < LAYER_COUNT; ++i){
-        if(i == LAYER_WATER){
-            makeWaterLayer(buffer);
+        if(false){
         } else if(i == LAYER_SNOW){
             makeSnowLayer(groundPixels, buffer, 0.34f);
         } else if(i == LAYER_BARREL){
@@ -183,7 +182,7 @@ bool blockTexturesInit(){
     glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 
     g_ready = (loaded > 0);
-    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 4);
+    SDL_Log("Текстуры блоков: загружено %d слоёв из %d", loaded, LAYER_COUNT - 3);
     return g_ready;
 }
 
@@ -228,7 +227,7 @@ void blockTextureTint(Block b, float& r, float& g, float& bl){
         case Block::Leaves:     r = 0.85f; g = 1.05f; bl = 0.75f; break;
         // Заснеженной листве свой слой уже обесцвечен — фильтр почти нейтральный.
         case Block::LeavesSnow: r = 1.00f; g = 1.01f; bl = 1.04f; break;
-        case Block::Water:      r = 0.85f; g = 0.95f; bl = 1.05f; break;
+        case Block::Water:      r = 1.00f; g = 1.00f; bl = 1.00f; break;
         case Block::StoneBrick: r = 1.05f; g = 1.05f; bl = 1.02f; break;
         // Печь темнее камня, ящик желтее досок: их надо отличать издалека.
         case Block::Furnace:    r = 0.72f; g = 0.70f; bl = 0.68f; break;

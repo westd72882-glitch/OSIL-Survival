@@ -89,6 +89,7 @@ JOBS = {
     'block_ground.png':  ('T_Ground_Sand_02_A_Sm.png', 256),   # песок: он же зима и земля под фильтром
     'block_stone.png':   ('tex_stone.png', 256),
     'block_road.png':    ('T_field_road_01_A_T.png', 256),
+    'block_water.png':   ('water.png', 256),
     'block_wood.png':    ('Trunk.png', 256),
     'block_sulfur.png':  ('tex_sulfur_ore.png', 256),
     'block_metal.png':   ('tex_iron_ore.png', 256),
@@ -115,9 +116,15 @@ JOBS = {
     'item_sulfur.png':   ('Sulfur Ore.png', 128),
     'item_scrap.png':    ('Scrap.png', 128),
     'item_axe.png':      ('Stone Hatchet_0.png', 128),
+    'item_furnace.png':  ('Furnace_0.png', 128),
+    'item_sulfur_dust.png': ('Sulfur.png', 128),
+    'item_metal_frag.png':  ('Metal Fragment.png', 128),
+    'item_cloth.png':    ('Cloth.png', 128),
+    'item_powder.png':   ('Gun Powder.png', 128),
+    'ui_blood.png':      ('Blood Screen.png', 512),
     # Значки ресурсов-блоков — те же картинки, что и у самих блоков: предмет в ячейке
     # выглядит ровно тем, что игрок только что выбил.
-    'item_iron.png':     ('tex_iron_ore.png', 128),
+    'item_iron.png':     ('Metal Ore_0.png', 128),
     'item_stone.png':    ('tex_stone.png', 128),
     'item_wood.png':     ('Wooden Log.png', 128),
     'item_leaves.png':   ('Grass_02.png', 128),

@@ -24,6 +24,7 @@ const ItemDef kItems[(int)ItemType::COUNT] = {
     { "axe",         "Каменный топор",Block::Air,           1,   0,  0,  0.70f,0.66f,0.60f },
     { "torch",       "Факел",         Block::Air,          20,   0,  0,  0.95f,0.72f,0.32f },
     { "furnace",     "Печь",          Block::Furnace,       5,   0,  0,  0.52f,0.50f,0.48f },
+    { "gunpowder",   "Порох",         Block::Air,         100,   0,  0,  0.30f,0.29f,0.26f },
 };
 } // namespace
 

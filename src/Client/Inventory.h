@@ -27,6 +27,7 @@ enum class ItemType : uint8_t {
     Axe,        // каменный топорик — им добывают
     Torch,      // факел
     Furnace,    // печь: ставится на землю и плавит руду
+    Gunpowder,  // порох из серы
     COUNT
 };
 

@@ -26,7 +26,7 @@
 #include <vector>
 
 // Какое окно открыто поверх игры.
-enum class Overlay { None, Inventory, Craft, Map, Settings, Pause };
+enum class Overlay { None, Inventory, Craft, Map, Settings, Pause, Furnace };
 
 // Состояние клиента. Главное меню — не «окно поверх игры», а отдельный режим: мир в нём
 // уже построен и медленно вращается фоном, но игрок не управляется и время не идёт.
@@ -153,6 +153,10 @@ private:
     void itemMenuRect(float& x, float& y, float& w, float& h) const;
     void itemMenuButtonRect(int i, float& x, float& y, float& w, float& h) const;
     void renderItemMenu();
+    // Окно печи: плавка руды за дрова.
+    void  renderFurnace();
+    bool  handleFurnaceTouch(float x, float y);
+    void  furnaceButtonRect(int i, float& x, float& y, float& w, float& h) const;
     bool handleItemMenuTouch(float x, float y);
     float inventoryBeltGap() const;
     void inventorySlotPos(int i, float& sx, float& sy) const;
@@ -163,6 +167,7 @@ private:
     GLuint texDig_ = 0, texPlace_ = 0, texInteract_ = 0, texInventory_ = 0;
     GLuint texCraft_ = 0, texMap_ = 0, texSettings_ = 0, texClose_ = 0;
     GLuint texJump_ = 0, texRun_ = 0, texCrouch_ = 0;
+    GLuint texBlood_ = 0;
     // Значок на каждый вид предмета: индекс — ItemType. Чему картинки нет, тот
     // рисуется цветом.
     GLuint texItems_[(int)ItemType::COUNT] = {};

@@ -59,6 +59,10 @@ public:
     bool  headUnderwater() const { return headUnderwater_; }
     float bodyTemp() const { return bodyTemp_; }
     bool isDead() const { return health_ <= 0.0f; }
+    // Сколько секунд назад игрок получил урон — по этому HUD рисует индикатор.
+    float damageAge() const { return damageAge_; }
+    // Сколько секунд осталось до автоматического возрождения.
+    float respawnLeft() const { return respawnLeft_; }
     void setAmbientRadiation(float radPerSec){ ambientRadiation_ = radPerSec; }
 
     // ---- Взаимодействие с блоками
@@ -107,11 +111,18 @@ private:
 public:
     // Объект выработан: клиент по этому сигналу сыпет частицы на месте.
     std::function<void(Block block, int x, int y, int z)> onNodeBroken;
+    // Отсчёт до возрождения истёк — клиент поднимает игрока на новом месте.
+    std::function<void()> onRespawn;
+    // Игрок нажал «взаимодействие» на печи — клиент открывает её окно.
+    std::function<void()> onOpenFurnace;
 private:
     void  hitTarget(Block block, int x, int y, int z);
     void  smeltInFurnace();
     void  lootCrate(int x, int y, int z);
     float actionCooldown_ = 0.0f;
+    float damageAge_ = 99.0f;      // время с последнего урона
+    float respawnLeft_ = 0.0f;     // отсчёт до возрождения после смерти
+    float lastHealth_ = 100.0f;
 
     std::string message_;
     float messageAge_ = 999.0f;

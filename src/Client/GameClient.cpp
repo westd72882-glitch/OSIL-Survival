@@ -42,7 +42,9 @@ const Recipe kRecipes[] = {
     { ItemType::Axe,   1, ItemType::Wood, 10, ItemType::Stone, 6,
       "Каменный топор. С ним добыча идёт вдвое быстрее, чем голыми руками." },
     { ItemType::Furnace, 1, ItemType::Stone, 50, ItemType::None, 0,
-      "Печь. Поставьте её на землю и плавьте серную руду, топя дровами." },
+      "Печь. Поставьте её на землю и плавьте в ней руду, топя дровами." },
+    { ItemType::Gunpowder, 5, ItemType::Sulfur, 3, ItemType::Wood, 2,
+      "Порох из серы и угля. Пойдёт на патроны и взрывчатку." },
 };
 const int kRecipeCount = (int)(sizeof(kRecipes)/sizeof(kRecipes[0]));
 
@@ -452,6 +454,12 @@ void GameClient::initWorld(){
     voxels_->onBlockChanged = [this](int x, int y, int z){ chunks_.markDirty(x, y, z); };
     player_.reset(new Survivor(*voxels_, *env_, inventory_));
     player_->onNodeBroken = [this](Block b, int x, int y, int z){ spawnBreakParticles(b, x, y, z); };
+    // Отсчёт вышел — поднимаем игрока на новом месте сами, без нажатия кнопки.
+    player_->onOpenFurnace = [this](){ overlay_ = Overlay::Furnace; };
+    player_->onRespawn = [this](){
+        Rng rr(splitMix64(world_->config().seed ^ 0x1234ULL ^ (uint64_t)SDL_GetTicks()));
+        player_->spawn(world_->findSpawnPoint(rr));
+    };
 
     Rng rng(splitMix64(cfg.seed ^ 0x5350ULL));
     Vec3 spawn = world_->findSpawnPoint(rng);
@@ -834,6 +842,7 @@ void GameClient::renderSettings(){
 
 bool GameClient::handleOverlayTouch(float x, float y){
     if(overlay_ == Overlay::Pause) return handlePauseTouch(x, y);
+    if(overlay_ == Overlay::Furnace) return handleFurnaceTouch(x, y);
     if(overlay_ == Overlay::Settings) return handleSettingsTouch(x, y);
 
     if(overlay_ == Overlay::Craft){
@@ -971,6 +980,73 @@ bool GameClient::handleItemMenuTouch(float x, float y){
     float mx, my, mw, mh;
     itemMenuRect(mx, my, mw, mh);
     if(x < mx || x > mx + mw || y < my || y > my + mh) itemMenuSlot_ = -1;
+    return true;
+}
+
+// ---- Окно печи. Плавка идёт по нажатию: кладём руду и дрова из инвентаря, получаем
+// слиток. Очереди и таймеров пока нет — они появятся вместе с верстаками.
+void GameClient::furnaceButtonRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float pw = clampf((float)SCR_W * 0.42f, 360.0f, 620.0f);
+    float ph = 300.0f * s;
+    float px = ((float)SCR_W - pw) * 0.5f, py = ((float)SCR_H - ph) * 0.5f;
+    w = pw - 40.0f * s;
+    h = 46.0f * s;
+    x = px + 20.0f * s;
+    y = py + ph - (h + 16.0f * s) * (float)(3 - i);
+}
+
+void GameClient::renderFurnace(){
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float pw = clampf((float)SCR_W * 0.42f, 360.0f, 620.0f);
+    float ph = 300.0f * s;
+    float px = ((float)SCR_W - pw) * 0.5f, py = ((float)SCR_H - ph) * 0.5f;
+
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.04f, 0.04f, 0.05f, 0.45f, false);
+    drawUIRect(px, py, pw, ph, 0, 0.10f, 0.10f, 0.11f, 0.92f, false);
+    uiThinFrame(px, py, pw, ph, UIColor{1.0f, 1.0f, 1.0f}, 0.35f);
+    drawText(px + 20.0f * s, py + 14.0f * s, 26.0f * s, "ПЕЧЬ", 1, 1, 1, 0.97f);
+
+    // Что есть на руках: без этого непонятно, почему кнопка не работает.
+    char buf[96];
+    snprintf(buf, sizeof(buf), "Дрова: %d", inventory_.countOf(ItemType::Wood));
+    drawText(px + 20.0f * s, py + 54.0f * s, 19.0f * s, buf, 1, 0.85f, 0.55f, 0.9f);
+    snprintf(buf, sizeof(buf), "Серная руда: %d      Железная руда: %d",
+             inventory_.countOf(ItemType::OreSulfur), inventory_.countOf(ItemType::OreMetal));
+    drawText(px + 20.0f * s, py + 82.0f * s, 19.0f * s, buf, 1, 1, 1, 0.85f);
+
+    const char* labels[3] = { "ПЛАВИТЬ СЕРУ  (2 руды + 1 дрова)",
+                              "ПЛАВИТЬ ЖЕЛЕЗО  (2 руды + 1 дрова)",
+                              "ЗАКРЫТЬ" };
+    bool wood = inventory_.countOf(ItemType::Wood) >= 1;
+    bool can[3] = { wood && inventory_.countOf(ItemType::OreSulfur) >= 2,
+                    wood && inventory_.countOf(ItemType::OreMetal) >= 2,
+                    true };
+    for(int i = 0; i < 3; ++i){
+        float bx, by, bw, bh;
+        furnaceButtonRect(i, bx, by, bw, bh);
+        drawUIRect(bx, by, bw, bh, 0, 0.16f, 0.16f, 0.17f, can[i] ? 0.92f : 0.5f, false);
+        uiThinFrame(bx, by, bw, bh, UIColor{1.0f, 1.0f, 1.0f}, can[i] ? 0.3f : 0.12f);
+        drawText(bx + 14.0f * s, by + bh * 0.26f, 19.0f * s, labels[i],
+                 1, 1, 1, can[i] ? 0.95f : 0.4f);
+    }
+}
+
+bool GameClient::handleFurnaceTouch(float x, float y){
+    for(int i = 0; i < 3; ++i){
+        float bx, by, bw, bh;
+        furnaceButtonRect(i, bx, by, bw, bh);
+        if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
+        if(i == 2){ overlay_ = Overlay::None; return true; }
+        ItemType ore = (i == 0) ? ItemType::OreSulfur : ItemType::OreMetal;
+        ItemType out = (i == 0) ? ItemType::Sulfur    : ItemType::MetalFrag;
+        if(inventory_.countOf(ore) >= 2 && inventory_.countOf(ItemType::Wood) >= 1){
+            inventory_.remove(ore, 2);
+            inventory_.remove(ItemType::Wood, 1);
+            inventory_.add(out, 1);
+        }
+        return true;
+    }
     return true;
 }
 
@@ -1250,6 +1326,13 @@ void GameClient::handleEvents(){
                 if(tx >= px + 16.0f * s && tx <= px + 166.0f * s &&
                    ty >= py + 48.0f * s && ty <= py + 80.0f * s){
                     controls_.setEditMode(false);
+                    continue;
+                }
+                if(tx >= px + 186.0f * s && tx <= px + 446.0f * s &&
+                   ty >= py + 48.0f * s && ty <= py + 80.0f * s){
+                    std::string text = controls_.layoutAsText();
+                    SDL_SetClipboardText(text.c_str());
+                    SDL_Log("Раскладка кнопок: %s", text.c_str());
                     continue;
                 }
             }
@@ -1589,7 +1672,10 @@ void GameClient::drawSlot(float x, float y, float size, const ItemStack& stack, 
 // Пояс рисуется отдельным проходом ПОСЛЕ окон: он виден всегда, в том числе поверх
 // инвентаря, и не должен уходить под их затемнение.
 void GameClient::renderHotbar(){
-    if(state_ != GameState::Playing || overlay_ == Overlay::Pause) return;
+    // На карте и в паузе пояса нет: карта занимает весь экран, и полоса предметов
+    // поверх неё только мешает.
+    if(state_ != GameState::Playing) return;
+    if(overlay_ == Overlay::Pause || overlay_ == Overlay::Map) return;
     glDisable(GL_DEPTH_TEST);
     Mat4 uiProjM = mat4Ortho(0, (float)SCR_W, (float)SCR_H, 0, -1, 1);
     glUseProgram(uiProg);
@@ -1642,9 +1728,8 @@ void GameClient::renderHud(){
     }
 
     Vec3 p = player_->position();
-    snprintf(buf, sizeof(buf), "%s | %s | %s", env_->timeString(), weatherName(env_->weather()),
-             biomeName(world_->biomeAt(p.x, p.z)));
-    drawText(pad, y + 2.0f * s, 19.0f * s, buf, UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.9f);
+    // Строки «День 1, 08:27 | Ясно | Равнина» больше нет: время видно по небу, погоду —
+    // по погоде, а биом — по тому, что вокруг.
 
     // ---- Счётчик кадров в правом верхнем углу. Вертикальная синхронизация выключена,
     // поэтому число показывает НАСТОЯЩУЮ скорость отрисовки, а не частоту экрана.
@@ -1681,11 +1766,24 @@ void GameClient::renderHud(){
                  UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, alpha);
     }
 
+    // ---- Индикатор урона: кровь по краям экрана, гаснет за полторы секунды.
+    float dmgAge = player_->damageAge();
+    if(dmgAge < 1.5f && !player_->isDead()){
+        float a = clampf(1.0f - dmgAge / 1.5f, 0.0f, 1.0f) * 0.75f;
+        if(texBlood_) drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, texBlood_, 1, 1, 1, a, true);
+        else          drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.55f, 0.03f, 0.03f, a * 0.5f, false);
+    }
+
+    // ---- Экран смерти: та же кровь во всю силу и отсчёт до возрождения.
     if(player_->isDead()){
-        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.35f, 0.02f, 0.02f, 0.55f, false);
-        drawText(cx - 120.0f * s, cy - 40.0f * s, 44.0f * s, "ВЫ ПОГИБЛИ", 0.9f, 0.35f, 0.3f, 1.0f);
-        drawText(cx - 190.0f * s, cy + 20.0f * s, 24.0f * s,
-                 "Нажмите E, чтобы возродиться", UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 1.0f);
+        if(texBlood_) drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, texBlood_, 1, 1, 1, 0.95f, true);
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.22f, 0.01f, 0.01f, 0.45f, false);
+        drawText(cx - 130.0f * s, cy - 46.0f * s, 46.0f * s, "ВЫ ПОГИБЛИ", 0.9f, 0.25f, 0.22f, 1.0f);
+        char dbuf[64];
+        snprintf(dbuf, sizeof(dbuf), "Возрождение через %d с",
+                 (int)ceilf(fmaxf(player_->respawnLeft(), 0.0f)));
+        float tw = 22.0f * s * 0.5f * (float)strlen(dbuf);
+        drawText(cx - tw * 0.5f, cy + 24.0f * s, 22.0f * s, dbuf, 1, 1, 1, 0.95f);
     }
 
     if(settings.showDebugInfo){
@@ -1790,10 +1888,17 @@ void GameClient::renderOverlay(){
                    UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.9f, false);
         drawText(px + 52.0f * s, py + 54.0f * s, 22.0f * s, "ГОТОВО",
                  UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
+        // Вторая кнопка: кладёт координаты всех кнопок в буфер обмена одной строкой —
+        // её можно вставить в переписку и попросить сделать такую раскладку стандартной.
+        drawUIRect(px + 186.0f * s, py + 48.0f * s, 260.0f * s, 32.0f * s, 0,
+                   UI_BG_SLOT.r, UI_BG_SLOT.g, UI_BG_SLOT.b, 0.9f, false);
+        drawText(px + 200.0f * s, py + 54.0f * s, 20.0f * s, "СКОПИРОВАТЬ КООРДИНАТЫ",
+                 UI_TEXT.r, UI_TEXT.g, UI_TEXT.b);
         return;
     }
     if(overlay_ == Overlay::None) return;
     if(overlay_ == Overlay::Pause){ renderPause(); return; }
+    if(overlay_ == Overlay::Furnace){ renderFurnace(); return; }
     if(overlay_ == Overlay::Settings){ renderSettings(); return; }
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
 
@@ -2127,7 +2232,10 @@ void GameClient::renderCompass(){
 
     // Ни рамки, ни подложки: полоса белая и полупрозрачная, чтобы не перекрывать вид.
     // Шкала едет, неподвижная палка по центру показывает, на какой курс смотрит игрок.
-    float heading = yaw_ * 180.0f / 3.14159265f;
+    // Знак минус обязателен: в мире рост yaw поворачивает игрока ВЛЕВО (взгляд
+    // -sin(yaw), -cos(yaw)), а курс по компасу растёт вправо. Без него шкала ехала в
+    // противоположную сторону, и метки на ней вставали зеркально.
+    float heading = -yaw_ * 180.0f / 3.14159265f;
     heading = fmodf(heading, 360.0f);
     if(heading < 0.0f) heading += 360.0f;
 
@@ -2473,6 +2581,7 @@ void GameClient::loadInterfaceTextures(){
         { "ui_joystick_stick.png", &texJoyStick_ },
         { "ui_player_marker.png",  &texPlayerMarker_ },
         { "menu_bg.png",           &texMenuBg_ },
+        { "ui_blood.png",          &texBlood_ },
     };
     int loaded = 0;
     for(const auto& it : items){
@@ -2493,6 +2602,11 @@ void GameClient::loadInterfaceTextures(){
         { ItemType::Scrap,     "item_scrap.png" },
         { ItemType::Axe,       "item_axe.png" },
         { ItemType::Torch,     "item_torch.png" },
+        { ItemType::Furnace,   "item_furnace.png" },
+        { ItemType::Sulfur,    "item_sulfur_dust.png" },
+        { ItemType::MetalFrag, "item_metal_frag.png" },
+        { ItemType::Cloth,     "item_cloth.png" },
+        { ItemType::Gunpowder, "item_powder.png" },
         { ItemType::Leaves,    "item_leaves.png" },
         { ItemType::Planks,    "item_planks.png" },
         { ItemType::Dirt,      "item_dirt.png" },

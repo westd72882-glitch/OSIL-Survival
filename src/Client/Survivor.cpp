@@ -80,6 +80,23 @@ void Survivor::update(const SurvivorInput& in, float dt){
     updateMovement(in, dt);
     updateMetabolism(dt);
     updateInteraction(in, dt);
+
+    // Индикатор урона и отсчёт возрождения. Урон ловим по падению здоровья, а не по
+    // каждому источнику: источников много (падение, холод, утопление, голод), а
+    // мигнуть экраном надо одинаково.
+    damageAge_ += dt;
+    if(health_ < lastHealth_ - 0.01f) damageAge_ = 0.0f;
+    lastHealth_ = health_;
+    if(isDead()){
+        if(respawnLeft_ <= 0.0f) respawnLeft_ = 5.0f;
+        respawnLeft_ -= dt;
+        if(respawnLeft_ <= 0.0f){
+            respawnLeft_ = 0.0f;
+            if(onRespawn) onRespawn();
+        }
+    } else {
+        respawnLeft_ = 0.0f;
+    }
     messageAge_ += dt;
 }
 
@@ -333,7 +350,7 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
         if(target_.hit && target_.block == Block::Crate){
             lootCrate(target_.x, target_.y, target_.z);
         } else if(target_.hit && target_.block == Block::Furnace){
-            smeltInFurnace();
+            if(onOpenFurnace) onOpenFurnace();
         } else {
             const ItemStack& sel = inventory_.selectedStack();
             if(!sel.empty() && sel.type == ItemType::Furnace && target_.hit){

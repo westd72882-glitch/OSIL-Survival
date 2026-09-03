@@ -57,7 +57,9 @@ void TouchControls::layout(int screenW, int screenH){
 
     // Удар — самая частая кнопка, поэтому она крупная и стоит там, где палец лежит.
     attack_.cx = rightX;                 attack_.cy = (float)screenH * 0.50f;
-    place(attack_, settings.attackNormX, settings.attackNormY, rBig, "КОПАТЬ", false);
+    // Все кнопки одного размера — как у прыжка и приседа: разнокалиберные круги
+    // выглядели случайным набором.
+    place(attack_, settings.attackNormX, settings.attackNormY, r, "КОПАТЬ", false);
 
     // Кнопки «Ставить» больше нет: блоки в мир не ставятся, игрок только добывает.
     // Саму кнопку не выпиливаем из списков — просто гасим нулевым радиусом, и она
@@ -81,11 +83,11 @@ void TouchControls::layout(int screenW, int screenH){
     // Правый верх — окна (инвентарь, крафт, карта).
     float topY = r + pad * 2.0f;
     inventory_.cx = (float)screenW - r - pad;      inventory_.cy = topY;
-    place(inventory_, settings.invNormX, settings.invNormY, r * 0.85f, "ИНВ", false);
+    place(inventory_, settings.invNormX, settings.invNormY, r, "ИНВ", false);
     craft_.cx = (float)screenW - r * 3.0f - pad;   craft_.cy = topY;
-    place(craft_, settings.craftNormX, settings.craftNormY, r * 0.85f, "КРАФТ", false);
+    place(craft_, settings.craftNormX, settings.craftNormY, r, "КРАФТ", false);
     map_.cx = (float)screenW - r * 5.0f - pad;     map_.cy = topY;
-    place(map_, settings.mapNormX, settings.mapNormY, r * 0.85f, "КАРТА", false);
+    place(map_, settings.mapNormX, settings.mapNormY, r, "КАРТА", false);
 
     // Настройки из игры убраны: в них заходят только из меню паузы.
 
@@ -361,8 +363,8 @@ void TouchControls::saveLayout() const {
 
 TouchControls::StickView TouchControls::stickView() const {
     StickView v{};
-    // Кольцо джойстика видно всегда, даже когда палец его не держит.
-    v.active = true;
+    // Кольцо видно только пока палец на джойстике: пустое кольцо в углу закрывает вид.
+    v.active = stickActive_;
     v.baseX = stickBaseX_; v.baseY = stickBaseY_;
     v.curX = stickCurX_;   v.curY = stickCurY_;
     v.radius = stickRadius_;
@@ -377,5 +379,28 @@ std::vector<TouchControls::ButtonView> TouchControls::buttonViews() const {
         if(!b->visible) continue;
         out.push_back(ButtonView{ b->cx, b->cy, b->radius, b->label.c_str(), b->active });
     }
+    return out;
+}
+
+std::string TouchControls::layoutAsText() const {
+    // Доли экрана, а не пиксели: на другом телефоне пиксели ничего не значат, а доли
+    // переносятся как есть.
+    struct Row { const char* id; const TouchButton* b; };
+    const Row rows[] = {
+        { "attack", &attack_ }, { "action", &action_ }, { "jump", &jump_ },
+        { "crouch", &crouch_ }, { "sprint", &sprint_ }, { "inventory", &inventory_ },
+        { "craft", &craft_ },   { "map", &map_ },
+    };
+    char buf[128];
+    std::string out = "layout ";
+    for(const Row& r : rows){
+        if(r.b->radius <= 0.0f) continue;
+        snprintf(buf, sizeof(buf), "%s=%.4f,%.4f ", r.id,
+                 (double)(r.b->cx / (float)screenW_), (double)(r.b->cy / (float)screenH_));
+        out += buf;
+    }
+    snprintf(buf, sizeof(buf), "stick=%.4f,%.4f", (double)(stickHomeX_ / (float)screenW_),
+             (double)(stickHomeY_ / (float)screenH_));
+    out += buf;
     return out;
 }
