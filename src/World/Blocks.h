@@ -28,6 +28,12 @@ enum class Block : uint8_t {
     Barrel,     // бочка у дороги: ломается, даёт скрап
     Furnace,    // печь: игрок ставит её сам и плавит в ней руду
     Crate,      // ящик с лутом на заправке
+    Foundation, // фундамент постройки (деревянный)
+    BuildWall,  // стена постройки, тонкая поперёк X
+    BuildWallZ, // та же стена, но тонкая поперёк Z
+    BuildFloor, // потолок и пол этажа
+    BuildDoor,  // дверь, тонкая поперёк X
+    BuildDoorZ, // та же дверь, но тонкая поперёк Z
     COUNT
 };
 
@@ -49,6 +55,9 @@ const BlockInfo& blockInfo(Block b);
 // Что вообще можно добывать. Рельеф (трава, земля, песок, снег, дорога) не ломается:
 // у нас Rust, а не Minecraft — игрок собирает ресурсы, а не копает землю.
 bool isHarvestable(Block b);
+// Тонкие детали построек (стены и двери) занимают не весь куб, а пластину. Возвращает
+// 0 — блок обычный, 1 — тонкий поперёк X, 3 — тонкий поперёк Z.
+int thinAxisOf(Block b);
 inline bool blockIsSolid(Block b){ return blockInfo(b).solid; }
 inline bool blockIsTransparent(Block b){ return blockInfo(b).transparent; }
 inline bool blockIsAir(Block b){ return b == Block::Air; }

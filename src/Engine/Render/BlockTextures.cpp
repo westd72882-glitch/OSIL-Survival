@@ -25,6 +25,9 @@ enum Layer {
     LAYER_LEAVES_SNOW,
     LAYER_ROAD,
     LAYER_BARREL,
+    LAYER_FURNACE,
+    LAYER_CRATE,
+    LAYER_BUILD,
     LAYER_WATER,
     LAYER_COUNT
 };
@@ -41,6 +44,9 @@ const char* kLayerFiles[LAYER_COUNT] = {
     nullptr,            // заснеженная листва — та же картинка, обесцвеченная
     "block_road.png",
     nullptr,            // бочка рисуется на месте: ржавый бок с обручами
+    "block_furnace.png",
+    "block_crate.png",
+    "block_build.png",
     "block_water.png",
 };
 
@@ -208,8 +214,14 @@ int blockTextureLayer(Block b){
         case Block::Snow:       return LAYER_SNOW;
         case Block::Road:       return LAYER_ROAD;
         case Block::Barrel:     return LAYER_BARREL;
-        case Block::Furnace:    return LAYER_STONE;
-        case Block::Crate:      return LAYER_PLANKS;
+        case Block::Furnace:    return LAYER_FURNACE;
+        case Block::Crate:      return LAYER_CRATE;
+        case Block::Foundation:
+        case Block::BuildWall:
+        case Block::BuildWallZ:
+        case Block::BuildDoorZ:
+        case Block::BuildFloor:
+        case Block::BuildDoor:  return LAYER_BUILD;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
     }
 }
@@ -229,9 +241,10 @@ void blockTextureTint(Block b, float& r, float& g, float& bl){
         case Block::LeavesSnow: r = 1.00f; g = 1.01f; bl = 1.04f; break;
         case Block::Water:      r = 1.00f; g = 1.00f; bl = 1.00f; break;
         case Block::StoneBrick: r = 1.05f; g = 1.05f; bl = 1.02f; break;
-        // Печь темнее камня, ящик желтее досок: их надо отличать издалека.
-        case Block::Furnace:    r = 0.72f; g = 0.70f; bl = 0.68f; break;
-        case Block::Crate:      r = 1.15f; g = 0.98f; bl = 0.62f; break;
+        // У печи, ящика и построек свои картинки — фильтр нейтральный. Дверь чуть
+        // темнее стены, чтобы проём читался.
+        case Block::BuildDoor:
+        case Block::BuildDoorZ: r = 0.78f; g = 0.74f; bl = 0.70f; break;
         default:                r = 1.00f; g = 1.00f; bl = 1.00f; break;
     }
 }

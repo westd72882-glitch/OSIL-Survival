@@ -23,6 +23,12 @@ const BlockInfo kBlocks[(int)Block::COUNT] = {
     { "barrel",     "Бочка",       0.62f,0.34f,0.20f,    0.56f,0.30f,0.17f,    true,  false, 0.8f, Block::Air,       0 },
     { "furnace",    "Печь",        0.52f,0.50f,0.48f,    0.46f,0.44f,0.42f,    true,  false, 2.0f, Block::Air,       0 },
     { "crate",      "Ящик",        0.66f,0.52f,0.30f,    0.58f,0.45f,0.26f,    true,  false, 0.9f, Block::Air,       0 },
+    { "foundation", "Фундамент",   0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
+    { "build_wall", "Стена",       0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
+    { "build_wall_z","Стена",      0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
+    { "build_floor","Потолок",     0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
+    { "build_door", "Дверь",       0.58f,0.44f,0.27f,    0.52f,0.39f,0.24f,    true,  false, 4.0f, Block::Air,       0 },
+    { "build_door_z","Дверь",      0.58f,0.44f,0.27f,    0.52f,0.39f,0.24f,    true,  false, 4.0f, Block::Air,       0 },
 };
 } // namespace
 
@@ -44,5 +50,15 @@ bool isHarvestable(Block b){
             return true;
         default:
             return false;
+    }
+}
+
+int thinAxisOf(Block b){
+    switch(b){
+        case Block::BuildWall:
+        case Block::BuildDoor:  return 1;   // пластина поперёк X
+        case Block::BuildWallZ:
+        case Block::BuildDoorZ: return 3;   // пластина поперёк Z
+        default:                return 0;
     }
 }

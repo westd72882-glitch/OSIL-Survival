@@ -43,6 +43,8 @@ const Recipe kRecipes[] = {
       "Каменный топор. С ним добыча идёт вдвое быстрее, чем голыми руками." },
     { ItemType::Furnace, 1, ItemType::Stone, 50, ItemType::None, 0,
       "Печь. Поставьте её на землю и плавьте в ней руду, топя дровами." },
+    { ItemType::BuildPlan, 1, ItemType::Wood, 5, ItemType::None, 0,
+      "План постройки. Возьмите в руки — появятся кнопки стройки." },
     { ItemType::Gunpowder, 5, ItemType::Sulfur, 3, ItemType::Wood, 2,
       "Порох из серы и угля. Пойдёт на патроны и взрывчатку." },
 };
@@ -476,6 +478,11 @@ void GameClient::initWorld(){
     // добыча идёт вдвое быстрее.
     inventory_.add(ItemType::Axe, 1);
     inventory_.add(ItemType::Torch, 1);
+    if(debugKit_){
+        // Отладочный набор: с ним сразу видно режим стройки и печь, не набивая ресурсы.
+        inventory_.add(ItemType::BuildPlan, 1);
+        inventory_.add(ItemType::Wood, 100);
+    }
     if(startSlot_ >= 0) inventory_.select(startSlot_);
 
     buildMinimapTexture();
@@ -983,6 +990,164 @@ bool GameClient::handleItemMenuTouch(float x, float y){
     return true;
 }
 
+// ==================== РЕЖИМ СТРОЙКИ ====================
+// В руках план постройки — значит строим. Снизу лента с частями дома, справа кнопка
+// подтверждения; пока не подтвердил, на месте будущей детали стоит полупрозрачный
+// призрак, и его видно, куда он встанет.
+
+namespace {
+// Из чего и почём. Стоимость в дереве — как в ТЗ: фундамент 2x2 за 20 дерева.
+struct BuildDef { const char* name; Block block; int cost; };
+const BuildDef kBuildParts[] = {
+    { "ФУНДАМЕНТ", Block::Foundation, 20 },
+    { "СТЕНА",     Block::BuildWall,  10 },
+    { "ПОТОЛОК",   Block::BuildFloor, 10 },
+    { "ДВЕРЬ",     Block::BuildDoor,   8 },
+};
+const int kBuildPartCount = (int)(sizeof(kBuildParts)/sizeof(kBuildParts[0]));
+} // namespace
+
+bool GameClient::buildMode() const {
+    if(state_ != GameState::Playing || overlay_ != Overlay::None) return false;
+    const ItemStack& sel = inventory_.selectedStack();
+    return !sel.empty() && sel.type == ItemType::BuildPlan;
+}
+
+void GameClient::buildPartRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    w = h = 76.0f * s;
+    float gap = 10.0f * s;
+    float total = w * kBuildPartCount + gap * (kBuildPartCount - 1);
+    float hx, hy, slot, hgap;
+    hotbarGeometry(hx, hy, slot, hgap);
+    x = ((float)SCR_W - total) * 0.5f + i * (w + gap);
+    y = hy - h - 46.0f * s;      // над поясом, чтобы не спорить с ним
+}
+
+void GameClient::buildAcceptRect(float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    w = h = 96.0f * s;
+    x = (float)SCR_W * 0.5f + 210.0f * s;
+    float bx, by, bw, bh;
+    buildPartRect(0, bx, by, bw, bh);
+    y = by - h - 12.0f * s;
+}
+
+// Куда встанет деталь. Фундамент и потолок ложатся на клетку перед прицелом, стена и
+// дверь — тоже, но проверка «на что опирается» разная.
+bool GameClient::buildGhostTarget(int& bx, int& by, int& bz) const {
+    RayHit hit = voxels_->raycast(player_->eyePosition(), player_->lookDirection(), 6.0f);
+    if(!hit.hit) return false;
+    bx = hit.prevX; by = hit.prevY; bz = hit.prevZ;
+    return voxels_->blockAt(bx, by, bz) == Block::Air;
+}
+
+void GameClient::renderBuildGhost(const Mat4& view, const Mat4& proj){
+    int bx, by, bz;
+    if(!buildGhostTarget(bx, by, bz)) return;
+    const BuildDef& def = kBuildParts[(int)buildPart_];
+
+    // Призрак — тот же куб из частиц, только полупрозрачный и на месте будущей детали.
+    std::vector<VoxelVertex> verts;
+    float tr, tg, tb;
+    blockTextureTint(def.block, tr, tg, tb);
+    float layer = (float)blockTextureLayer(def.block);
+    bool wide = (def.block == Block::Foundation);      // фундамент 2x2
+    for(int dx = 0; dx < (wide ? 2 : 1); ++dx)
+        for(int dz = 0; dz < (wide ? 2 : 1); ++dz)
+            pushCube(verts, Vec3{ (float)(bx + dx) + 0.5f, (float)by + 0.5f, (float)(bz + dz) + 0.5f },
+                     0.5f, tr, tg, tb, layer);
+
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelFogDensityLoc, 0.0f);
+    glUniform1f(voxelAlphaLoc, 0.45f);
+    bindBlockTextures();
+    glEnable(GL_BLEND);
+    glDepthMask(GL_FALSE);
+    glBindVertexArray(partVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
+    size_t bytes = verts.size() * sizeof(VoxelVertex);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+    glDepthMask(GL_TRUE);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+}
+
+void GameClient::placeBuildPart(){
+    int bx, by, bz;
+    if(!buildGhostTarget(bx, by, bz)) return;
+    const BuildDef& def = kBuildParts[(int)buildPart_];
+    if(inventory_.countOf(ItemType::Wood) < def.cost) return;
+
+    // Стена и дверь встают поперёк взгляда: смотрим вдоль X — пластина поперёк X.
+    Block block = def.block;
+    Vec3 look = player_->lookDirection();
+    bool alongX = fabsf(look.x) > fabsf(look.z);
+    if(block == Block::BuildWall && !alongX) block = Block::BuildWallZ;
+    if(block == Block::BuildDoor && !alongX) block = Block::BuildDoorZ;
+
+    bool wide = (block == Block::Foundation);
+    for(int dx = 0; dx < (wide ? 2 : 1); ++dx)
+        for(int dz = 0; dz < (wide ? 2 : 1); ++dz)
+            voxels_->setBlock(bx + dx, by, bz + dz, block);
+    inventory_.remove(ItemType::Wood, def.cost);
+}
+
+void GameClient::renderBuildBar(){
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    GLuint icons[4] = { texCatFoundation_, texCatFloor_, texCatFloor_, texCatDoor_ };
+    for(int i = 0; i < kBuildPartCount; ++i){
+        float x, y, w, h;
+        buildPartRect(i, x, y, w, h);
+        bool on = (i == (int)buildPart_);
+        drawUIRect(x, y, w, h, 0, 0.137f, 0.141f, 0.153f, on ? 0.92f : 0.62f, false);
+        if(icons[i]){
+            float ip = w * 0.12f;
+            drawUIRect(x + ip, y + ip, w - ip * 2.0f, h - ip * 2.0f, icons[i], 1, 1, 1,
+                       on ? 1.0f : 0.6f, true);
+        }
+        // Цена деталью снизу: без неё непонятно, почему кнопка не срабатывает.
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d", kBuildParts[i].cost);
+        bool afford = inventory_.countOf(ItemType::Wood) >= kBuildParts[i].cost;
+        drawText(x + w * 0.5f - 8.0f * s, y + h - 20.0f * s, 16.0f * s, buf,
+                 afford ? 0.75f : 0.9f, afford ? 0.9f : 0.3f, 0.4f, 0.95f);
+        if(on) uiThinFrame(x, y, w, h, UI_ACCENT, 0.95f);
+        else   uiThinFrame(x, y, w, h, UI_LINE, 0.35f);
+    }
+
+    // Кнопка подтверждения: ставит деталь на место призрака.
+    float ax, ay, aw, ah;
+    buildAcceptRect(ax, ay, aw, ah);
+    GLuint icon = texBuildAccept_ ? texBuildAccept_ : texBuild_;
+    if(icon) drawUIRect(ax, ay, aw, ah, icon, 1, 1, 1, 0.92f, true);
+    else {
+        drawUICircle(ax + aw * 0.5f, ay + ah * 0.5f, aw * 0.5f, 0.2f, 0.4f, 0.2f, 0.7f);
+        drawText(ax + aw * 0.2f, ay + ah * 0.35f, 18.0f * s, "OK", 1, 1, 1, 0.95f);
+    }
+}
+
+bool GameClient::handleBuildTouch(float x, float y){
+    for(int i = 0; i < kBuildPartCount; ++i){
+        float bx, by, bw, bh;
+        buildPartRect(i, bx, by, bw, bh);
+        if(x >= bx && x <= bx + bw && y >= by && y <= by + bh){
+            buildPart_ = (BuildPart)i;
+            return true;
+        }
+    }
+    float ax, ay, aw, ah;
+    buildAcceptRect(ax, ay, aw, ah);
+    if(x >= ax && x <= ax + aw && y >= ay && y <= ay + ah){
+        placeBuildPart();
+        return true;
+    }
+    return false;
+}
+
 // ---- Окно печи. Плавка идёт по нажатию: кладём руду и дрова из инвентаря, получаем
 // слиток. Очереди и таймеров пока нет — они появятся вместе с верстаками.
 void GameClient::furnaceButtonRect(int i, float& x, float& y, float& w, float& h) const {
@@ -1364,6 +1529,7 @@ void GameClient::handleEvents(){
                 continue;
             }
         }
+        if(down && buildMode() && handleBuildTouch(tx, ty)) continue;
         if(down && handleHotbarTouch(tx, ty)) continue;
         controls_.handleEvent(e);
     }
@@ -1550,6 +1716,7 @@ void GameClient::renderScene(){
 
     // ---- Осколки и предмет в руке. Оба прохода до воды и БЕЗ очистки глубины.
     renderParticles(view, proj);
+    if(buildMode()) renderBuildGhost(view, proj);
     if(state_ == GameState::Playing)
         renderHeldItem(view, proj, eye, forward, 1.0f / 60.0f);
 
@@ -1797,6 +1964,8 @@ void GameClient::renderHud(){
     // Кнопки управления не нужны, пока открыто окно: они просвечивают сквозь него и
     // выглядят как часть окна.
     if(overlay_ == Overlay::None) renderTouchControls();
+    // Лента стройки живёт только с планом в руках.
+    if(buildMode()) renderBuildBar();
 }
 
 // ==================== СЕНСОРНОЕ УПРАВЛЕНИЕ: ИКОНКИ ====================
@@ -2420,6 +2589,7 @@ int GameClient::run(int argc, char** argv){
             startInGame_ = true;   // пропустить главное меню (отладка)
         } else if(a == "--debug"){
             settings.showDebugInfo = true;
+            debugKit_ = true;
         } else if(a == "--slot" && i + 1 < argc){
             startSlot_ = atoi(argv[++i]);   // отладка: что взять в руку на старте
         } else if(a == "--pos" && i + 1 < argc){
@@ -2582,6 +2752,11 @@ void GameClient::loadInterfaceTextures(){
         { "ui_player_marker.png",  &texPlayerMarker_ },
         { "menu_bg.png",           &texMenuBg_ },
         { "ui_blood.png",          &texBlood_ },
+        { "ui_build.png",          &texBuild_ },
+        { "ui_build_accept.png",   &texBuildAccept_ },
+        { "ui_cat_foundation.png", &texCatFoundation_ },
+        { "ui_cat_floor.png",      &texCatFloor_ },
+        { "ui_cat_door.png",       &texCatDoor_ },
     };
     int loaded = 0;
     for(const auto& it : items){
@@ -2596,7 +2771,6 @@ void GameClient::loadInterfaceTextures(){
     // нарисуется цветом предмета.
     struct { ItemType type; const char* file; } itemIcons[] = {
         { ItemType::Wood,      "item_wood.png" },
-        { ItemType::Stone,     "item_stone.png" },
         { ItemType::OreMetal,  "item_iron.png" },
         { ItemType::OreSulfur, "item_sulfur.png" },
         { ItemType::Scrap,     "item_scrap.png" },
@@ -2607,6 +2781,8 @@ void GameClient::loadInterfaceTextures(){
         { ItemType::MetalFrag, "item_metal_frag.png" },
         { ItemType::Cloth,     "item_cloth.png" },
         { ItemType::Gunpowder, "item_powder.png" },
+        { ItemType::BuildPlan, "item_plan.png" },
+        { ItemType::Stone,     "item_stone.png" },
         { ItemType::Leaves,    "item_leaves.png" },
         { ItemType::Planks,    "item_planks.png" },
         { ItemType::Dirt,      "item_dirt.png" },

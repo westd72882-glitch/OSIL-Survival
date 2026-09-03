@@ -155,6 +155,19 @@ private:
     void renderItemMenu();
     // Окно печи: плавка руды за дрова.
     void  renderFurnace();
+    // ---- Режим стройки. Включается сам, когда в руках план постройки: снизу
+    // появляется выбор части (фундамент, стена, потолок, дверь), а справа — кнопка
+    // подтверждения. Пока не подтвердил, стоит полупрозрачный призрак.
+    enum class BuildPart { Foundation = 0, Wall, Floor, Door, COUNT };
+    BuildPart buildPart_ = BuildPart::Foundation;
+    bool  buildMode() const;
+    void  renderBuildBar();
+    bool  handleBuildTouch(float x, float y);
+    void  buildPartRect(int i, float& x, float& y, float& w, float& h) const;
+    void  buildAcceptRect(float& x, float& y, float& w, float& h) const;
+    bool  buildGhostTarget(int& bx, int& by, int& bz) const;
+    void  renderBuildGhost(const Mat4& view, const Mat4& proj);
+    void  placeBuildPart();
     bool  handleFurnaceTouch(float x, float y);
     void  furnaceButtonRect(int i, float& x, float& y, float& w, float& h) const;
     bool handleItemMenuTouch(float x, float y);
@@ -168,6 +181,8 @@ private:
     GLuint texCraft_ = 0, texMap_ = 0, texSettings_ = 0, texClose_ = 0;
     GLuint texJump_ = 0, texRun_ = 0, texCrouch_ = 0;
     GLuint texBlood_ = 0;
+    GLuint texBuild_ = 0, texBuildAccept_ = 0;
+    GLuint texCatFoundation_ = 0, texCatFloor_ = 0, texCatDoor_ = 0;
     // Значок на каждый вид предмета: индекс — ItemType. Чему картинки нет, тот
     // рисуется цветом.
     GLuint texItems_[(int)ItemType::COUNT] = {};
@@ -179,6 +194,7 @@ private:
     GLuint heldVao_ = 0, heldVbo_ = 0;
     float  heldBobPhase_ = 0.0f;
 
+    bool debugKit_ = false;   // --debug: выдать план стройки и дерево
     int startSlot_ = -1;
     int forcedW_ = 0, forcedH_ = 0;   // --size: проверка раскладки под экран телефона
     float startX_ = -1.0f, startZ_ = -1.0f;   // --pos: старт в заданной точке карты

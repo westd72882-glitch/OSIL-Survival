@@ -28,6 +28,7 @@ enum class ItemType : uint8_t {
     Torch,      // факел
     Furnace,    // печь: ставится на землю и плавит руду
     Gunpowder,  // порох из серы
+    BuildPlan,  // план постройки: с ним в руках включается режим стройки
     COUNT
 };
 

@@ -191,11 +191,19 @@ void VoxelRenderer::buildChunk(int cx, int cz){
 
                 const BlockInfo& info = blockInfo(b);
                 bool isWater = (b == Block::Water);
+                // Стены и двери — пластины, а не кубы: сплющиваем их вдоль своей оси
+                // к середине клетки. Толщина 0.18 м — как доска в Rust.
+                int thin = thinAxisOf(b);
+                const float THIN = 0.18f;
 
                 for(int f = 0; f < 6; ++f){
                     const FaceDef& face = kFaces[f];
                     Block neighbour = world_->blockAt(wx + face.dx, y + face.dy, wz + face.dz);
-                    if(isWater){
+                    // У пластины грани вдоль её оси всегда видны: соседняя клетка
+                    // пустая, а сама пластина стоит в середине.
+                    if(thin && ((thin == 1 && face.dx != 0) || (thin == 3 && face.dz != 0))){
+                        // не отбрасываем
+                    } else if(isWater){
                         // У воды рисуем только ВЕРХНИЕ грани, граничащие с воздухом.
                         // Боковые давали по всей глади тёмные крапинки: у каждой
                         // ступеньки дна торчал бок водяного блока, опущенного на 0.12 м,
@@ -241,10 +249,14 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                         // дороги — колея шла не туда, куда едут.
                         if(b == Block::Road){ float t = u; u = v; v = t; }
 
+                        // Сжатие пластины к середине клетки по своей оси.
+                        float vx = face.verts[k][0], vz = face.verts[k][2];
+                        if(thin == 1) vx = 0.5f + (vx - 0.5f) * THIN;
+                        if(thin == 3) vz = 0.5f + (vz - 0.5f) * THIN;
                         quad[k] = VoxelVertex{
-                            (float)wx + face.verts[k][0],
+                            (float)wx + vx,
                             (float)y  + face.verts[k][1] - (isWater ? 0.12f : 0.0f), // вода чуть ниже края блока
-                            (float)wz + face.verts[k][2],
+                            (float)wz + vz,
                             face.nx, face.ny, face.nz,
                             r * k2, g * k2, bl * k2,
                             u, v, layer

@@ -90,6 +90,10 @@ JOBS = {
     'block_stone.png':   ('tex_stone.png', 256),
     'block_road.png':    ('T_field_road_01_A_T.png', 256),
     'block_water.png':   ('water.png', 256),
+    # Текстуры построек, печи и лутового ящика — из набора.
+    'block_build.png':   ('texture buildings.png', 256),
+    'block_furnace.png': ('texture furnace.png', 256),
+    'block_crate.png':   ('texture lutbox.png', 256),
     'block_wood.png':    ('Trunk.png', 256),
     'block_sulfur.png':  ('tex_sulfur_ore.png', 256),
     'block_metal.png':   ('tex_iron_ore.png', 256),
@@ -121,11 +125,19 @@ JOBS = {
     'item_metal_frag.png':  ('Metal Fragment.png', 128),
     'item_cloth.png':    ('Cloth.png', 128),
     'item_powder.png':   ('Gun Powder.png', 128),
+    'item_stone.png':    ('Stone.png', 128),
+    'item_plan.png':     ('Building Plan.png', 128),
+    'item_hammer.png':   ('Building Hammer.png', 128),
+    # Кнопки и значки режима стройки.
+    'ui_build.png':        ('build button.png', 128),
+    'ui_build_accept.png': ('accept- build button.png', 128),
+    'ui_cat_foundation.png': ('Foundation_Category.png', 128),
+    'ui_cat_floor.png':      ('Floor_Category.png', 128),
+    'ui_cat_door.png':       ('Door_Category.png', 128),
     'ui_blood.png':      ('Blood Screen.png', 512),
     # Значки ресурсов-блоков — те же картинки, что и у самих блоков: предмет в ячейке
     # выглядит ровно тем, что игрок только что выбил.
     'item_iron.png':     ('Metal Ore_0.png', 128),
-    'item_stone.png':    ('tex_stone.png', 128),
     'item_wood.png':     ('Wooden Log.png', 128),
     'item_leaves.png':   ('Grass_02.png', 128),
     'item_planks.png':   ('Wall_Wood_0.png', 128),
