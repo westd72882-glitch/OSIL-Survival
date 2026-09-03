@@ -24,11 +24,16 @@ const BlockInfo kBlocks[(int)Block::COUNT] = {
     { "furnace",    "Печь",        0.52f,0.50f,0.48f,    0.46f,0.44f,0.42f,    true,  false, 2.0f, Block::Air,       0 },
     { "crate",      "Ящик",        0.66f,0.52f,0.30f,    0.58f,0.45f,0.26f,    true,  false, 0.9f, Block::Air,       0 },
     { "foundation", "Фундамент",   0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
-    { "build_wall", "Стена",       0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
-    { "build_wall_z","Стена",      0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
-    { "build_floor","Потолок",     0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  false, 5.0f, Block::Air,       0 },
-    { "build_door", "Дверь",       0.58f,0.44f,0.27f,    0.52f,0.39f,0.24f,    true,  false, 4.0f, Block::Air,       0 },
-    { "build_door_z","Дверь",      0.58f,0.44f,0.27f,    0.52f,0.39f,0.24f,    true,  false, 4.0f, Block::Air,       0 },
+    // Тонкие детали помечены ПРОЗРАЧНЫМИ намеренно: мешер отбрасывает грань соседа,
+    // если рядом непрозрачный блок, а пластина клетку не заполняет — из-за этого пол
+    // под дверью и стеной пропадал, и в доме были дыры в пустоту.
+    { "build_wall", "Стена",       0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  true,  5.0f, Block::Air,       0 },
+    { "build_wall_z","Стена",      0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  true,  5.0f, Block::Air,       0 },
+    { "build_floor","Потолок",     0.62f,0.48f,0.30f,    0.55f,0.42f,0.26f,    true,  true,  5.0f, Block::Air,       0 },
+    { "build_door", "Дверь",       0.58f,0.44f,0.27f,    0.52f,0.39f,0.24f,    true,  true,  4.0f, Block::Air,       0 },
+    { "build_door_z","Дверь",      0.58f,0.44f,0.27f,    0.52f,0.39f,0.24f,    true,  true,  4.0f, Block::Air,       0 },
+    { "cupboard",   "Шкаф",        0.60f,0.46f,0.28f,    0.53f,0.40f,0.25f,    true,  false, 3.0f, Block::Air,       0 },
+    { "box",        "Ящик",        0.66f,0.52f,0.30f,    0.58f,0.45f,0.26f,    true,  false, 2.0f, Block::Air,       0 },
 };
 } // namespace
 
@@ -59,6 +64,27 @@ int thinAxisOf(Block b){
         case Block::BuildDoor:  return 1;   // пластина поперёк X
         case Block::BuildWallZ:
         case Block::BuildDoorZ: return 3;   // пластина поперёк Z
+        case Block::BuildFloor: return 2;   // крыша — пластина поперёк Y
         default:                return 0;
     }
+}
+
+bool isBuildBlock(Block b){
+    switch(b){
+        case Block::Foundation:
+        case Block::BuildWall:
+        case Block::BuildWallZ:
+        case Block::BuildFloor:
+        case Block::BuildDoor:
+        case Block::BuildDoorZ:
+        case Block::Cupboard:
+        case Block::Box:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isDoorBlock(Block b){
+    return b == Block::BuildDoor || b == Block::BuildDoorZ;
 }

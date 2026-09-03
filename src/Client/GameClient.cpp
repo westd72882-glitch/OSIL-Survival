@@ -48,6 +48,11 @@ const Recipe kRecipes[] = {
       "План постройки. Возьмите в руки — появятся кнопки стройки." },
     { ItemType::Gunpowder, 5, ItemType::Sulfur, 3, ItemType::Wood, 2,
       "Порох из серы и угля. Пойдёт на патроны и взрывчатку." },
+    { ItemType::Box, 1, ItemType::Wood, 60, ItemType::None, 0,
+      "Ящик. Поставьте в доме и складывайте в него ресурсы: в рюкзаке места мало." },
+    { ItemType::Cupboard, 1, ItemType::Wood, 100, ItemType::None, 0,
+      "Шкаф дома. В него кладут дерево на аренду: 10 дерева в сутки за каждую деталь "
+      "постройки. Не заплатил — дом начинает гнить." },
 };
 const int kRecipeCount = (int)(sizeof(kRecipes)/sizeof(kRecipes[0]));
 
@@ -213,6 +218,9 @@ bool GameClient::initGraphics(){
     };
     makeDynamicVoxelBuffer(partVao_, partVbo_, 64 * 36);
     makeDynamicVoxelBuffer(heldVao_, heldVbo_, 8 * 36);
+    // Буфер под срубленные деревья: ствол с кроной — это сотни кубов, и они рисуются
+    // одним вызовом.
+    makeDynamicVoxelBuffer(fallVao_, fallVbo_, 1024 * 36);
 
     return true;
 }
@@ -292,6 +300,357 @@ void GameClient::updateParticles(float dt){
     }
 }
 
+// ==================== ПРОЧНОСТЬ, ШКАФ И ЯЩИК ====================
+// Прочность показывается только у побитой детали: у целого дома цифры над каждой
+// стеной — это мусор на экране, а вот «осталось 60 из 100» игрок должен видеть.
+void GameClient::renderBuildTargetInfo(){
+    if(overlay_ != Overlay::None) return;
+    const RayHit& t = player_->target();
+    if(!t.hit || !isBuildBlock(t.block)) return;
+    int idx = pieceIndexAt(t.x, t.y, t.z);
+    if(idx < 0) return;
+    const BuildPiece& p = pieces_[(size_t)idx];
+    if(p.health >= 95) return;      // целая деталь молчит
+
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float cx = (float)SCR_W * 0.5f, cy = (float)SCR_H * 0.5f;
+    float w = 190.0f * s, h = 14.0f * s;
+    float y = cy + 54.0f * s;
+    drawUIRect(cx - w * 0.5f, y, w, h, 0, 0.06f, 0.06f, 0.07f, 0.60f, false);
+    float k = clampf((float)p.health / (float)PIECE_MAX_HEALTH, 0.0f, 1.0f);
+    drawUIRect(cx - w * 0.5f, y, w * k, h, 0,
+               k > 0.5f ? 0.55f : 0.80f, k > 0.5f ? 0.72f : 0.42f, 0.32f, 0.85f, false);
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s  %d/%d", blockName(p.block), p.health, PIECE_MAX_HEALTH);
+    drawTextCentered(cx, y + h + 3.0f * s, 16.0f * s, buf, 1, 1, 1, 0.92f);
+}
+
+// ---- Аренда дома. Раз в игровые сутки за каждую деталь дома со шкафа списывается
+// 10 дерева. Не заплатил — дом начинает гнить: прочность деталей падает, и в конце
+// концов постройка разваливается сама.
+void GameClient::updateUpkeep(){
+    int day = env_->dayNumber();
+    if(day == lastUpkeepDay_) return;
+    lastUpkeepDay_ = day;
+    if(pieces_.empty()) return;
+
+    int need = upkeepPerDay();
+    int paid = 0;
+    for(WorldCupboard& c : cupboards_){
+        if(paid >= need) break;
+        int take = need - paid;
+        if(take > c.wood) take = c.wood;
+        c.wood -= take;
+        paid += take;
+    }
+    char buf[128];
+    if(paid >= need){
+        snprintf(buf, sizeof(buf), "Аренда дома оплачена: -%d дерева", need);
+        SDL_Log("%s", buf);
+        return;
+    }
+    // Недоплата — гниение: чем больше долг, тем быстрее сыпется постройка.
+    int shortfall = need - paid;
+    int rot = 5 + shortfall / 10;
+    if(rot > 25) rot = 25;
+    for(size_t i = 0; i < pieces_.size(); ){
+        pieces_[i].health -= rot;
+        if(pieces_[i].health <= 0){
+            fillPieceCells(pieces_[i], false);
+            pieces_.erase(pieces_.begin() + (long)i);
+        } else ++i;
+    }
+    snprintf(buf, sizeof(buf), "Дом гниёт: не хватило %d дерева в шкафу", shortfall);
+    SDL_Log("%s", buf);
+}
+
+// ---- Окно ящика: сетка хранилища сверху, рюкзак снизу. Касание по ячейке перекладывает
+// стак туда-обратно — на телефоне это понятнее, чем перетаскивание между двумя сетками.
+// Ящик и рюкзак стоят рядом двумя сетками: так на телефоне видно и то, и другое, и
+// ничто не залезает на пояс внизу экрана. Ящик — 3 столбца, рюкзак — свои 6.
+namespace {
+const int BOX_COLS = 3;
+} // namespace
+
+void GameClient::boxSlotPos(int i, float& x, float& y, float& slot) const {
+    float sc = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    slot = 72.0f * sc;
+    float gap = 8.0f * sc;
+    int boxRows = (BOX_SLOTS + BOX_COLS - 1) / BOX_COLS;
+    (void)boxRows;
+    float boxW = slot * BOX_COLS + gap * (BOX_COLS - 1);
+    float bagW = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
+    float totalW = boxW + 46.0f * sc + bagW;
+    float gx = ((float)SCR_W - totalW) * 0.5f;
+    float gy = (float)SCR_H * 0.22f;
+    if(i < 0){                       // служебный вызов: левый верхний угол рюкзака
+        x = gx + boxW + 46.0f * sc;
+        y = gy;
+        return;
+    }
+    x = gx + (i % BOX_COLS) * (slot + gap);
+    y = gy + (i / BOX_COLS) * (slot + gap);
+}
+
+void GameClient::renderBox(){
+    if(openBox_ < 0 || openBox_ >= (int)boxes_.size()){ overlay_ = Overlay::None; return; }
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    const WorldBox& box = boxes_[(size_t)openBox_];
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.32f, false);
+
+    float x0, y0, slot;
+    boxSlotPos(0, x0, y0, slot);
+    float bagX, bagY, unused;
+    boxSlotPos(-1, bagX, bagY, unused);
+    float gap = 8.0f * s;
+
+    drawText(x0, y0 - 34.0f * s, 24.0f * s, "ЯЩИК", 1, 1, 1, 0.96f);
+    drawText(bagX, bagY - 34.0f * s, 24.0f * s, "РЮКЗАК", 1, 1, 1, 0.96f);
+    for(int i = 0; i < BOX_SLOTS; ++i){
+        float x, y, sl;
+        boxSlotPos(i, x, y, sl);
+        drawSlot(x, y, sl, box.slots[i], false);
+    }
+    for(int i = Inventory::HOTBAR; i < Inventory::SIZE; ++i){
+        int k = i - Inventory::HOTBAR;
+        float x = bagX + (k % Inventory::COLS) * (slot + gap);
+        float y = bagY + (k / Inventory::COLS) * (slot + gap);
+        drawSlot(x, y, slot, inventory_.slot(i), false);
+    }
+    drawTextCentered((float)SCR_W * 0.5f, y0 + slot * 4.0f + gap * 4.0f + 10.0f * s, 17.0f * s,
+                     "Нажмите на предмет, чтобы переложить", 1, 1, 1, 0.6f);
+
+    float cxb = bagX + slot * Inventory::COLS + gap * (Inventory::COLS - 1) + 14.0f * s;
+    float cyb = y0 - 40.0f * s;
+    float csz = 50.0f * s;
+    if(cxb + csz > (float)SCR_W - 8.0f * s) cxb = (float)SCR_W - csz - 8.0f * s;
+    if(texClose_) drawUIRect(cxb, cyb, csz, csz, texClose_, 1, 1, 1, 0.9f, true);
+    else {
+        drawUIRect(cxb, cyb, csz, csz, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
+        drawTextCentered(cxb + csz * 0.5f, cyb + csz * 0.25f, 24.0f * s, "X", 1, 1, 1, 0.95f);
+    }
+}
+
+bool GameClient::handleBoxTouch(float x, float y){
+    if(openBox_ < 0 || openBox_ >= (int)boxes_.size()){ overlay_ = Overlay::None; return true; }
+    WorldBox& box = boxes_[(size_t)openBox_];
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float x0, y0, slot;
+    boxSlotPos(0, x0, y0, slot);
+    float bagX, bagY, unused;
+    boxSlotPos(-1, bagX, bagY, unused);
+    float gap = 8.0f * s;
+
+    // Крестик — та же геометрия, что в отрисовке, плюс запас под палец.
+    float cxb = bagX + slot * Inventory::COLS + gap * (Inventory::COLS - 1) + 14.0f * s;
+    float cyb = y0 - 40.0f * s;
+    float csz = 50.0f * s;
+    if(cxb + csz > (float)SCR_W - 8.0f * s) cxb = (float)SCR_W - csz - 8.0f * s;
+    float pad = 12.0f * s;
+    if(x >= cxb - pad && x <= cxb + csz + pad && y >= cyb - pad && y <= cyb + csz + pad){
+        overlay_ = Overlay::None; openBox_ = -1;
+        return true;
+    }
+
+    // Из ящика в рюкзак.
+    for(int i = 0; i < BOX_SLOTS; ++i){
+        float bx, by, sl;
+        boxSlotPos(i, bx, by, sl);
+        if(x < bx || x > bx + sl || y < by || y > by + sl) continue;
+        if(box.slots[i].empty()) return true;
+        int left = inventory_.add(box.slots[i].type, box.slots[i].count);
+        box.slots[i].count = left;
+        if(left <= 0) box.slots[i].clear();
+        return true;
+    }
+
+    // Из рюкзака в ящик.
+    for(int i = Inventory::HOTBAR; i < Inventory::SIZE; ++i){
+        int k = i - Inventory::HOTBAR;
+        float sx = bagX + (k % Inventory::COLS) * (slot + gap);
+        float sy = bagY + (k / Inventory::COLS) * (slot + gap);
+        if(x < sx || x > sx + slot || y < sy || y > sy + slot) continue;
+        ItemStack st = inventory_.slot(i);
+        if(st.empty()) return true;
+        // Сначала докладываем в такой же стак, потом занимаем пустую ячейку.
+        for(int b = 0; b < BOX_SLOTS && st.count > 0; ++b){
+            if(box.slots[b].empty() || box.slots[b].type != st.type) continue;
+            int room = itemDef(st.type).maxStack - box.slots[b].count;
+            int move = (st.count < room) ? st.count : room;
+            if(move <= 0) continue;
+            box.slots[b].count += move;
+            st.count -= move;
+        }
+        for(int b = 0; b < BOX_SLOTS && st.count > 0; ++b){
+            if(!box.slots[b].empty()) continue;
+            box.slots[b] = st;
+            st.count = 0;
+        }
+        inventory_.slot(i) = (st.count > 0) ? st : ItemStack{};
+        return true;
+    }
+    return true;
+}
+
+// ---- Окно шкафа: сколько в нём дерева, сколько стоит дом в сутки и кнопки оплаты.
+void GameClient::cupboardButtonRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float pw = clampf((float)SCR_W * 0.42f, 380.0f, 620.0f);
+    float px = ((float)SCR_W - pw) * 0.5f;
+    float py = (float)SCR_H * 0.26f;
+    w = pw - 40.0f * s;
+    h = 50.0f * s;
+    x = px + 20.0f * s;
+    y = py + 150.0f * s + (float)i * (h + 10.0f * s);
+}
+
+void GameClient::renderCupboard(){
+    if(openCupboard_ < 0 || openCupboard_ >= (int)cupboards_.size()){ overlay_ = Overlay::None; return; }
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    const WorldCupboard& c = cupboards_[(size_t)openCupboard_];
+    float pw = clampf((float)SCR_W * 0.42f, 380.0f, 620.0f);
+    float ph = 380.0f * s;
+    float px = ((float)SCR_W - pw) * 0.5f, py = (float)SCR_H * 0.26f;
+
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
+    drawUIRect(px, py, pw, ph, 0, 0.22f, 0.23f, 0.25f, 0.72f, false);
+    uiThinFrame(px, py, pw, ph, UI_LINE, 0.5f);
+    drawTextCentered(px + pw * 0.5f, py + 16.0f * s, 27.0f * s, "ШКАФ", 1, 1, 1, 0.96f);
+
+    char buf[160];
+    snprintf(buf, sizeof(buf), "В шкафу дерева: %d", c.wood);
+    drawText(px + 20.0f * s, py + 62.0f * s, 20.0f * s, buf, 1, 1, 1, 0.92f);
+    snprintf(buf, sizeof(buf), "Деталей дома: %d", (int)pieces_.size());
+    drawText(px + 20.0f * s, py + 90.0f * s, 20.0f * s, buf, 1, 1, 1, 0.92f);
+    snprintf(buf, sizeof(buf), "Аренда: %d дерева в сутки", upkeepPerDay());
+    bool enough = c.wood >= upkeepPerDay();
+    drawText(px + 20.0f * s, py + 118.0f * s, 20.0f * s, buf,
+             enough ? 0.60f : 0.90f, enough ? 0.85f : 0.40f, 0.40f, 0.95f);
+
+    const char* labels[3] = { "ПОЛОЖИТЬ 10 ДЕРЕВА", "ПОЛОЖИТЬ 100 ДЕРЕВА", "ЗАКРЫТЬ" };
+    for(int i = 0; i < 3; ++i){
+        float bx, by, bw, bh;
+        cupboardButtonRect(i, bx, by, bw, bh);
+        bool can = (i == 2) || inventory_.countOf(ItemType::Wood) >= (i == 0 ? 10 : 100);
+        drawUIRect(bx, by, bw, bh, 0, 0.88f, 0.87f, 0.83f, can ? 0.22f : 0.10f, false);
+        uiThinFrame(bx, by, bw, bh, can ? UI_ACCENT : UI_LINE, can ? 0.8f : 0.35f);
+        drawTextCentered(bx + bw * 0.5f, by + bh * 0.28f, 20.0f * s, labels[i],
+                         1, 1, 1, can ? 0.95f : 0.45f);
+    }
+}
+
+bool GameClient::handleCupboardTouch(float x, float y){
+    if(openCupboard_ < 0 || openCupboard_ >= (int)cupboards_.size()){ overlay_ = Overlay::None; return true; }
+    WorldCupboard& c = cupboards_[(size_t)openCupboard_];
+    for(int i = 0; i < 3; ++i){
+        float bx, by, bw, bh;
+        cupboardButtonRect(i, bx, by, bw, bh);
+        if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
+        if(i == 2){ overlay_ = Overlay::None; openCupboard_ = -1; return true; }
+        int want = (i == 0) ? 10 : 100;
+        int have = inventory_.countOf(ItemType::Wood);
+        if(have < want) want = have;
+        if(want > 0){
+            inventory_.remove(ItemType::Wood, want);
+            c.wood += want;
+        }
+        return true;
+    }
+    return true;
+}
+
+// ==================== ПАДЕНИЕ СРУБЛЕННОГО ДЕРЕВА ====================
+// Мир отдаёт сюда все блоки дерева разом. Дальше дерево живёт как единый предмет:
+// наклоняется вокруг комля, за полторы секунды ложится и лежит ещё пятнадцать секунд.
+namespace {
+const float TREE_FALL_TIME = 1.5f;    // сколько падает
+const float TREE_LIFE_TIME = 15.0f;   // сколько лежит до исчезновения
+const size_t MAX_FALL_CUBES = 1024;   // потолок буфера отрисовки
+} // namespace
+
+void GameClient::spawnFallenTree(const std::vector<VoxelWorld::FelledCell>& cells){
+    if(cells.empty()) return;
+    // Комель — самая нижняя клетка ствола: вокруг неё дерево и поворачивается.
+    int minY = cells[0].y;
+    for(const VoxelWorld::FelledCell& c : cells) if(c.y < minY) minY = c.y;
+    double sx = 0.0, sz = 0.0; int n = 0;
+    for(const VoxelWorld::FelledCell& c : cells){
+        if(c.y != minY) continue;
+        sx += c.x; sz += c.z; ++n;
+    }
+    if(n == 0) return;
+
+    FallenTree t;
+    t.base = Vec3{ (float)(sx / n) + 0.5f, (float)minY, (float)(sz / n) + 0.5f };
+    // Падает от игрока: он только что ударил по стволу с этой стороны.
+    Vec3 look = player_->lookDirection();
+    float len = sqrtf(look.x * look.x + look.z * look.z);
+    if(len < 0.001f){ t.dirX = 1.0f; t.dirZ = 0.0f; }
+    else            { t.dirX = look.x / len; t.dirZ = look.z / len; }
+
+    t.cells.reserve(cells.size());
+    for(const VoxelWorld::FelledCell& c : cells){
+        FallenTree::Cell cell;
+        cell.ox = (float)c.x + 0.5f - t.base.x;
+        cell.oy = (float)c.y + 0.5f - t.base.y;
+        cell.oz = (float)c.z + 0.5f - t.base.z;
+        blockTextureTint(c.block, cell.r, cell.g, cell.b);
+        cell.layer = (float)blockTextureLayer(c.block);
+        t.cells.push_back(cell);
+    }
+    // Больше восьми лежащих деревьев на экране не держим: это уже свалка, а не лес.
+    if(fallenTrees_.size() >= 8) fallenTrees_.erase(fallenTrees_.begin());
+    fallenTrees_.push_back(std::move(t));
+}
+
+void GameClient::updateFallenTrees(float dt){
+    for(FallenTree& t : fallenTrees_) t.t += dt;
+    fallenTrees_.erase(std::remove_if(fallenTrees_.begin(), fallenTrees_.end(),
+                                      [](const FallenTree& t){ return t.t > TREE_LIFE_TIME; }),
+                       fallenTrees_.end());
+}
+
+void GameClient::renderFallenTrees(const Mat4& view, const Mat4& proj){
+    if(fallenTrees_.empty()) return;
+    std::vector<VoxelVertex> verts;
+    size_t cubes = 0;
+    for(const FallenTree& t : fallenTrees_){
+        // Наклон с разгоном: сначала дерево едва качнулось, потом обрушивается.
+        float k = clampf(t.t / TREE_FALL_TIME, 0.0f, 1.0f);
+        float angle = 1.5707963f * k * k;
+        float ca = cosf(angle), sa = sinf(angle);
+        // Ось поперёк направления падения.
+        float lx = -t.dirZ, lz = t.dirX;
+        for(const FallenTree::Cell& c : t.cells){
+            if(cubes >= MAX_FALL_CUBES) break;
+            // Раскладываем смещение на «вдоль падения», «поперёк» и «вверх», поворачиваем
+            // первое с третьим — это и есть падение вокруг комля.
+            float along = c.ox * t.dirX + c.oz * t.dirZ;
+            float side  = c.ox * lx + c.oz * lz;
+            float up    = c.oy;
+            float na = along * ca + up * sa;
+            float nu = up * ca - along * sa;
+            Vec3 p{ t.base.x + t.dirX * na + lx * side,
+                    t.base.y + nu,
+                    t.base.z + t.dirZ * na + lz * side };
+            pushCube(verts, p, 0.5f, c.r, c.g, c.b, c.layer);
+            ++cubes;
+        }
+    }
+    if(verts.empty()) return;
+
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    bindBlockTextures();
+    glBindVertexArray(fallVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, fallVbo_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+}
+
 // ==================== ВЫБРОШЕННЫЕ ПРЕДМЕТЫ ====================
 // Выброс из инвентаря отправляет ВЕСЬ стак на землю перед игроком: маленький куб
 // крутится на месте, над ним висит название и количество, а рядом появляется кнопка
@@ -354,13 +713,18 @@ void GameClient::updateDrops(float dt){
         if(d.spin > 6.28318f) d.spin -= 6.28318f;
         // Падение до земли: под кубом всегда должен быть твёрдый блок.
         int bx = (int)floorf(d.pos.x), bz = (int)floorf(d.pos.z);
-        int by = (int)floorf(d.pos.y - DROP_SIZE - 0.01f);
+        // Блок ПОД нижней гранью куба. Раньше клетка бралась с запасом, и лежащий
+        // предмет каждый кадр то «висел в воздухе», то приземлялся заново — от этого
+        // он и дёргался на месте.
+        float bottom = d.pos.y - DROP_SIZE;
+        int by = (int)floorf(bottom - 0.02f);
         if(!voxels_->isSolidAt(bx, by, bz)){
             d.vy -= 18.0f * dt;
             d.pos.y += d.vy * dt;
         } else {
             d.vy = 0.0f;
-            d.pos.y = (float)(by + 1) + DROP_SIZE + 0.04f;
+            // Ровно на грани блока: любой зазор снова уронил бы предмет на следующем кадре.
+            d.pos.y = (float)(by + 1) + DROP_SIZE;
         }
         if(d.pos.y < -8.0f) d.count = 0;   // провалился сквозь мир — убираем
     }
@@ -424,8 +788,9 @@ void GameClient::renderDrops(const Mat4& view, const Mat4& proj){
         tr *= 1.22f; tg *= 1.22f; tb *= 1.22f;
         float layer = (float)blockTextureLayer(b);
         float ca = cosf(d.spin), sa = sinf(d.spin);
-        // Куб слегка покачивается вверх-вниз — так он заметен в траве.
-        Vec3 c{ d.pos.x, d.pos.y + sinf(d.age * 2.2f) * 0.035f, d.pos.z };
+        // Никакого покачивания: предмет лежит и только вращается. Качание вместе с
+        // подгонкой высоты и давало ту самую дрожь.
+        Vec3 c{ d.pos.x, d.pos.y, d.pos.z };
         Vec3 ax{ ca, 0.0f, sa }, az{ -sa, 0.0f, ca }, ay{ 0.0f, 1.0f, 0.0f };
         const float hs = DROP_SIZE;
         static const int SX[6] = { 0, 0, 1, -1, 0, 0 };
@@ -497,8 +862,14 @@ void GameClient::renderDropLabels(){
     if(drops_.empty() || overlay_ != Overlay::None) return;
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     char buf[96];
+    // Подпись видна только вблизи: на другом конце поляны она превращалась в мусор
+    // поверх пейзажа.
+    const float LABEL_RANGE = 5.0f;
+    Vec3 eye = player_->eyePosition();
     for(const DroppedItem& d : drops_){
         if(!d.onScreen) continue;
+        float ddx = d.pos.x - eye.x, ddy = d.pos.y - eye.y, ddz = d.pos.z - eye.z;
+        if(sqrtf(ddx * ddx + ddy * ddy + ddz * ddz) > LABEL_RANGE) continue;
         snprintf(buf, sizeof(buf), "%s x%d", itemDef(d.type).nameRu, d.count);
         float fh = 17.0f * s;
         float tw = textWidth(fh, buf);
@@ -550,10 +921,14 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
     float bob = (player_->speed() > 0.4f && player_->onGround())
                 ? sinf(heldBobPhase_ * 2.0f) * 0.012f : 0.0f;
-    // Замах: инструмент уходит назад-вверх и резко падает вперёд-вниз. Дуга — синус
-    // по фазе удара, поэтому один удар читается как один взмах, а не как дрожь.
+    // Замах в три доли, как настоящий удар топором: короткий отвод назад, резкий
+    // проход вперёд-вниз и мягкий возврат. Один синус давал одинаково вялое движение
+    // туда и обратно и читался как дрожь, а не как удар.
     float phase = player_->swingPhase();
-    float swing = (phase > 0.0f) ? sinf(phase * 3.14159265f) : 0.0f;
+    float windup = smoothstepf(0.0f, 0.28f, phase);      // отвод назад
+    float strike = smoothstepf(0.26f, 0.52f, phase);     // проход по цели
+    float back   = smoothstepf(0.58f, 1.0f, phase);      // возврат в стойку
+    float swing = (-0.30f * windup + 1.30f * strike) * (1.0f - back);
 
     Vec3 right = v3norm(v3cross(forward, Vec3{0,1,0}));
     Vec3 up = v3cross(right, forward);
@@ -585,11 +960,12 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     const float S = 0.86f;
     // Факел держат почти прямо: с наклоном топора пламя уезжает к центру экрана и
     // теряется в пейзаже.
-    float angle = (axe ? 0.42f : 0.20f) - swing * 1.55f;
+    // На ударе инструмент заметно клюёт вперёд — отсюда и ощущение веса.
+    float angle = (axe ? 0.42f : 0.20f) - swing * 1.45f;
     float ca = cosf(angle), sa = sinf(angle);
-    float offX = 0.172f - swing * 0.075f;
-    float offZ = 0.52f + swing * 0.14f;   // на замахе инструмент уходит вперёд от лица
-    float offY = (axe ? -0.186f : -0.150f) + bob - swing * 0.20f;
+    float offX = 0.172f - swing * 0.085f;
+    float offZ = 0.52f + swing * 0.17f;   // на ударе инструмент уходит вперёд от лица
+    float offY = (axe ? -0.186f : -0.150f) + bob - swing * 0.24f;
 
     std::vector<VoxelVertex> verts;
     verts.reserve(6 * 36);
@@ -694,8 +1070,32 @@ void GameClient::initWorld(){
     voxels_->onBlockChanged = [this](int x, int y, int z){ chunks_.markDirty(x, y, z); };
     player_.reset(new Survivor(*voxels_, *env_, inventory_));
     player_->onNodeBroken = [this](Block b, int x, int y, int z){ spawnBreakParticles(b, x, y, z); };
+    // Дерево срублено: мир отдал его блоки целиком, дальше их роняет клиент.
+    voxels_->onClusterFelled = [this](const std::vector<VoxelWorld::FelledCell>& cells, bool tree){
+        if(tree) spawnFallenTree(cells);
+    };
     // Отсчёт вышел — поднимаем игрока на новом месте сами, без нажатия кнопки.
     player_->onOpenFurnace = [this](){ overlay_ = Overlay::Furnace; };
+    // Удар по дому считает клиент: прочность детали живёт в его реестре построек.
+    player_->onHitBuild = [this](Block b, int x, int y, int z){ hitBuildPiece(b, x, y, z); };
+    // Шкаф и ящик: их содержимое тоже у клиента.
+    player_->onOpenObject = [this](Block b, int x, int y, int z){
+        if(b == Block::Box){
+            for(size_t i = 0; i < boxes_.size(); ++i)
+                if(boxes_[i].x == x && boxes_[i].y == y && boxes_[i].z == z){
+                    openBox_ = (int)i; overlay_ = Overlay::Box; return;
+                }
+        } else if(b == Block::Cupboard){
+            for(size_t i = 0; i < cupboards_.size(); ++i)
+                if(cupboards_[i].x == x && cupboards_[i].y == y && cupboards_[i].z == z){
+                    openCupboard_ = (int)i; overlay_ = Overlay::Cupboard; return;
+                }
+        }
+    };
+    player_->onObjectPlaced = [this](Block b, int x, int y, int z){
+        if(b == Block::Box){ WorldBox nb; nb.x = x; nb.y = y; nb.z = z; boxes_.push_back(nb); }
+        else if(b == Block::Cupboard){ WorldCupboard nc; nc.x = x; nc.y = y; nc.z = z; cupboards_.push_back(nc); }
+    };
     player_->onRespawn = [this](){
         // Место гибели остаётся на карте: за вещами надо возвращаться.
         Vec3 died = player_->position();
@@ -723,9 +1123,26 @@ void GameClient::initWorld(){
     inventory_.slot(0) = ItemStack{ ItemType::Axe, 1 };
     inventory_.slot(1) = ItemStack{ ItemType::Torch, 1 };
     if(debugKit_){
-        // Отладочный набор: с ним сразу видно режим стройки и печь, не набивая ресурсы.
-        inventory_.add(ItemType::BuildPlan, 1);
-        inventory_.add(ItemType::Wood, 100);
+        // Отладочный набор: план стройки кладём прямо в пояс, чтобы режим стройки
+        // включался ключом --slot 2 и его было видно на снимке.
+        inventory_.slot(2) = ItemStack{ ItemType::BuildPlan, 1 };
+        inventory_.add(ItemType::Wood, 300);
+        inventory_.add(ItemType::Stone, 100);
+        // Ящик и шкаф рядом со спавном: их окна надо чем-то открывать при проверке
+        // интерфейса снимком.
+        Vec3 pp = player_->position();
+        int ox = (int)floorf(pp.x) + 2, oz = (int)floorf(pp.z);
+        int oy = voxels_->surfaceY(ox, oz) + 1;
+        voxels_->setBlock(ox, oy, oz, Block::Box);
+        WorldBox nb; nb.x = ox; nb.y = oy; nb.z = oz;
+        nb.slots[0] = ItemStack{ ItemType::Wood, 64 };
+        nb.slots[1] = ItemStack{ ItemType::Stone, 20 };
+        boxes_.push_back(nb);
+        int cx2 = ox, cz2 = oz + 2;
+        int cy2 = voxels_->surfaceY(cx2, cz2) + 1;
+        voxels_->setBlock(cx2, cy2, cz2, Block::Cupboard);
+        WorldCupboard nc; nc.x = cx2; nc.y = cy2; nc.z = cz2; nc.wood = 40;
+        cupboards_.push_back(nc);
     }
     if(startSlot_ >= 0) inventory_.select(startSlot_);
 
@@ -1106,6 +1523,8 @@ void GameClient::renderSettings(){
 bool GameClient::handleOverlayTouch(float x, float y){
     if(overlay_ == Overlay::Pause) return handlePauseTouch(x, y);
     if(overlay_ == Overlay::Furnace) return handleFurnaceTouch(x, y);
+    if(overlay_ == Overlay::Box) return handleBoxTouch(x, y);
+    if(overlay_ == Overlay::Cupboard) return handleCupboardTouch(x, y);
     if(overlay_ == Overlay::Settings) return handleSettingsTouch(x, y);
 
     if(overlay_ == Overlay::Craft){
@@ -1342,11 +1761,21 @@ void GameClient::renderBuildGhost(const Mat4& view, const Mat4& proj){
     float tr, tg, tb;
     blockTextureTint(def.block, tr, tg, tb);
     float layer = (float)blockTextureLayer(def.block);
-    bool wide = (def.block == Block::Foundation);      // фундамент 2x2
-    for(int dx = 0; dx < (wide ? 2 : 1); ++dx)
-        for(int dz = 0; dz < (wide ? 2 : 1); ++dz)
-            pushCube(verts, Vec3{ (float)(bx + dx) + 0.5f, (float)by + 0.5f, (float)(bz + dz) + 0.5f },
-                     0.5f, tr, tg, tb, layer);
+    // Призрак показывает НАСТОЯЩИЙ размер детали: 4x4 у фундамента и крыши, 2x2 у
+    // стены, 1x2 у двери. Раньше он был кубиком, и куда встанет дом, приходилось гадать.
+    Block ghostBlock = def.block;
+    Vec3 look = player_->lookDirection();
+    bool alongX = fabsf(look.x) > fabsf(look.z);
+    if(ghostBlock == Block::BuildWall && !alongX) ghostBlock = Block::BuildWallZ;
+    if(ghostBlock == Block::BuildDoor && !alongX) ghostBlock = Block::BuildDoorZ;
+    int gsx = 1, gsy = 1, gsz = 1;
+    pieceFootprint(buildPart_, ghostBlock, gsx, gsy, gsz);
+    for(int dx = 0; dx < gsx; ++dx)
+        for(int dy = 0; dy < gsy; ++dy)
+            for(int dz = 0; dz < gsz; ++dz)
+                pushCube(verts, Vec3{ (float)(bx + dx) + 0.5f, (float)(by + dy) + 0.5f,
+                                      (float)(bz + dz) + 0.5f },
+                         0.5f, tr, tg, tb, layer);
 
     glUseProgram(voxelProg);
     glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
@@ -1366,6 +1795,96 @@ void GameClient::renderBuildGhost(const Mat4& view, const Mat4& proj){
     glUniform1f(voxelAlphaLoc, 1.0f);
 }
 
+// Размер детали в блоках. Из ТЗ: фундамент 4x4, стена 2 в ширину и 2 в высоту,
+// крыша 4x4, дверь 1 в ширину и 2 в высоту. Толщина стены и двери — сама пластина.
+void GameClient::pieceFootprint(BuildPart part, Block block, int& sx, int& sy, int& sz) const {
+    switch(part){
+        case BuildPart::Foundation: sx = 4; sy = 1; sz = 4; break;
+        case BuildPart::Floor:      sx = 4; sy = 1; sz = 4; break;
+        case BuildPart::Wall:
+            // Пластина поперёк X растёт по Z, и наоборот.
+            if(block == Block::BuildWall){ sx = 1; sy = 2; sz = 2; }
+            else                         { sx = 2; sy = 2; sz = 1; }
+            break;
+        case BuildPart::Door:       sx = 1; sy = 2; sz = 1; break;
+        default:                    sx = sy = sz = 1; break;
+    }
+}
+
+int GameClient::pieceIndexAt(int x, int y, int z) const {
+    for(size_t i = 0; i < pieces_.size(); ++i){
+        const BuildPiece& p = pieces_[i];
+        if(x < p.x || x >= p.x + p.sx) continue;
+        if(y < p.y || y >= p.y + p.sy) continue;
+        if(z < p.z || z >= p.z + p.sz) continue;
+        return (int)i;
+    }
+    return -1;
+}
+
+void GameClient::fillPieceCells(const BuildPiece& p, bool put){
+    for(int dx = 0; dx < p.sx; ++dx)
+        for(int dy = 0; dy < p.sy; ++dy)
+            for(int dz = 0; dz < p.sz; ++dz)
+                voxels_->setBlock(p.x + dx, p.y + dy, p.z + dz, put ? p.block : Block::Air);
+}
+
+// Удар топором по дому: минус единица прочности всей детали. Разбирается деталь
+// целиком — половина стены в воздухе выглядела бы поломкой игры, а не постройкой.
+void GameClient::hitBuildPiece(Block block, int x, int y, int z){
+    int idx = pieceIndexAt(x, y, z);
+    if(idx < 0){
+        // Деталь поставили до появления реестра (или это шкаф с ящиком) — просто
+        // убираем блок, чтобы построенное не оказалось вечным.
+        if(block == Block::Cupboard || block == Block::Box) return;
+        voxels_->setBlock(x, y, z, Block::Air);
+        return;
+    }
+    BuildPiece& p = pieces_[(size_t)idx];
+    p.health -= 1;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s: прочность %d/%d", blockName(p.block), p.health, PIECE_MAX_HEALTH);
+    SDL_Log("%s", buf);
+    if(p.health <= 0){
+        fillPieceCells(p, false);
+        pieces_.erase(pieces_.begin() + idx);
+    }
+}
+
+// Дверь: по кнопке «рука» она уходит из мира (открыта) и возвращается (закрыта).
+// Закрывают её по близости — целиться в открытую дверь уже не во что.
+bool GameClient::toggleDoorNear(){
+    RayHit hit = voxels_->raycast(player_->eyePosition(), player_->lookDirection(), 4.0f);
+    if(hit.hit && isDoorBlock(hit.block)){
+        int idx = pieceIndexAt(hit.x, hit.y, hit.z);
+        if(idx >= 0){
+            BuildPiece& p = pieces_[(size_t)idx];
+            fillPieceCells(p, false);
+            p.open = true;
+            return true;
+        }
+    }
+    // Ничего не нашли лучом — ищем открытую дверь рядом и закрываем её.
+    Vec3 pos = player_->position();
+    int best = -1;
+    float bestDist = 3.5f;
+    for(size_t i = 0; i < pieces_.size(); ++i){
+        const BuildPiece& p = pieces_[i];
+        if(!p.open || !isDoorBlock(p.block)) continue;
+        float dx = (float)p.x + 0.5f - pos.x, dz = (float)p.z + 0.5f - pos.z;
+        float d = sqrtf(dx * dx + dz * dz);
+        if(d < bestDist){ bestDist = d; best = (int)i; }
+    }
+    if(best < 0) return false;
+    BuildPiece& p = pieces_[(size_t)best];
+    // Не захлопываем дверь на самом игроке.
+    if(fabsf((float)p.x + 0.5f - pos.x) < 0.75f && fabsf((float)p.z + 0.5f - pos.z) < 0.75f)
+        return false;
+    fillPieceCells(p, true);
+    p.open = false;
+    return true;
+}
+
 void GameClient::placeBuildPart(){
     int bx, by, bz;
     if(!buildGhostTarget(bx, by, bz)) return;
@@ -1379,10 +1898,16 @@ void GameClient::placeBuildPart(){
     if(block == Block::BuildWall && !alongX) block = Block::BuildWallZ;
     if(block == Block::BuildDoor && !alongX) block = Block::BuildDoorZ;
 
-    bool wide = (block == Block::Foundation);
-    for(int dx = 0; dx < (wide ? 2 : 1); ++dx)
-        for(int dz = 0; dz < (wide ? 2 : 1); ++dz)
-            voxels_->setBlock(bx + dx, by, bz + dz, block);
+    BuildPiece p;
+    p.block = block;
+    p.x = bx; p.y = by; p.z = bz;
+    pieceFootprint(buildPart_, block, p.sx, p.sy, p.sz);
+    p.health = PIECE_MAX_HEALTH;
+
+    // Крупная деталь встаёт от прицела, но если под неё не хватает воздуха — часть
+    // клеток просто перезапишется; строить в скале и так незачем.
+    fillPieceCells(p, true);
+    pieces_.push_back(p);
     inventory_.remove(ItemType::Wood, def.cost);
 }
 
@@ -1911,9 +2436,16 @@ void GameClient::update(float dt){
         in.sprint = controls_.sprint();
         in.crouch = controls_.crouch();
         in.jump = controls_.jumpPressed();
-        in.attack = controls_.attackPressed();
+        // Зажатая кнопка бьёт раз за разом, но не быстрее, чем идёт анимация замаха:
+        // сам ритм ударов задаёт Survivor, а не частота кадров. Отдельно читаем
+        // «нажали»: короткий тап короче кадра иначе потерялся бы.
+        in.attack = controls_.attackHeld() || controls_.attackPressed();
         in.place = controls_.placePressed();
-        in.action = controls_.actionPressed();
+        // «Рука» сначала пробует открыть или закрыть дверь: сама дверь — часть дома,
+        // и мир о ней ничего не знает, её состояние держит реестр построек.
+        bool wantAction = controls_.actionPressed();
+        if(wantAction && toggleDoorNear()) wantAction = false;
+        in.action = wantAction;
     }
     in.yaw = yaw_;
     in.pitch = pitch_;
@@ -1926,8 +2458,10 @@ void GameClient::update(float dt){
     // Восстановление выбитых жил: пока очередь пуста, вызов ничего не стоит.
     voxels_->updateRespawn(dt);
     updateFurnace(dt);
+    updateUpkeep();
     // Падение срубленного дерева и осколки от выработанной жилы.
     voxels_->updateFalling(dt);
+    updateFallenTrees(dt);
     updateParticles(dt);
     updateDrops(dt);
 
@@ -2058,6 +2592,7 @@ void GameClient::renderScene(){
 
     // ---- Осколки и предмет в руке. Оба прохода до воды и БЕЗ очистки глубины.
     renderParticles(view, proj);
+    renderFallenTrees(view, proj);
     if(state_ == GameState::Playing) renderDrops(view, proj);
     if(buildMode()) renderBuildGhost(view, proj);
     if(state_ == GameState::Playing)
@@ -2242,11 +2777,15 @@ void GameClient::renderHud(){
         drawBar(pad, y, barW, barH, value / 100.0f, r, g, b, name);
         char num[16];
         snprintf(num, sizeof(num), "%.0f", (double)value);
-        float nw = barH * 0.55f * (float)strlen(num);
-        drawText(pad + barW - nw - 8.0f * s, y + barH * 0.16f, barH * 0.82f, num, 1, 1, 1, 0.95f);
+        // Число стоит по центру ПОСТОЯННОГО поля у правого края полосы: так «100», «10»
+        // и «1» рисуются вокруг одной середины, а не съезжают влево вслед за длиной.
+        float fieldW = 54.0f * s;
+        float fieldX = pad + barW - fieldW - 6.0f * s;
+        drawTextCentered(fieldX + fieldW * 0.5f, y + barH * 0.16f, barH * 0.82f, num,
+                         1, 1, 1, 0.95f);
         y += barH + gap;
     };
-    statRow("HP",     player_->health(),  0.62f, 0.18f, 0.16f);
+    statRow("Здоровье", player_->health(),  0.62f, 0.18f, 0.16f);
     statRow("Голод",  player_->hunger(),  0.55f, 0.40f, 0.14f);
     statRow("Жажда",  player_->thirst(),  0.16f, 0.38f, 0.58f);
     statRow("Силы",   player_->stamina(), 0.32f, 0.48f, 0.24f);
@@ -2281,6 +2820,9 @@ void GameClient::renderHud(){
         drawUIRect(cx - 9.0f, cy - 1.5f, 18.0f, 3.0f, 0, 1,1,1, 0.55f, false);
     }
     // Полосы добычи больше нет: удар стал дискретным, копить прогресс нечему.
+
+    // ---- Прочность детали дома под прицелом (только у побитой).
+    renderBuildTargetInfo();
 
     // ---- Выброшенные предметы: подписи над кубами и кнопка «поднять».
     renderDropLabels();
@@ -2428,6 +2970,8 @@ void GameClient::renderOverlay(){
     if(overlay_ == Overlay::None) return;
     if(overlay_ == Overlay::Pause){ renderPause(); return; }
     if(overlay_ == Overlay::Furnace){ renderFurnace(); return; }
+    if(overlay_ == Overlay::Box){ renderBox(); return; }
+    if(overlay_ == Overlay::Cupboard){ renderCupboard(); return; }
     if(overlay_ == Overlay::Settings){ renderSettings(); return; }
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
 
@@ -3062,6 +3606,8 @@ int GameClient::run(int argc, char** argv){
             else if(what == "craft") overlayOverride_ = Overlay::Craft;
             else if(what == "map")   overlayOverride_ = Overlay::Map;
             else if(what == "settings") overlayOverride_ = Overlay::Settings;
+            else if(what == "box")      overlayOverride_ = Overlay::Box;
+            else if(what == "cupboard") overlayOverride_ = Overlay::Cupboard;
         } else if(a == "--dig" && i + 1 < argc){
             digDepth_ = atoi(argv[++i]);
         } else if(a == "--menu"){
@@ -3093,6 +3639,9 @@ int GameClient::run(int argc, char** argv){
     drawLoadingScreen("Строим кубический мир 1000x1000...");
     initWorld();
     overlay_ = overlayOverride_;
+    // Окна ящика и шкафа знают, ЧТО открыто: без выбранного объекта они пустые.
+    if(overlay_ == Overlay::Box && !boxes_.empty()) openBox_ = 0;
+    if(overlay_ == Overlay::Cupboard && !cupboards_.empty()) openCupboard_ = 0;
     // Снимок экрана снимается из игры, а не из меню: иначе проверять нечего.
     if((!screenshotPath_.empty() || startInGame_) && !stayInMenu_) state_ = GameState::Playing;
     audioApplySettings();
@@ -3270,6 +3819,10 @@ void GameClient::loadInterfaceTextures(){
         { ItemType::Planks,    "item_planks.png" },
         { ItemType::Dirt,      "item_dirt.png" },
         { ItemType::Sand,      "item_sand.png" },
+        // Своих иконок у шкафа и ящика пока нет — берём картинку деревянного ящика и
+        // строительной доски, чтобы в инвентаре был предмет, а не цветной квадрат.
+        { ItemType::Box,       "block_crate.png" },
+        { ItemType::Cupboard,  "block_build.png" },
     };
     int itemsLoaded = 0;
     for(const auto& it : itemIcons){

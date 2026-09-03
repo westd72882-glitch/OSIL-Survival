@@ -26,7 +26,7 @@
 #include <vector>
 
 // Какое окно открыто поверх игры.
-enum class Overlay { None, Inventory, Craft, Map, Settings, Pause, Furnace };
+enum class Overlay { None, Inventory, Craft, Map, Settings, Pause, Furnace, Box, Cupboard };
 
 // Состояние клиента. Главное меню — не «окно поверх игры», а отдельный режим: мир в нём
 // уже построен и медленно вращается фоном, но игрок не управляется и время не идёт.
@@ -191,6 +191,43 @@ private:
     void  buildPartRect(int i, float& x, float& y, float& w, float& h) const;
     void  buildAcceptRect(float& x, float& y, float& w, float& h) const;
     bool  buildGhostTarget(int& bx, int& by, int& bz) const;
+    // ---- Постройки игрока. Деталь дома — это ОДИН предмет со своей прочностью, а не
+    // россыпь кубов: фундамент 4x4, стена 2 в ширину и 2 в высоту, крыша 4x4, дверь
+    // 1x2. Прочность у всего деревянного 100, удар топором снимает единицу.
+    struct BuildPiece {
+        Block block;
+        int x = 0, y = 0, z = 0;      // младший угол детали
+        int sx = 1, sy = 1, sz = 1;   // размеры в блоках
+        int health = 100;
+        bool open = false;            // только для двери
+    };
+    std::vector<BuildPiece> pieces_;
+    static const int PIECE_MAX_HEALTH = 100;
+    void pieceFootprint(BuildPart part, Block block, int& sx, int& sy, int& sz) const;
+    int  pieceIndexAt(int x, int y, int z) const;
+    void fillPieceCells(const BuildPiece& p, bool put);
+    void hitBuildPiece(Block block, int x, int y, int z);
+    // Дверь открывается и закрывается кнопкой «рука». Открытая дверь исчезает из мира,
+    // поэтому закрывают её по близости, а не по прицелу — целиться уже не во что.
+    bool toggleDoorNear();
+    void renderBuildTargetInfo();
+
+    // ---- Шкаф и ящики. Шкаф держит оплату за дом, ящик — просто хранилище.
+    static const int BOX_SLOTS = 12;
+    struct WorldBox { int x = 0, y = 0, z = 0; ItemStack slots[BOX_SLOTS]; };
+    struct WorldCupboard { int x = 0, y = 0, z = 0; int wood = 0; };
+    std::vector<WorldBox> boxes_;
+    std::vector<WorldCupboard> cupboards_;
+    int openBox_ = -1, openCupboard_ = -1;
+    int lastUpkeepDay_ = 0;
+    void updateUpkeep();
+    void renderBox();
+    bool handleBoxTouch(float x, float y);
+    void boxSlotPos(int i, float& x, float& y, float& slot) const;
+    void renderCupboard();
+    bool handleCupboardTouch(float x, float y);
+    void cupboardButtonRect(int i, float& x, float& y, float& w, float& h) const;
+    int  upkeepPerDay() const { return (int)pieces_.size() * 10; }
     void  renderBuildGhost(const Mat4& view, const Mat4& proj);
     void  placeBuildPart();
     bool  handleFurnaceTouch(float x, float y);
@@ -239,6 +276,21 @@ private:
     int  pickupCandidate() const;
     void pickupButtonRect(float& x, float& y, float& w, float& h) const;
     bool handlePickupTouch(float x, float y);
+
+    // ---- Срубленное дерево. Оно не рассыпается по кубикам на месте: ствол с кроной
+    // накреняется, падает целиком и лежит ещё пятнадцать секунд, а потом исчезает.
+    struct FallenTree {
+        struct Cell { float ox, oy, oz; float r, g, b; float layer; };
+        std::vector<Cell> cells;
+        Vec3 base{};
+        float dirX = 1.0f, dirZ = 0.0f;   // куда валится
+        float t = 0.0f;                   // сколько секунд прошло с удара
+    };
+    std::vector<FallenTree> fallenTrees_;
+    void spawnFallenTree(const std::vector<VoxelWorld::FelledCell>& cells);
+    void updateFallenTrees(float dt);
+    void renderFallenTrees(const Mat4& view, const Mat4& proj);
+    GLuint fallVao_ = 0, fallVbo_ = 0;
 
     struct Particle { Vec3 pos, vel; float life, size; float r, g, b; float layer; };
     std::vector<Particle> particles_;

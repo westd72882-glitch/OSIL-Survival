@@ -222,6 +222,10 @@ int blockTextureLayer(Block b){
         case Block::BuildDoorZ:
         case Block::BuildFloor:
         case Block::BuildDoor:  return LAYER_BUILD;
+        // Шкаф и ящик пока берут картинку лутового ящика: своих текстур для них в
+        // репозиторий не приносили, а деревянный ящик им обоим к лицу.
+        case Block::Cupboard:
+        case Block::Box:        return LAYER_CRATE;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
     }
 }

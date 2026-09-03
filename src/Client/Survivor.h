@@ -120,18 +120,34 @@ private:
     Block hitBlock_ = Block::Air;
     bool  hasAxe() const;
 public:
+    // Топор — единственный инструмент добычи: факелом и руками ресурс не выбить.
+    bool  canHarvest() const { return hasAxe(); }
+private:
+public:
     // Объект выработан: клиент по этому сигналу сыпет частицы на месте.
     std::function<void(Block block, int x, int y, int z)> onNodeBroken;
     // Отсчёт до возрождения истёк — клиент поднимает игрока на новом месте.
     std::function<void()> onRespawn;
     // Игрок нажал «взаимодействие» на печи — клиент открывает её окно.
     std::function<void()> onOpenFurnace;
+    // Нажал «взаимодействие» на шкафе или ящике: их содержимое хранит клиент.
+    std::function<void(Block block, int x, int y, int z)> onOpenObject;
+    // Поставил предмет-объект (печь, шкаф, ящик) — клиенту надо завести его хранилище.
+    std::function<void(Block block, int x, int y, int z)> onObjectPlaced;
+    // Ударил топором по части постройки: прочность считает клиент, он же её и рисует.
+    std::function<void(Block block, int x, int y, int z)> onHitBuild;
 private:
+    // Единственная точка, где здоровье уменьшается. Здесь же фиксируется смерть:
+    // раньше урон и проверка смерти стояли в разных местах, и регенерация успевала
+    // поднять здоровье с нуля раньше, чем смерть замечали (прыжок со скалы «не убивал»).
+    void  applyDamage(float amount, const char* cause);
     void  hitTarget(Block block, int x, int y, int z);
     void  smeltInFurnace();
     void  lootCrate(int x, int y, int z);
     float actionCooldown_ = 0.0f;
     bool  dead_ = false;
+    // Регенерация не непрерывная: +1 HP за каждые 60 секунд без единого урона.
+    float regenTimer_ = 0.0f;
     float damageAge_ = 99.0f;      // время с последнего урона
     float respawnLeft_ = 0.0f;     // отсчёт до возрождения после смерти
     float lastHealth_ = 100.0f;

@@ -26,6 +26,8 @@ const ItemDef kItems[(int)ItemType::COUNT] = {
     { "furnace",     "Печь",          Block::Furnace,       5,   0,  0,  0.52f,0.50f,0.48f },
     { "gunpowder",   "Порох",         Block::Air,         100,   0,  0,  0.30f,0.29f,0.26f },
     { "build_plan",  "План постройки",Block::Air,            1,   0,  0,  0.72f,0.66f,0.48f },
+    { "cupboard",    "Шкаф",          Block::Cupboard,      3,   0,  0,  0.60f,0.46f,0.28f },
+    { "box",         "Ящик",          Block::Box,           5,   0,  0,  0.66f,0.52f,0.30f },
 };
 } // namespace
 
@@ -48,6 +50,8 @@ ItemType itemFromBlock(Block b){
         case Block::OreSulfur:  return ItemType::OreSulfur;
         case Block::LeavesSnow: return ItemType::None;
         case Block::Furnace:    return ItemType::Furnace;
+        case Block::Cupboard:   return ItemType::Cupboard;
+        case Block::Box:        return ItemType::Box;
         case Block::Planks:     return ItemType::Planks;
         case Block::StoneBrick: return ItemType::StoneBrick;
         case Block::Mud:        return ItemType::Mud;

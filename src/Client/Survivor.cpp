@@ -52,6 +52,7 @@ void Survivor::spawn(Vec3 position){
     pendingHit_ = false;
     dead_ = false;
     respawnLeft_ = 0.0f;
+    regenTimer_ = 0.0f;
     lastHealth_ = health_;
     say("Вы очнулись на острове. Возьмите топор и рубите деревья.");
 }
@@ -95,10 +96,7 @@ void Survivor::update(const SurvivorInput& in, float dt){
     updateMetabolism(dt);
     updateInteraction(act, dt);
 
-    // Смерть фиксируется здесь и только здесь: как только здоровье дошло до нуля,
-    // игрок мёртв до самого возрождения. Раньше проверялось «health_ <= 0» прямо в
-    // isDead(), и регенерация (+1 HP/с) успевала вернуть долю единицы в том же кадре —
-    // экран смерти не показывался, а игрок оставался жив с нулём здоровья.
+    // Страховка на случай урона в обход applyDamage: ноль здоровья — это смерть.
     if(!dead_ && health_ <= 0.0f){
         dead_ = true;
         health_ = 0.0f;
@@ -236,10 +234,10 @@ void Survivor::updateMovement(const SurvivorInput& in, float dt){
                 float fallen = fallStartY_ - pos_.y;
                 if(fallen > 4.0f && !inWater_){
                     float damage = (fallen - 4.0f) * 12.0f;
-                    health_ = clampf(health_ - damage, 0.0f, 100.0f);
                     char buf[96];
                     snprintf(buf, sizeof(buf), "Падение с %.0f блоков: -%.0f HP", (double)fallen, (double)damage);
                     say(buf);
+                    applyDamage(damage, "Вы разбились при падении");
                 }
             }
             onGround_ = true;
@@ -262,10 +260,7 @@ void Survivor::updateMetabolism(float dt){
     headUnderwater_ = (voxels_.blockAt(eyeX, eyeY, eyeZ) == Block::Water);
     if(headUnderwater_){
         oxygen_ = clampf(oxygen_ - (100.0f / 45.0f) * dt, 0.0f, 100.0f);
-        if(oxygen_ <= 0.0f){
-            health_ = clampf(health_ - 12.0f * dt, 0.0f, 100.0f);
-            if(health_ <= 0.0f) say("Вы утонули");
-        }
+        if(oxygen_ <= 0.0f) applyDamage(12.0f * dt, "Вы утонули");
     } else {
         if(oxygen_ < 100.0f) oxygen_ = clampf(oxygen_ + 30.0f * dt, 0.0f, 100.0f);
     }
@@ -289,11 +284,35 @@ void Survivor::updateMetabolism(float dt){
     if(bodyTemp_ < 34.0f) damage += (34.0f - bodyTemp_) * 0.9f;
     if(bodyTemp_ > 39.0f) damage += (bodyTemp_ - 39.0f) * 0.9f;
     if(radiation_ > 25.0f) damage += (radiation_ - 25.0f) * 0.05f;
-    if(damage > 0.0f) health_ = clampf(health_ - damage * dt, 0.0f, 100.0f);
+    if(damage > 0.0f) applyDamage(damage * dt, "Вы не выжили");
 
-    // Регенерация по ТЗ: 1 HP/с при сытости и жажде выше 80. Мёртвого она не лечит.
-    if(!dead_ && damage <= 0.0f && hunger_ > 80.0f && thirst_ > 80.0f)
-        health_ = clampf(health_ + 1.0f * dt, 0.0f, 100.0f);
+    // Регенерация редкая и только «в тишине»: за каждую полную минуту без единого
+    // урона возвращается 1 HP. Непрерывное лечение делало падения безобидными —
+    // здоровье успевало отрасти раньше, чем игрок понимал, что упал.
+    if(!dead_){
+        regenTimer_ += dt;
+        while(regenTimer_ >= 60.0f){
+            regenTimer_ -= 60.0f;
+            if(health_ > 0.0f && health_ < 100.0f && hunger_ > 0.0f && thirst_ > 0.0f)
+                health_ = clampf(health_ + 1.0f, 0.0f, 100.0f);
+        }
+    }
+}
+
+// Единственная точка списания здоровья. Смерть фиксируется ЗДЕСЬ же, в тот же момент,
+// когда здоровье дошло до нуля: если проверять её отдельным проходом позже, любая
+// прибавка в том же кадре (регенерация) отменяет смерть, и падение со скалы не убивает.
+void Survivor::applyDamage(float amount, const char* cause){
+    if(amount <= 0.0f || dead_) return;
+    health_ = clampf(health_ - amount, 0.0f, 100.0f);
+    damageAge_ = 0.0f;
+    regenTimer_ = 0.0f;
+    if(health_ <= 0.0f){
+        health_ = 0.0f;
+        dead_ = true;
+        respawnLeft_ = 5.0f;
+        say(cause ? cause : "Вы погибли");
+    }
 }
 
 // Топор в руках ускоряет добычу. Лежит он в инвентаре с самого начала, брать в руки —
@@ -356,7 +375,9 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
     // Ломать рельеф нельзя вообще: земля, песок, снег, трава и дорога — не ресурс.
     // Добывается только то, что стоит НА земле: дерево, жила, бочка. Каждый удар даёт
     // ресурс, а когда объект выработан — дерево падает, жила и бочка исчезают.
-    bool canHit = target_.hit && isHarvestable(target_.block);
+    // Добывать можно ТОЛЬКО топором: факел, руки и прочее бьют, но ресурса не дают.
+    bool canHit = target_.hit && hasAxe() &&
+                  (isHarvestable(target_.block) || isBuildBlock(target_.block));
 
     if(in.attack && swingCooldown_ <= 0.0f){
         // Топором машут быстрее, чем факелом или кулаком.
@@ -367,6 +388,10 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
         if(canHit){
             pendingHit_ = true;
             pendX_ = target_.x; pendY_ = target_.y; pendZ_ = target_.z;
+        } else if(target_.hit && isHarvestable(target_.block)){
+            // Ударить-то можно чем угодно, но добыть — только топором. Молчать здесь
+            // нельзя: игрок будет долго бить факелом и не поймёт, почему пусто.
+            say("Нужен топор: этим ресурс не добыть");
         }
     }
 
@@ -376,25 +401,35 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
     if(pendingHit_ && swingCooldown_ <= swingPeriod_ * 0.55f){
         pendingHit_ = false;
         Block b = voxels_.blockAt(pendX_, pendY_, pendZ_);
-        if(isHarvestable(b)) hitTarget(b, pendX_, pendY_, pendZ_);
+        if(isHarvestable(b))      hitTarget(b, pendX_, pendY_, pendZ_);
+        else if(isBuildBlock(b) && onHitBuild) onHitBuild(b, pendX_, pendY_, pendZ_);
     }
 
-    // ---- Кнопка взаимодействия: поставить печь, плавить в ней руду, забрать ящик.
+    // ---- Кнопка взаимодействия: поставить объект, залутать ящик, открыть печь,
+    // шкаф или ящик-хранилище.
     if(in.action && actionCooldown_ <= 0.0f){
         actionCooldown_ = 0.4f;
         if(target_.hit && target_.block == Block::Crate){
             lootCrate(target_.x, target_.y, target_.z);
         } else if(target_.hit && target_.block == Block::Furnace){
             if(onOpenFurnace) onOpenFurnace();
+        } else if(target_.hit && (target_.block == Block::Cupboard || target_.block == Block::Box)){
+            if(onOpenObject) onOpenObject(target_.block, target_.x, target_.y, target_.z);
         } else {
             const ItemStack& sel = inventory_.selectedStack();
-            if(!sel.empty() && sel.type == ItemType::Furnace && target_.hit){
-                // Печь встаёт в клетку перед блоком, куда смотрит игрок.
+            // Печь, шкаф и ящик ставятся одинаково: в клетку перед тем блоком, куда
+            // смотрит игрок. Раньше правило было прописано только под печь.
+            Block put = sel.empty() ? Block::Air : itemDef(sel.type).placeable;
+            bool object = (put == Block::Furnace || put == Block::Cupboard || put == Block::Box);
+            if(object && target_.hit){
                 int px = target_.prevX, py = target_.prevY, pz = target_.prevZ;
                 if(voxels_.blockAt(px, py, pz) == Block::Air){
-                    voxels_.setBlock(px, py, pz, Block::Furnace);
+                    voxels_.setBlock(px, py, pz, put);
                     inventory_.consumeSelected();
-                    say("Печь поставлена");
+                    if(onObjectPlaced) onObjectPlaced(put, px, py, pz);
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "%s поставлен", blockName(put));
+                    say(buf);
                 }
             }
         }

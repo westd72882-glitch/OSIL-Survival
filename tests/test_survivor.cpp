@@ -45,6 +45,10 @@ TEST(удар_по_дереву_даёт_ресурс_один_раз_за_на�
     CHECK_MSG(findDryColumn(w, v, x, z), "не нашли сухую колонку для теста");
     player.spawn(Vec3{ (float)x + 0.5f, 0.0f, (float)z + 0.5f });
 
+    // Добывать можно только топором — берём его в руки, как в игре.
+    inv.slot(0) = ItemStack{ ItemType::Axe, 1 };
+    inv.select(0);
+
     // Ствол дерева ставим прямо перед лицом: при yaw = 0 взгляд направлен в -Z.
     Vec3 eye = player.eyePosition();
     int bx = (int)floorf(eye.x), by = (int)floorf(eye.y), bz = (int)floorf(eye.z) - 1;
@@ -70,6 +74,15 @@ TEST(удар_по_дереву_даёт_ресурс_один_раз_за_на�
     in.attack = false;
     for(int i = 0; i < 120; ++i) player.update(in, 1.0f / 60.0f);
     CHECK_MSG(inv.countOf(ItemType::Wood) == 10, "второе нажатие не засчиталось ударом");
+
+    // Факелом ресурс не добывается: бить им можно, но дерево от этого не рубится.
+    inv.slot(1) = ItemStack{ ItemType::Torch, 1 };
+    inv.select(1);
+    in.attack = true;
+    player.update(in, 1.0f / 60.0f);
+    in.attack = false;
+    for(int i = 0; i < 120; ++i) player.update(in, 1.0f / 60.0f);
+    CHECK_MSG(inv.countOf(ItemType::Wood) == 10, "факелом добыли ресурс, а должен только топор");
 }
 
 TEST(замах_виден_даже_когда_перед_игроком_пусто){
@@ -133,4 +146,32 @@ TEST(игрок_умирает_при_нуле_здоровья_и_не_воск
     player.spawn(Vec3{ (float)x + 0.5f, 0.0f, (float)z + 0.5f });
     CHECK_MSG(!player.isDead(), "после возрождения игрок остался мёртвым");
     CHECK_MSG(player.health() > 99.0f, "после возрождения здоровье не восстановилось");
+}
+
+TEST(падение_с_высоты_убивает_и_регенерация_не_поднимает){
+    WorldConfig cfg = survivorTestConfig();
+    World w(cfg); w.generate();
+    ResourceMap res(w); res.generate();
+    VoxelWorld v(w, res);
+    Environment env(cfg);
+    Inventory inv;
+    Survivor player(v, env, inv);
+
+    int x = 0, z = 0;
+    CHECK(findDryColumn(w, v, x, z));
+    player.spawn(Vec3{ (float)x + 0.5f, 0.0f, (float)z + 0.5f });
+    int top = (int)player.position().y;
+
+    // Выбиваем колодец под ногами: игрок падает с полусотни блоков — это заведомо
+    // смертельно. Ровно на это жаловались: здоровье уходило в ноль, а игрок жил.
+    for(int y = top - 1; y > top - 50 && y > 1; --y) v.setBlock(x, y, z, Block::Air);
+
+    SurvivorInput in;
+    for(int i = 0; i < 600 && !player.isDead(); ++i) player.update(in, 1.0f / 60.0f);
+    CHECK_MSG(player.isDead(), "падение с полусотни блоков не убило игрока");
+
+    // И через несколько секунд он всё ещё мёртв: непрерывной регенерации больше нет.
+    for(int i = 0; i < 180; ++i) player.update(in, 1.0f / 60.0f);
+    CHECK_MSG(player.isDead(), "игрок ожил сам после смертельного падения");
+    CHECK_MSG(player.health() <= 0.0f, "у мёртвого игрока отросло здоровье");
 }

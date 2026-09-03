@@ -201,7 +201,8 @@ void VoxelRenderer::buildChunk(int cx, int cz){
                     Block neighbour = world_->blockAt(wx + face.dx, y + face.dy, wz + face.dz);
                     // У пластины грани вдоль её оси всегда видны: соседняя клетка
                     // пустая, а сама пластина стоит в середине.
-                    if(thin && ((thin == 1 && face.dx != 0) || (thin == 3 && face.dz != 0))){
+                    if(thin && ((thin == 1 && face.dx != 0) || (thin == 2 && face.dy != 0) ||
+                                (thin == 3 && face.dz != 0))){
                         // не отбрасываем
                     } else if(isWater){
                         // У воды рисуем только ВЕРХНИЕ грани, граничащие с воздухом.
@@ -251,11 +252,15 @@ void VoxelRenderer::buildChunk(int cx, int cz){
 
                         // Сжатие пластины к середине клетки по своей оси.
                         float vx = face.verts[k][0], vz = face.verts[k][2];
+                        float vy = face.verts[k][1];
                         if(thin == 1) vx = 0.5f + (vx - 0.5f) * THIN;
                         if(thin == 3) vz = 0.5f + (vz - 0.5f) * THIN;
+                        // Крыша — пластина поперёк Y, и лежит она у ВЕРХА клетки:
+                        // так потолок первого этажа заодно служит полом второго.
+                        if(thin == 2) vy = 1.0f - THIN + vy * THIN;
                         quad[k] = VoxelVertex{
                             (float)wx + vx,
-                            (float)y  + face.verts[k][1] - (isWater ? 0.12f : 0.0f), // вода чуть ниже края блока
+                            (float)y  + vy - (isWater ? 0.12f : 0.0f), // вода чуть ниже края блока
                             (float)wz + vz,
                             face.nx, face.ny, face.nz,
                             r * k2, g * k2, bl * k2,

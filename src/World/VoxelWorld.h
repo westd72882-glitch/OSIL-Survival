@@ -73,9 +73,12 @@ public:
     int  updateRespawn(float dtSeconds);
 
     // ---- Валка. Дерево не разбирается по кубику: срубил — оно падает целиком.
-    // Собирает связанные блоки (ствол и крону, либо всю жилу) и убирает их сверху вниз
-    // с небольшой задержкой, чтобы это читалось как падение, а не как исчезновение.
+    // Блоки объекта убираются из мира СРАЗУ и одним куском отдаются клиенту через
+    // onClusterFelled: дерево не должно рассыпаться по кубикам на месте, оно должно
+    // накрениться и упасть, а это уже анимация, и живёт она на стороне клиента.
     // Возвращает, сколько блоков ушло в падение.
+    struct FelledCell { int x, y, z; Block block; };
+    std::function<void(const std::vector<FelledCell>& cells, bool tree)> onClusterFelled;
     int  fellCluster(int x, int y, int z);
     void updateFalling(float dtSeconds);
     size_t fallingCount() const { return falling_.size(); }

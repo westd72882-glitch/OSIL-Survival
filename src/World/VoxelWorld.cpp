@@ -336,14 +336,14 @@ int VoxelWorld::fellCluster(int startX, int startY, int startZ){
 
     // Обход в ширину по 26 соседям: у дерева крона касается ствола и по диагонали.
     const int LIMIT = tree ? 400 : 64;
-    std::vector<FallingCell> found;
+    std::vector<FelledCell> found;
     std::unordered_map<uint64_t, bool> seen;
     std::deque<std::array<int,3>> queue;
     queue.push_back({ startX, startY, startZ });
     seen[packKey(startX, startY, startZ)] = true;
     while(!queue.empty() && (int)found.size() < LIMIT){
         std::array<int,3> c = queue.front(); queue.pop_front();
-        found.push_back(FallingCell{ 0.0f, c[0], c[1], c[2] });
+        found.push_back(FelledCell{ c[0], c[1], c[2], blockAt(c[0], c[1], c[2]) });
         for(int dx = -1; dx <= 1; ++dx)
             for(int dy = -1; dy <= 1; ++dy)
                 for(int dz = -1; dz <= 1; ++dz){
@@ -359,12 +359,11 @@ int VoxelWorld::fellCluster(int startX, int startY, int startZ){
     }
     if(found.empty()) return 0;
 
-    // Сверху вниз: чем выше блок, тем раньше он уходит — крона валится первой, комель
-    // последним, и это читается как падение дерева.
-    int maxYFound = found[0].y;
-    for(const FallingCell& c : found) if(c.y > maxYFound) maxYFound = c.y;
-    for(FallingCell& c : found) c.left = (float)(maxYFound - c.y) * 0.05f;
-    falling_.insert(falling_.end(), found.begin(), found.end());
+    // Блоки уходят из мира сразу и все разом: постепенное «осыпание» сверху вниз как
+    // раз и выглядело рассыпанием дерева на кубики. Дальше объект живёт у клиента —
+    // он его наклоняет, роняет и через полтора десятка секунд убирает.
+    for(const FelledCell& c : found) setBlock(c.x, c.y, c.z, Block::Air);
+    if(onClusterFelled) onClusterFelled(found, tree);
     return (int)found.size();
 }
 

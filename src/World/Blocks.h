@@ -34,6 +34,8 @@ enum class Block : uint8_t {
     BuildFloor, // потолок и пол этажа
     BuildDoor,  // дверь, тонкая поперёк X
     BuildDoorZ, // та же дверь, но тонкая поперёк Z
+    Cupboard,   // шкаф: в него платят за дом, иначе дом гниёт
+    Box,        // ящик: в нём хранят ресурсы
     COUNT
 };
 
@@ -58,6 +60,11 @@ bool isHarvestable(Block b);
 // Тонкие детали построек (стены и двери) занимают не весь куб, а пластину. Возвращает
 // 0 — блок обычный, 1 — тонкий поперёк X, 3 — тонкий поперёк Z.
 int thinAxisOf(Block b);
+// Часть постройки игрока (фундамент, стена, потолок, дверь). У всего деревянного
+// строения есть прочность, и бить его можно только топором.
+bool isBuildBlock(Block b);
+// Дверь — единственная часть, которую открывают и закрывают.
+bool isDoorBlock(Block b);
 inline bool blockIsSolid(Block b){ return blockInfo(b).solid; }
 inline bool blockIsTransparent(Block b){ return blockInfo(b).transparent; }
 inline bool blockIsAir(Block b){ return b == Block::Air; }
