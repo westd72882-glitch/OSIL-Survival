@@ -96,8 +96,16 @@ private:
     void renderMainMenu();
     // Геометрия кнопок главного меню — одна на отрисовку и на попадания пальца.
     void menuButtonRect(int index, float& x, float& y, float& w, float& h) const;
+    // Крестик выхода из инвентаря: одна геометрия и для отрисовки, и для попадания.
+    // Пока их считали в двух местах, кнопка нажималась левее того места, где нарисована.
+    void inventoryCloseRect(float& x, float& y, float& w, float& h) const;
     void mapViewport(float& x, float& y, float& size) const;
     void drawLoadingScreen(const char* text);
+    // Настоящая ширина строки в пикселях (берётся из готовой текстуры текста): без неё
+    // «по центру» считалось по числу байт UTF-8 и всё уезжало влево.
+    float textWidth(float height, const std::string& text);
+    void drawTextCentered(float cx, float y, float height, const std::string& text,
+                          float r = 1, float g = 1, float b = 1, float a = 1);
     void drawText(float x, float y, float height, const std::string& text,
                   float r, float g, float b, float a = 1.0f);
     void drawBar(float x, float y, float w, float h, float value01,
@@ -137,8 +145,12 @@ private:
     void  craftGridGeometry(float& x, float& y, float& tile, float& gap) const;
     void  craftTilePos(int i, float& tx, float& ty) const;
     void  craftButtonRect(float& x, float& y, float& w, float& h) const;
-    void  craftInfoRect(float& x, float& y, float& w, float& h) const;
     float craftPanelWidth() const;
+    // Разметка панели описания: где начинается текст, где таблица стоимости и какой
+    // высоты вся панель. Считается один раз, чтобы значок, описание и таблица не
+    // налезали друг на друга.
+    void craftPanelGeometry(float& dx, float& dy, float& dw, float& dh,
+                            float& notesY, float& tableY) const;
     // Меню паузы: открывается тапом по полосам состояния слева сверху — отдельной
     // кнопки под него на экране нет.
     void  renderPause();
@@ -204,6 +216,30 @@ private:
     GLuint texItems_[(int)ItemType::COUNT] = {};
     GLuint texJoyBase_ = 0, texJoyStick_ = 0, texPlayerMarker_ = 0, texMenuBg_ = 0;
     int menuBgW_ = 0, menuBgH_ = 0;   // размеры фона: рисуем его без растяжения
+    // ---- Выброшенные предметы. Выброшенный стак не исчезает: перед игроком падает
+    // маленький вращающийся куб с названием и количеством, и его можно поднять обратно
+    // кнопкой-рукой. Это ровно то поведение, которое ждут от выживания.
+    struct DroppedItem {
+        Vec3 pos{};
+        float vy = 0.0f;        // падает, пока не встанет на землю
+        float spin = 0.0f;      // угол вращения куба
+        float age = 0.0f;
+        ItemType type = ItemType::None;
+        int count = 0;
+        // Куда куб спроецировался на экран в этом кадре — по этому HUD рисует подпись.
+        float screenX = 0.0f, screenY = 0.0f;
+        bool  onScreen = false;
+    };
+    std::vector<DroppedItem> drops_;
+    void dropStackToWorld(int slotIndex);
+    void updateDrops(float dt);
+    void renderDrops(const Mat4& view, const Mat4& proj);
+    void renderDropLabels();
+    // Ближайший предмет в радиусе поднятия, или -1.
+    int  pickupCandidate() const;
+    void pickupButtonRect(float& x, float& y, float& w, float& h) const;
+    bool handlePickupTouch(float x, float y);
+
     struct Particle { Vec3 pos, vel; float life, size; float r, g, b; float layer; };
     std::vector<Particle> particles_;
     GLuint partVao_ = 0, partVbo_ = 0;

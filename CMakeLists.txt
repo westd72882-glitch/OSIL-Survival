@@ -123,6 +123,9 @@ set(OSIL_TEST_SOURCES
     tests/test_world.cpp
     tests/test_voxels.cpp
     tests/test_assets.cpp
+    tests/test_survivor.cpp
+    src/Client/Survivor.cpp
+    src/Client/Inventory.cpp
 )
 # Тесту набора картинок нужен путь к репозиторию: сами файлы лежат рядом с исходниками,
 # а тест запускается из каталога сборки.

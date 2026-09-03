@@ -64,6 +64,10 @@ public:
     bool sprint() const { return sprint_.active || keySprint_; }
     bool crouch() const { return crouch_.active || keyCrouch_; }
     bool attackHeld() const { return attack_.active || keyAttack_; }
+    // Удар — ОДНОРАЗОВОЕ действие: одно касание кнопки = один замах. Зажатая кнопка
+    // больше не «копает» непрерывно: в Rust каждый удар отдельный, и по дереву, и по
+    // игроку. Флаг снимается тем, кто его прочитал.
+    bool attackPressed();
     bool placePressed();      // одноразовое: поставить блок
     bool jumpPressed();       // одноразовое: прыжок
     bool actionPressed();     // одноразовое: действие (E)
@@ -108,6 +112,7 @@ private:
 
     TouchButton jump_, sprint_, crouch_, action_, attack_, place_, inventory_, craft_, map_, options_;
     bool jumpQueued_ = false, actionQueued_ = false, placeQueued_ = false;
+    bool attackQueued_ = false;
     bool optionsQueued_ = false;
     bool editMode_ = false;
     TouchButton* dragged_ = nullptr;   // кнопка, которую сейчас тащат в редакторе

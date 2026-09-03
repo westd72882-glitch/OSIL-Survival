@@ -150,6 +150,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 b->finger = e.tfinger.fingerId;
                 if(b->toggle) b->active = !b->active;
                 else { b->active = true; b->justPressed = true; }
+                if(b == &attack_) attackQueued_ = true;
                 if(b == &jump_) jumpQueued_ = true;
                 if(b == &action_) actionQueued_ = true;
                 if(b == &place_) placeQueued_ = true;
@@ -235,6 +236,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
             TouchButton* b = buttonAt(x, y);
             if(b){
                 if(b->toggle) b->active = !b->active; else b->active = true;
+                if(b == &attack_) attackQueued_ = true;
                 if(b == &jump_) jumpQueued_ = true;
                 if(b == &action_) actionQueued_ = true;
                 if(b == &place_) placeQueued_ = true;
@@ -244,7 +246,7 @@ bool TouchControls::handleEvent(const SDL_Event& e){
                 if(b == &options_) optionsQueued_ = true;
                 return true;
             }
-            if(e.button.button == SDL_BUTTON_LEFT){ keyAttack_ = true; mouseLook_ = true; }
+            if(e.button.button == SDL_BUTTON_LEFT){ keyAttack_ = true; attackQueued_ = true; mouseLook_ = true; }
             if(e.button.button == SDL_BUTTON_RIGHT) mouseLook_ = true;
             return true;
         }
@@ -307,6 +309,7 @@ float TouchControls::moveY() const {
     return (keyForward_ ? 1.0f : 0.0f) - (keyBack_ ? 1.0f : 0.0f);
 }
 
+bool TouchControls::attackPressed(){ bool v = attackQueued_; attackQueued_ = false; return v; }
 bool TouchControls::jumpPressed(){ bool v = jumpQueued_; jumpQueued_ = false; return v; }
 bool TouchControls::actionPressed(){ bool v = actionQueued_; actionQueued_ = false; return v; }
 bool TouchControls::placePressed(){ bool v = placeQueued_; placeQueued_ = false; return v; }

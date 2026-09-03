@@ -24,7 +24,7 @@ struct SurvivorInput {
     bool sprint = false;
     bool crouch = false;
     bool jump = false;      // одноразовое
-    bool attack = false;    // удерживается: копать
+    bool attack = false;    // ОДНОРАЗОВОЕ: один замах на одно нажатие
     bool place = false;     // одноразовое: поставить блок
     bool action = false;    // одноразовое: съесть/напиться
 };
@@ -58,7 +58,10 @@ public:
     float oxygen() const { return oxygen_; }
     bool  headUnderwater() const { return headUnderwater_; }
     float bodyTemp() const { return bodyTemp_; }
-    bool isDead() const { return health_ <= 0.0f; }
+    // Смерть — состояние, а не «здоровье равно нулю». Раньше игрок с нулём HP
+    // воскресал сам: регенерация в метаболизме успевала прибавить долю единицы
+    // раньше, чем экран смерти это замечал.
+    bool isDead() const { return dead_; }
     // Сколько секунд назад игрок получил урон — по этому HUD рисует индикатор.
     float damageAge() const { return damageAge_; }
     // Сколько секунд осталось до автоматического возрождения.
@@ -67,7 +70,13 @@ public:
 
     // ---- Взаимодействие с блоками
     const RayHit& target() const { return target_; }
-    float miningProgress() const { return miningProgress_; }   // 0..1
+    // Фаза замаха 0..1: 0 — рука опущена, 1 — замах закончился. По ней клиент рисует
+    // анимацию удара.
+    float swingPhase() const {
+        return (swingPeriod_ > 0.0f && swingCooldown_ > 0.0f)
+               ? clampf(1.0f - swingCooldown_ / swingPeriod_, 0.0f, 1.0f) : 0.0f;
+    }
+    bool swinging() const { return swingCooldown_ > 0.0f; }
 
     const std::string& lastMessage() const { return message_; }
     float messageAge() const { return messageAge_; }
@@ -101,9 +110,11 @@ private:
     float bodyTemp_ = 36.6f;
 
     RayHit target_;
-    float miningProgress_ = 0.0f;
-    int miningX_ = 0, miningY_ = 0, miningZ_ = 0;
-    float swingCooldown_ = 0.0f;
+    float swingCooldown_ = 0.0f;   // сколько осталось до конца текущего замаха
+    float swingPeriod_ = 0.0f;     // длительность текущего замаха
+    // Удар засчитывается не в момент нажатия, а когда инструмент дошёл до цели.
+    bool  pendingHit_ = false;
+    int   pendX_ = 0, pendY_ = 0, pendZ_ = 0;
     // Сколько ударов осталось по объекту, по которому бьём сейчас.
     int   hitX_ = 0, hitY_ = 0, hitZ_ = 0, hitsLeft_ = 0;
     Block hitBlock_ = Block::Air;
@@ -120,6 +131,7 @@ private:
     void  smeltInFurnace();
     void  lootCrate(int x, int y, int z);
     float actionCooldown_ = 0.0f;
+    bool  dead_ = false;
     float damageAge_ = 99.0f;      // время с последнего урона
     float respawnLeft_ = 0.0f;     // отсчёт до возрождения после смерти
     float lastHealth_ = 100.0f;

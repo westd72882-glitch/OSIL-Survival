@@ -47,7 +47,12 @@ void Survivor::spawn(Vec3 position){
     radiation_ = 0.0f;
     oxygen_ = 100.0f;
     stepSmooth_ = 0.0f;
-    miningProgress_ = 0.0f;
+    swingCooldown_ = 0.0f;
+    swingPeriod_ = 0.0f;
+    pendingHit_ = false;
+    dead_ = false;
+    respawnLeft_ = 0.0f;
+    lastHealth_ = health_;
     say("Вы очнулись на острове. Возьмите топор и рубите деревья.");
 }
 
@@ -77,9 +82,29 @@ void Survivor::update(const SurvivorInput& in, float dt){
     if(dt <= 0.0f) return;
     yaw_ = in.yaw;
     pitch_ = in.pitch;
-    updateMovement(in, dt);
+    // Мёртвый не ходит, не бьёт и не ест: от него остаётся только тело, которое
+    // дотягивает гравитацией до земли. Поэтому ввод обнуляется целиком, а не
+    // выборочно — иначе труп продолжал бежать в ту сторону, куда был наклонён джойстик.
+    SurvivorInput act = in;
+    if(dead_){
+        act.moveX = act.moveY = 0.0f;
+        act.sprint = act.crouch = act.jump = false;
+        act.attack = act.place = act.action = false;
+    }
+    updateMovement(act, dt);
     updateMetabolism(dt);
-    updateInteraction(in, dt);
+    updateInteraction(act, dt);
+
+    // Смерть фиксируется здесь и только здесь: как только здоровье дошло до нуля,
+    // игрок мёртв до самого возрождения. Раньше проверялось «health_ <= 0» прямо в
+    // isDead(), и регенерация (+1 HP/с) успевала вернуть долю единицы в том же кадре —
+    // экран смерти не показывался, а игрок оставался жив с нулём здоровья.
+    if(!dead_ && health_ <= 0.0f){
+        dead_ = true;
+        health_ = 0.0f;
+        respawnLeft_ = 5.0f;
+        say("Вы погибли");
+    }
 
     // Индикатор урона и отсчёт возрождения. Урон ловим по падению здоровья, а не по
     // каждому источнику: источников много (падение, холод, утопление, голод), а
@@ -266,8 +291,8 @@ void Survivor::updateMetabolism(float dt){
     if(radiation_ > 25.0f) damage += (radiation_ - 25.0f) * 0.05f;
     if(damage > 0.0f) health_ = clampf(health_ - damage * dt, 0.0f, 100.0f);
 
-    // Регенерация по ТЗ: 1 HP/с при сытости и жажде выше 80.
-    if(damage <= 0.0f && hunger_ > 80.0f && thirst_ > 80.0f)
+    // Регенерация по ТЗ: 1 HP/с при сытости и жажде выше 80. Мёртвого она не лечит.
+    if(!dead_ && damage <= 0.0f && hunger_ > 80.0f && thirst_ > 80.0f)
         health_ = clampf(health_ + 1.0f * dt, 0.0f, 100.0f);
 }
 
@@ -318,36 +343,40 @@ void Survivor::hitTarget(Block block, int x, int y, int z){
 }
 
 void Survivor::updateInteraction(const SurvivorInput& in, float dt){
-    if(swingCooldown_ > 0.0f) swingCooldown_ -= dt;
-
     target_ = voxels_.raycast(eyePosition(), lookDirection(), REACH);
+
+    // Замах — дискретное действие: одно нажатие даёт один удар, и бить можно всегда,
+    // а не только по добываемому объекту. Так же будет работать удар по другому
+    // игроку, когда появится сетевая игра. Зажатая кнопка ничего не «копает».
+    if(swingCooldown_ > 0.0f){
+        swingCooldown_ -= dt;
+        if(swingCooldown_ < 0.0f) swingCooldown_ = 0.0f;
+    }
 
     // Ломать рельеф нельзя вообще: земля, песок, снег, трава и дорога — не ресурс.
     // Добывается только то, что стоит НА земле: дерево, жила, бочка. Каждый удар даёт
     // ресурс, а когда объект выработан — дерево падает, жила и бочка исчезают.
     bool canHit = target_.hit && isHarvestable(target_.block);
-    // Замах идёт и в пустоту: игрок должен видеть, что он бьёт, даже если перед ним
-    // ничего добываемого нет. Ресурс при этом, конечно, не капает.
-    if(in.attack && !canHit){
-        miningProgress_ += dt * (hasAxe() ? 2.0f : 1.0f) / SWING_TIME;
-        if(miningProgress_ >= 1.0f) miningProgress_ = 0.0f;
-    }
-    if(in.attack && canHit){
-        if(target_.x != miningX_ || target_.y != miningY_ || target_.z != miningZ_){
-            miningX_ = target_.x; miningY_ = target_.y; miningZ_ = target_.z;
-            miningProgress_ = 0.0f;
-        }
-        // Прогресс — это замах. Топор в руке бьёт вдвое быстрее, чем голыми руками.
-        float speed = hasAxe() ? 2.0f : 1.0f;
-        miningProgress_ += dt * speed / SWING_TIME;
-        stamina_ = clampf(stamina_ - dt * 2.5f, 0.0f, 100.0f);
 
-        if(miningProgress_ >= 1.0f){
-            miningProgress_ = 0.0f;
-            hitTarget(target_.block, target_.x, target_.y, target_.z);
+    if(in.attack && swingCooldown_ <= 0.0f){
+        // Топором машут быстрее, чем факелом или кулаком.
+        swingPeriod_ = hasAxe() ? SWING_TIME * 0.72f : SWING_TIME;
+        swingCooldown_ = swingPeriod_;
+        stamina_ = clampf(stamina_ - 1.6f, 0.0f, 100.0f);
+        pendingHit_ = false;
+        if(canHit){
+            pendingHit_ = true;
+            pendX_ = target_.x; pendY_ = target_.y; pendZ_ = target_.z;
         }
-    } else {
-        miningProgress_ = 0.0f;
+    }
+
+    // Ресурс капает в середине замаха — в момент, когда инструмент дошёл до цели.
+    // Начислять его в момент нажатия неправильно: дерево прибавлялось раньше, чем
+    // топор до него долетал.
+    if(pendingHit_ && swingCooldown_ <= swingPeriod_ * 0.55f){
+        pendingHit_ = false;
+        Block b = voxels_.blockAt(pendX_, pendY_, pendZ_);
+        if(isHarvestable(b)) hitTarget(b, pendX_, pendY_, pendZ_);
     }
 
     // ---- Кнопка взаимодействия: поставить печь, плавить в ней руду, забрать ящик.

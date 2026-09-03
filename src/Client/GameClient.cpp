@@ -19,6 +19,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -291,6 +292,233 @@ void GameClient::updateParticles(float dt){
     }
 }
 
+// ==================== ВЫБРОШЕННЫЕ ПРЕДМЕТЫ ====================
+// Выброс из инвентаря отправляет ВЕСЬ стак на землю перед игроком: маленький куб
+// крутится на месте, над ним висит название и количество, а рядом появляется кнопка
+// с рукой — по ней предмет возвращается в инвентарь. Так вещь можно передать,
+// переложить или просто освободить слот, не потеряв её насовсем.
+namespace {
+// Чем показывать предмет в мире: у блочных предметов — их же блок, у остальных —
+// ближайший по смыслу материал.
+Block dropBlockFor(ItemType t){
+    const ItemDef& def = itemDef(t);
+    if(def.placeable != Block::Air) return def.placeable;
+    switch(t){
+        case ItemType::Axe:       return Block::Stone;
+        case ItemType::Torch:     return Block::Wood;
+        case ItemType::Scrap:
+        case ItemType::MetalFrag: return Block::OreMetal;
+        case ItemType::Sulfur:
+        case ItemType::Gunpowder: return Block::OreSulfur;
+        case ItemType::BuildPlan: return Block::Planks;
+        case ItemType::Cloth:     return Block::Leaves;
+        default:                  return Block::Planks;
+    }
+}
+const float DROP_SIZE = 0.095f;  // полуразмер куба предмета: маленький, но заметный
+const float PICKUP_RANGE = 3.4f; // с какого расстояния предмет можно поднять
+} // namespace
+
+void GameClient::dropStackToWorld(int slotIndex){
+    if(slotIndex < 0 || slotIndex >= Inventory::SIZE) return;
+    ItemStack st = inventory_.slot(slotIndex);
+    if(st.empty()) return;
+
+    // Куб ложится перед игроком на вытянутую руку, но не внутрь стены: если там
+    // занято, кладём под ноги.
+    Vec3 eye = player_->eyePosition();
+    Vec3 fwd = player_->lookDirection();
+    Vec3 p{ eye.x + fwd.x * 1.9f, eye.y + fwd.y * 0.6f, eye.z + fwd.z * 1.9f };
+    if(voxels_->isSolidAt((int)floorf(p.x), (int)floorf(p.y), (int)floorf(p.z))){
+        Vec3 base = player_->position();
+        p = Vec3{ base.x, base.y + 0.6f, base.z };
+    }
+
+    DroppedItem d;
+    d.pos = p;
+    d.type = st.type;
+    d.count = st.count;
+    d.spin = 0.0f;
+    drops_.push_back(d);
+    inventory_.dropSlot(slotIndex);
+
+    char buf[96];
+    snprintf(buf, sizeof(buf), "Выброшено: %s x%d", itemDef(st.type).nameRu, st.count);
+    SDL_Log("%s", buf);
+}
+
+void GameClient::updateDrops(float dt){
+    for(DroppedItem& d : drops_){
+        d.age += dt;
+        d.spin += dt * 1.9f;             // крутится вокруг своей оси
+        if(d.spin > 6.28318f) d.spin -= 6.28318f;
+        // Падение до земли: под кубом всегда должен быть твёрдый блок.
+        int bx = (int)floorf(d.pos.x), bz = (int)floorf(d.pos.z);
+        int by = (int)floorf(d.pos.y - DROP_SIZE - 0.01f);
+        if(!voxels_->isSolidAt(bx, by, bz)){
+            d.vy -= 18.0f * dt;
+            d.pos.y += d.vy * dt;
+        } else {
+            d.vy = 0.0f;
+            d.pos.y = (float)(by + 1) + DROP_SIZE + 0.04f;
+        }
+        if(d.pos.y < -8.0f) d.count = 0;   // провалился сквозь мир — убираем
+    }
+    drops_.erase(std::remove_if(drops_.begin(), drops_.end(),
+                                [](const DroppedItem& d){ return d.count <= 0; }),
+                 drops_.end());
+}
+
+int GameClient::pickupCandidate() const {
+    if(drops_.empty()) return -1;
+    Vec3 eye = player_->eyePosition();
+    int best = -1;
+    float bestDist = PICKUP_RANGE;
+    for(size_t i = 0; i < drops_.size(); ++i){
+        const DroppedItem& d = drops_[i];
+        float dx = d.pos.x - eye.x, dy = d.pos.y - eye.y, dz = d.pos.z - eye.z;
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+        if(dist < bestDist){ bestDist = dist; best = (int)i; }
+    }
+    return best;
+}
+
+// Кнопка «поднять» — рука над поясом по центру: она появляется только когда рядом
+// действительно что-то лежит, поэтому постоянного места под неё держать не нужно.
+void GameClient::pickupButtonRect(float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    w = h = 84.0f * s;
+    // Кнопка стоит НИЖЕ центра экрана и правее самого предмета: над предметом она
+    // закрывала бы собой тот самый куб, который просят поднять.
+    x = (float)SCR_W * 0.5f + 96.0f * s;
+    y = (float)SCR_H * 0.70f;
+}
+
+bool GameClient::handlePickupTouch(float x, float y){
+    int idx = pickupCandidate();
+    if(idx < 0) return false;
+    float bx, by, bw, bh;
+    pickupButtonRect(bx, by, bw, bh);
+    if(x < bx || x > bx + bw || y < by || y > by + bh) return false;
+
+    DroppedItem& d = drops_[(size_t)idx];
+    int left = inventory_.add(d.type, d.count);
+    if(left >= d.count) return true;      // инвентарь полон — предмет остаётся лежать
+    d.count = left;
+    if(d.count <= 0)
+        drops_.erase(drops_.begin() + idx);
+    return true;
+}
+
+void GameClient::renderDrops(const Mat4& view, const Mat4& proj){
+    for(DroppedItem& d : drops_) d.onScreen = false;
+    if(drops_.empty()) return;
+
+    std::vector<VoxelVertex> verts;
+    verts.reserve(drops_.size() * 36);
+    for(DroppedItem& d : drops_){
+        float tr, tg, tb;
+        Block b = dropBlockFor(d.type);
+        blockTextureTint(b, tr, tg, tb);
+        // Лежащий предмет чуть светлее блока: в траве тёмный кубик просто не видно.
+        tr *= 1.22f; tg *= 1.22f; tb *= 1.22f;
+        float layer = (float)blockTextureLayer(b);
+        float ca = cosf(d.spin), sa = sinf(d.spin);
+        // Куб слегка покачивается вверх-вниз — так он заметен в траве.
+        Vec3 c{ d.pos.x, d.pos.y + sinf(d.age * 2.2f) * 0.035f, d.pos.z };
+        Vec3 ax{ ca, 0.0f, sa }, az{ -sa, 0.0f, ca }, ay{ 0.0f, 1.0f, 0.0f };
+        const float hs = DROP_SIZE;
+        static const int SX[6] = { 0, 0, 1, -1, 0, 0 };
+        static const int SY[6] = { 1, -1, 0, 0, 0, 0 };
+        static const int SZ[6] = { 0, 0, 0, 0, 1, -1 };
+        for(int f = 0; f < 6; ++f){
+            Vec3 n{ ax.x * SX[f] + ay.x * SY[f] + az.x * SZ[f],
+                    ax.y * SX[f] + ay.y * SY[f] + az.y * SZ[f],
+                    ax.z * SX[f] + ay.z * SY[f] + az.z * SZ[f] };
+            Vec3 t1, t2;
+            if(SY[f] != 0){ t1 = ax; t2 = az; }
+            else if(SX[f] != 0){ t1 = ay; t2 = az; }
+            else { t1 = ax; t2 = ay; }
+            Vec3 base{ c.x + n.x * hs, c.y + n.y * hs, c.z + n.z * hs };
+            float face = (SY[f] > 0) ? 1.0f : (SY[f] < 0 ? 0.6f : (SX[f] ? 0.82f : 0.92f));
+            VoxelVertex q[4];
+            for(int k = 0; k < 4; ++k){
+                float s1 = (k == 0 || k == 3) ? -1.0f : 1.0f;
+                float s2 = (k < 2) ? -1.0f : 1.0f;
+                q[k] = VoxelVertex{
+                    base.x + t1.x * hs * s1 + t2.x * hs * s2,
+                    base.y + t1.y * hs * s1 + t2.y * hs * s2,
+                    base.z + t1.z * hs * s1 + t2.z * hs * s2,
+                    n.x, n.y, n.z,
+                    tr * face, tg * face, tb * face,
+                    (k == 1 || k == 2) ? 1.0f : 0.0f, (k >= 2) ? 1.0f : 0.0f, layer };
+            }
+            verts.push_back(q[0]); verts.push_back(q[1]); verts.push_back(q[2]);
+            verts.push_back(q[0]); verts.push_back(q[2]); verts.push_back(q[3]);
+        }
+
+        // Куда куб попал на экране: подпись и кнопку рисует уже плоский интерфейс,
+        // и ему нужна готовая точка, а не матрицы.
+        float wp[4] = { c.x, c.y + hs + 0.12f, c.z, 1.0f };
+        float vp[4], cp[4];
+        for(int i = 0; i < 4; ++i)
+            vp[i] = view.m[i] * wp[0] + view.m[4 + i] * wp[1] + view.m[8 + i] * wp[2] + view.m[12 + i] * wp[3];
+        for(int i = 0; i < 4; ++i)
+            cp[i] = proj.m[i] * vp[0] + proj.m[4 + i] * vp[1] + proj.m[8 + i] * vp[2] + proj.m[12 + i] * vp[3];
+        if(cp[3] > 0.001f){
+            float ndcX = cp[0] / cp[3], ndcY = cp[1] / cp[3];
+            d.screenX = ((float)SCR_W) * (ndcX * 0.5f + 0.5f);
+            d.screenY = ((float)SCR_H) * (0.5f - ndcY * 0.5f);
+            d.onScreen = (ndcX > -1.2f && ndcX < 1.2f && ndcY > -1.2f && ndcY < 1.2f);
+        }
+    }
+
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    bindBlockTextures();
+    // Грани куба собраны тем же способом, что и бруски инструмента в руке, и их обход
+    // не совпадает с общим правилом отсечения — иначе куб пропадает целиком.
+    glDisable(GL_CULL_FACE);
+    glBindVertexArray(partVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
+    // Буфер частиц рассчитан на 64 куба — больше предметов за раз на землю не кладут.
+    size_t maxVerts = 64 * 36;
+    if(verts.size() > maxVerts) verts.resize(maxVerts);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+}
+
+// Подписи над выброшенными предметами и кнопка поднятия. Рисуются в HUD, поверх мира.
+void GameClient::renderDropLabels(){
+    if(drops_.empty() || overlay_ != Overlay::None) return;
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    char buf[96];
+    for(const DroppedItem& d : drops_){
+        if(!d.onScreen) continue;
+        snprintf(buf, sizeof(buf), "%s x%d", itemDef(d.type).nameRu, d.count);
+        float fh = 17.0f * s;
+        float tw = textWidth(fh, buf);
+        drawUIRect(d.screenX - tw * 0.5f - 8.0f * s, d.screenY - fh * 0.35f,
+                   tw + 16.0f * s, fh * 1.6f, 0, 0.05f, 0.05f, 0.06f, 0.55f, false);
+        drawTextCentered(d.screenX, d.screenY, fh, buf, 1, 1, 1, 0.95f);
+    }
+
+    int idx = pickupCandidate();
+    if(idx < 0) return;
+    float bx, by, bw, bh;
+    pickupButtonRect(bx, by, bw, bh);
+    if(texInteract_) drawUIRect(bx, by, bw, bh, texInteract_, 1, 1, 1, 0.95f, true);
+    else {
+        drawUICircle(bx + bw * 0.5f, by + bh * 0.5f, bw * 0.5f, 0.88f, 0.87f, 0.83f, 0.35f);
+        drawUICircleOutline(bx + bw * 0.5f, by + bh * 0.5f, bw * 0.5f, 1, 1, 1, 0.8f, 2.0f);
+    }
+    drawTextCentered(bx + bw * 0.5f, by + bh + 4.0f * s, 17.0f * s, "ПОДНЯТЬ", 1, 1, 1, 0.9f);
+}
+
 void GameClient::renderParticles(const Mat4& view, const Mat4& proj){
     if(particles_.empty()) return;
     std::vector<VoxelVertex> verts;
@@ -322,7 +550,10 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
     float bob = (player_->speed() > 0.4f && player_->onGround())
                 ? sinf(heldBobPhase_ * 2.0f) * 0.012f : 0.0f;
-    float swing = player_->miningProgress() > 0.01f ? sinf(heldBobPhase_ * 9.0f) * 0.10f : 0.0f;
+    // Замах: инструмент уходит назад-вверх и резко падает вперёд-вниз. Дуга — синус
+    // по фазе удара, поэтому один удар читается как один взмах, а не как дрожь.
+    float phase = player_->swingPhase();
+    float swing = (phase > 0.0f) ? sinf(phase * 3.14159265f) : 0.0f;
 
     Vec3 right = v3norm(v3cross(forward, Vec3{0,1,0}));
     Vec3 up = v3cross(right, forward);
@@ -354,10 +585,11 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     const float S = 0.86f;
     // Факел держат почти прямо: с наклоном топора пламя уезжает к центру экрана и
     // теряется в пейзаже.
-    float angle = (axe ? 0.42f : 0.20f) - swing * 3.2f;
+    float angle = (axe ? 0.42f : 0.20f) - swing * 1.55f;
     float ca = cosf(angle), sa = sinf(angle);
-    float offX = 0.172f, offZ = 0.52f;
-    float offY = (axe ? -0.186f : -0.150f) + bob - swing * 0.35f;
+    float offX = 0.172f - swing * 0.075f;
+    float offZ = 0.52f + swing * 0.14f;   // на замахе инструмент уходит вперёд от лица
+    float offY = (axe ? -0.186f : -0.150f) + bob - swing * 0.20f;
 
     std::vector<VoxelVertex> verts;
     verts.reserve(6 * 36);
@@ -642,17 +874,14 @@ void GameClient::craftTilePos(int i, float& tx, float& ty) const {
 
 void GameClient::craftButtonRect(float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float gx, gy, tile, gap;
-    craftGridGeometry(gx, gy, tile, gap);
-    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    float dx, dy, dw, dh, notesY, tableY;
+    craftPanelGeometry(dx, dy, dw, dh, notesY, tableY);
     // Кнопка стоит ВНУТРИ панели описания, в её правом нижнем углу: снаружи она
     // налезала на пояс быстрого доступа.
-    float dx = gx + gridW + 28.0f * s;
-    float dw = craftPanelWidth();
     w = fminf(dw * 0.45f, 300.0f * s);
     h = 54.0f * s;
     x = dx + dw - w - 16.0f * s;
-    y = gy + tile * 3.0f - h - 16.0f * s;
+    y = dy + dh - h - 16.0f * s;
 }
 
 // Панель состояния слева сверху: она же кнопка меню паузы. Геометрия совпадает с
@@ -923,15 +1152,14 @@ bool GameClient::handleOverlayTouch(float x, float y){
     // едет за пальцем, отпустили над другой ячейкой — кладём туда.
     if(itemMenuSlot_ >= 0) return handleItemMenuTouch(x, y);
 
-    // Крестик выхода: его геометрия повторяет отрисовку.
+    // Крестик выхода: геометрия ОДНА и та же, что при отрисовке (inventoryCloseRect),
+    // иначе попадание съезжает от нарисованной кнопки.
     {
-        float gx, gy, slot, gap;
-        inventoryGeometry(gx, gy, slot, gap);
-        float sc = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-        float w = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
-        float closeSize = 54.0f * sc;
-        float cx = gx + w - closeSize, cy = gy - 52.0f * sc;
-        if(x >= cx && x <= cx + closeSize && y >= cy && y <= cy + closeSize){
+        float cx, cy, cw, ch;
+        inventoryCloseRect(cx, cy, cw, ch);
+        // Запас вокруг крестика: палец толще картинки, и промах по краю раздражает.
+        float pad = 12.0f * clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+        if(x >= cx - pad && x <= cx + cw + pad && y >= cy - pad && y <= cy + ch + pad){
             overlay_ = Overlay::None;
             dragSlot_ = -1; dragActive_ = false;
             return true;
@@ -1005,7 +1233,9 @@ bool GameClient::handleItemMenuTouch(float x, float y){
         float bx, by, bw, bh;
         itemMenuButtonRect(i, bx, by, bw, bh);
         if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
-        if(i == 0)      inventory_.dropSlot(itemMenuSlot_);
+        // «Выбросить» кидает ВЕСЬ стак под ноги, а не стирает его: предмет ложится
+        // перед игроком кубом, и его можно поднять обратно.
+        if(i == 0)      dropStackToWorld(itemMenuSlot_);
         else if(i == 1) inventory_.splitSlot(itemMenuSlot_);
         itemMenuSlot_ = -1;
         return true;
@@ -1632,6 +1862,9 @@ void GameClient::handleEvents(){
             }
         }
         if(down && buildMode() && handleBuildTouch(tx, ty)) continue;
+        // Кнопка-рука над выброшенным предметом: она появляется только когда рядом
+        // что-то лежит, поэтому проверяется до кнопок управления.
+        if(down && overlay_ == Overlay::None && handlePickupTouch(tx, ty)) continue;
         if(down && handleHotbarTouch(tx, ty)) continue;
         controls_.handleEvent(e);
     }
@@ -1678,7 +1911,7 @@ void GameClient::update(float dt){
         in.sprint = controls_.sprint();
         in.crouch = controls_.crouch();
         in.jump = controls_.jumpPressed();
-        in.attack = controls_.attackHeld();
+        in.attack = controls_.attackPressed();
         in.place = controls_.placePressed();
         in.action = controls_.actionPressed();
     }
@@ -1696,6 +1929,7 @@ void GameClient::update(float dt){
     // Падение срубленного дерева и осколки от выработанной жилы.
     voxels_->updateFalling(dt);
     updateParticles(dt);
+    updateDrops(dt);
 
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
@@ -1824,6 +2058,7 @@ void GameClient::renderScene(){
 
     // ---- Осколки и предмет в руке. Оба прохода до воды и БЕЗ очистки глубины.
     renderParticles(view, proj);
+    if(state_ == GameState::Playing) renderDrops(view, proj);
     if(buildMode()) renderBuildGhost(view, proj);
     if(state_ == GameState::Playing)
         renderHeldItem(view, proj, eye, forward, 1.0f / 60.0f);
@@ -1881,6 +2116,20 @@ void GameClient::renderScene(){
 }
 
 // ==================== ИНТЕРФЕЙС ====================
+
+float GameClient::textWidth(float height, const std::string& text){
+    if(!uiFont || text.empty()) return 0.0f;
+    TextTexCache& cache = textCache_[text];
+    SDL_Color color{ 255, 255, 255, 255 };
+    updateTextTexture(cache, text, color);
+    if(!cache.tex || cache.h <= 0) return 0.0f;
+    return height * (float)cache.w / (float)cache.h;
+}
+
+void GameClient::drawTextCentered(float cx, float y, float height, const std::string& text,
+                                  float r, float g, float b, float a){
+    drawText(cx - textWidth(height, text) * 0.5f, y, height, text, r, g, b, a);
+}
 
 void GameClient::drawText(float x, float y, float height, const std::string& text,
                           float r, float g, float b, float a){
@@ -2024,19 +2273,17 @@ void GameClient::renderHud(){
                  UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.75f);
     }
 
-    // ---- Прицел и подсказка по блоку
+    // ---- Прицел. Пока открыто любое окно (крафт, инвентарь, печь, карта), его нет:
+    // целиться некуда, а перекрестье посреди интерфейса только мешает.
     float cx = (float)SCR_W * 0.5f, cy = (float)SCR_H * 0.5f;
-    drawUIRect(cx - 1.5f, cy - 9.0f, 3.0f, 18.0f, 0, 1,1,1, 0.55f, false);
-    drawUIRect(cx - 9.0f, cy - 1.5f, 18.0f, 3.0f, 0, 1,1,1, 0.55f, false);
-
-    // Название блока под прицелом не выводится намеренно: подпись висела в центре
-    // экрана постоянно и мешала смотреть. Что за блок — видно по цвету, а что удар
-    // засчитан — по рамке и полосе добычи.
-    if(player_->miningProgress() > 0.01f){
-        float w = 160.0f * s;
-        drawBar(cx - w * 0.5f, cy + 46.0f * s, w, 12.0f * s, player_->miningProgress(),
-                0.75f, 0.65f, 0.25f, "");
+    if(overlay_ == Overlay::None && !player_->isDead()){
+        drawUIRect(cx - 1.5f, cy - 9.0f, 3.0f, 18.0f, 0, 1,1,1, 0.55f, false);
+        drawUIRect(cx - 9.0f, cy - 1.5f, 18.0f, 3.0f, 0, 1,1,1, 0.55f, false);
     }
+    // Полосы добычи больше нет: удар стал дискретным, копить прогресс нечему.
+
+    // ---- Выброшенные предметы: подписи над кубами и кнопка «поднять».
+    renderDropLabels();
 
     // ---- Последнее событие
     if(player_->messageAge() < 4.0f){
@@ -2193,13 +2440,12 @@ void GameClient::renderOverlay(){
         drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
         drawText(gx, gy - 46.0f * s, 30.0f * s, "ИНВЕНТАРЬ", 1, 1, 1, 0.96f);
 
-        float closeSize = 54.0f * s;
-        // Крестик ниже и правее: он висел выше заголовка и упирался в край сетки.
-        float closeX = gx + w + 16.0f * s, closeY = gy - 30.0f * s;
-        if(texClose_) drawUIRect(closeX, closeY, closeSize, closeSize, texClose_, 1, 1, 1, 0.9f, true);
+        float closeX, closeY, closeW, closeH;
+        inventoryCloseRect(closeX, closeY, closeW, closeH);
+        if(texClose_) drawUIRect(closeX, closeY, closeW, closeH, texClose_, 1, 1, 1, 0.9f, true);
         else {
-            drawUIRect(closeX, closeY, closeSize, closeSize, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
-            drawText(closeX + closeSize * 0.3f, closeY + closeSize * 0.2f, 26.0f * s, "X", 1, 1, 1, 0.95f);
+            drawUIRect(closeX, closeY, closeW, closeH, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
+            drawTextCentered(closeX + closeW * 0.5f, closeY + closeH * 0.25f, 26.0f * s, "X", 1, 1, 1, 0.95f);
         }
 
         drawUIRect(gx - 4.0f * s, gy - 4.0f * s, w + 8.0f * s, mainH + 8.0f * s, 0,
@@ -2241,6 +2487,39 @@ void GameClient::renderOverlay(){
 // Список прокручивается пальцем — как в Rust: рецептов со временем станет несколько
 // десятков, и они не влезут ни в один экран телефона.
 
+// Разметка панели описания. Раньше значок предмета и текст стояли на фиксированных
+// отступах, а таблица стоимости — на своём: при длинном названии они наезжали друг на
+// друга. Теперь каждый следующий блок начинается там, где кончился предыдущий.
+void GameClient::craftPanelGeometry(float& dx, float& dy, float& dw, float& dh,
+                                    float& notesY, float& tableY) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float gx, gy, tile, gap;
+    craftGridGeometry(gx, gy, tile, gap);
+    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    dx = gx + gridW + 28.0f * s;
+    dy = gy;
+    dw = craftPanelWidth();
+
+    int sel = craftSelected_;
+    if(sel < 0) sel = 0;
+    if(sel >= kRecipeCount) sel = kRecipeCount - 1;
+    const Recipe& r = kRecipes[sel];
+
+    float bigIcon = tile * 0.72f;
+    float headerH = fmaxf(bigIcon, 46.0f * s) + 14.0f * s;
+    notesY = dy + 14.0f * s + headerH;
+
+    float noteH = 18.0f * s;
+    size_t lineCount = wrapText(r.note, noteH, dw - 36.0f * s).size();
+    tableY = notesY + (float)lineCount * noteH * 1.35f + 20.0f * s;
+
+    int rows = 1 + (r.costB != ItemType::None ? 1 : 0);
+    float tableH = 30.0f * s + (float)rows * 28.0f * s;
+    dh = (tableY + tableH + 16.0f * s + 54.0f * s + 16.0f * s) - dy;
+    float minH = tile * 3.0f;
+    if(dh < minH) dh = minH;
+}
+
 void GameClient::renderCraft(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     // Экран крафта: слева квадратные плитки рецептов, справа — описание выбранного.
@@ -2249,7 +2528,6 @@ void GameClient::renderCraft(){
     // в образце отсутствует.
     float gx, gy, tile, gap;
     craftGridGeometry(gx, gy, tile, gap);
-    float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
     drawText(gx, gy - 46.0f * s, 30.0f * s, "КРАФТ", 1, 1, 1, 0.96f);
 
     // Крестик — В САМОМ ВЕРХУ экрана справа, а не у сетки: так он не спорит с панелью.
@@ -2312,40 +2590,49 @@ void GameClient::renderCraft(){
     const ItemDef& res = itemDef(r.result);
     // Панель описания не тянется до края экрана: вытянутая на всю ширину полоса
     // выглядела шапкой сайта, а не окном крафта.
-    float dx = gx + gridW + 28.0f * s;
-    float dw = craftPanelWidth();
-    float dy = gy;
-    drawUIRect(dx, dy, dw, tile * 3.0f, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
+    float dx, dy, dw, dh, notesY, ly;
+    craftPanelGeometry(dx, dy, dw, dh, notesY, ly);
+    drawUIRect(dx, dy, dw, dh, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
 
-    // Заголовок описания: название слева, крупный значок предмета справа.
-    snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
-    drawText(dx + 18.0f * s, dy + 16.0f * s, 27.0f * s, buf, 1, 1, 1, 0.96f);
-    float bigIcon = tile * 0.9f;
+    // Заголовок описания: название слева, крупный значок предмета справа. Название
+    // переносится по словам и не залезает под значок.
+    float bigIcon = tile * 0.72f;
     GLuint resIcon = itemIcon(r.result);
     if(resIcon)
-        drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 12.0f * s, bigIcon, bigIcon,
+        drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 14.0f * s, bigIcon, bigIcon,
                    resIcon, 1, 1, 1, 1.0f, true);
+    snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
+    {
+        float titleH = 25.0f * s;
+        float titleW = dw - bigIcon - 44.0f * s;
+        std::vector<std::string> tl = wrapText(buf, titleH, titleW);
+        float ty2 = dy + 16.0f * s;
+        for(const std::string& line : tl){
+            drawText(dx + 18.0f * s, ty2, titleH, line.c_str(), 1, 1, 1, 0.96f);
+            ty2 += titleH * 1.25f;
+        }
+    }
 
     {
         // Описание переносится по словам: в одну строку оно не влезало и уезжало за
         // край панели.
         float noteH = 18.0f * s;
         std::vector<std::string> lines = wrapText(r.note, noteH, dw - 36.0f * s);
-        float ny = dy + 50.0f * s;
+        float ny = notesY;
         for(const std::string& line : lines){
             drawText(dx + 18.0f * s, ny, noteH, line.c_str(), 0.90f, 0.90f, 0.88f, 0.95f);
             ny += noteH * 1.35f;
         }
     }
 
-    // Таблица стоимости с шапкой: сколько нужно, чего и сколько есть на руках.
-    float ly = dy + 92.0f * s;
-    drawUIRect(dx + 14.0f * s, ly - 6.0f * s, dw - 28.0f * s, 26.0f * s, 0,
+    // Таблица стоимости с шапкой: сколько нужно, чего и сколько есть на руках. Её
+    // шапка стоит НИЖЕ описания и значка — раньше они налезали друг на друга.
+    drawUIRect(dx + 14.0f * s, ly, dw - 28.0f * s, 26.0f * s, 0,
                0.85f, 0.84f, 0.80f, 0.28f, false);
-    drawText(dx + 22.0f * s, ly - 3.0f * s, 16.0f * s, "НУЖНО", 0.15f, 0.15f, 0.16f, 0.95f);
-    drawText(dx + 100.0f * s, ly - 3.0f * s, 16.0f * s, "МАТЕРИАЛ", 0.15f, 0.15f, 0.16f, 0.95f);
-    drawText(dx + dw - 96.0f * s, ly - 3.0f * s, 16.0f * s, "ЕСТЬ", 0.15f, 0.15f, 0.16f, 0.95f);
-    ly += 28.0f * s;
+    drawText(dx + 22.0f * s, ly + 3.0f * s, 16.0f * s, "НУЖНО", 0.15f, 0.15f, 0.16f, 0.95f);
+    drawText(dx + 100.0f * s, ly + 3.0f * s, 16.0f * s, "МАТЕРИАЛ", 0.15f, 0.15f, 0.16f, 0.95f);
+    drawText(dx + dw - 96.0f * s, ly + 3.0f * s, 16.0f * s, "ЕСТЬ", 0.15f, 0.15f, 0.16f, 0.95f);
+    ly += 34.0f * s;
     for(int k = 0; k < 2; ++k){
         ItemType cost = (k == 0) ? r.costA : r.costB;
         int need = (k == 0) ? r.costACount : r.costBCount;
@@ -2370,7 +2657,7 @@ void GameClient::renderCraft(){
     drawUIRect(bx, by, bw, bh, 0, ok ? 0.24f : 0.20f, ok ? 0.34f : 0.20f, ok ? 0.24f : 0.21f,
                ok ? 0.72f : 0.55f, false);
     uiThinFrame(bx, by, bw, bh, ok ? UI_ACCENT : UI_LINE, ok ? 0.9f : 0.4f);
-    drawText(bx + bw * 0.5f - 46.0f * s, by + bh * 0.28f, 23.0f * s, "СОЗДАТЬ",
+    drawTextCentered(bx + bw * 0.5f, by + bh * 0.28f, 23.0f * s, "СОЗДАТЬ",
              ok ? UI_ACCENT.r : UI_TEXT_DIM.r, ok ? UI_ACCENT.g : UI_TEXT_DIM.g,
              ok ? UI_ACCENT.b : UI_TEXT_DIM.b, ok ? 1.0f : 0.7f);
 }
@@ -2621,17 +2908,34 @@ void GameClient::renderCompass(){
     drawUIRect(x + w * 0.5f - 1.5f, y - 3.0f * s, 3.0f, h + 5.0f * s, 0, 1, 1, 1, 0.95f, false);
 }
 
+void GameClient::inventoryCloseRect(float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float gx, gy, slot, gap;
+    inventoryGeometry(gx, gy, slot, gap);
+    float gw = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
+    w = h = 54.0f * s;
+    x = gx + gw + 16.0f * s;
+    y = gy - 30.0f * s;
+    // Если сетка почти во всю ширину, крестик прижимается к краю экрана, а не уезжает
+    // за него.
+    if(x + w > (float)SCR_W - 8.0f * s) x = (float)SCR_W - w - 8.0f * s;
+}
+
 // ==================== ГЛАВНОЕ МЕНЮ ====================
+// Стиль меню — «раст»: узкие светлые кнопки-полосы с прочерком слева, заголовок с
+// разрядкой и тонкая линейка под ним. Всё строго по центру экрана: раньше и заголовок,
+// и подпись начинались от левого края условной коробки и висели слева.
 void GameClient::menuButtonRect(int index, float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    w = clampf((float)SCR_W * 0.34f, 260.0f, 460.0f);
-    h = 62.0f * s;
+    w = clampf((float)SCR_W * 0.30f, 260.0f, 420.0f);
+    h = 58.0f * s;
     x = ((float)SCR_W - w) * 0.5f;
-    y = (float)SCR_H * 0.44f + (float)index * (h + 14.0f * s);
+    y = (float)SCR_H * 0.46f + (float)index * (h + 12.0f * s);
 }
 
 void GameClient::renderMainMenu(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float cx = (float)SCR_W * 0.5f;
     // Фон меню — своя картинка на весь экран; если её нет, остаётся живой мир под затемнением.
     if(texMenuBg_){
         drawMenuBackground();
@@ -2639,30 +2943,49 @@ void GameClient::renderMainMenu(){
     } else {
         drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.40f, false);
     }
+    // Полоса-виньетка по центру: на пёстром фоне белые буквы иначе теряются.
+    float bandW = clampf((float)SCR_W * 0.46f, 380.0f, 720.0f);
+    drawUIRect(cx - bandW * 0.5f, (float)SCR_H * 0.12f, bandW, (float)SCR_H * 0.74f, 0,
+               0.04f, 0.04f, 0.045f, 0.34f, false);
 
-    float titleW = clampf((float)SCR_W * 0.5f, 320.0f, 640.0f);
-    float titleX = ((float)SCR_W - titleW) * 0.5f;
-    drawText(titleX, (float)SCR_H * 0.20f, 62.0f * s, "OSIL SURVIVAL", UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
-    drawText(titleX, (float)SCR_H * 0.30f, 22.0f * s,
-             "Кубическое выживание: ломай, строй, выживай",
-             UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.9f);
+    // Заголовок с разрядкой между букв: так набирают шапки в Rust, и на фоне пейзажа
+    // строка читается как эмблема, а не как подпись.
+    float titleH = clampf(64.0f * s, 40.0f, 110.0f);
+    drawTextCentered(cx, (float)SCR_H * 0.19f, titleH, "O S I L",
+                     UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
+    drawTextCentered(cx, (float)SCR_H * 0.19f + titleH * 1.05f, titleH * 0.52f, "S U R V I V A L",
+                     1.0f, 0.96f, 0.90f, 0.95f);
+    // Тонкая линейка под заголовком — граница шапки.
+    float ruleW = bandW * 0.62f;
+    float ruleY = (float)SCR_H * 0.19f + titleH * 1.75f;
+    drawUIRect(cx - ruleW * 0.5f, ruleY, ruleW, fmaxf(1.0f, 2.0f * s), 0,
+               UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.55f, false);
+    drawTextCentered(cx, ruleY + 12.0f * s, 19.0f * s,
+                     "ОСТРОВ. ТОПОР. НОЧЬ ВПЕРЕДИ.",
+                     UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.85f);
 
     const char* labels[3] = { "ИГРАТЬ", "НАСТРОЙКИ", "ВЫХОД" };
     for(int i = 0; i < 3; ++i){
         float x, y, w, h;
         menuButtonRect(i, x, y, w, h);
-        drawUIRect(x, y, w, h, 0, UI_BG_PANEL.r, UI_BG_PANEL.g, UI_BG_PANEL.b, 0.9f, false);
-        uiDoubleFrame(x, y, w, h, 0.95f);
-        float tw = h * 0.42f * 0.55f * (float)strlen(labels[i]);
-        drawText(x + w * 0.5f - tw * 0.5f, y + h * 0.26f, h * 0.42f, labels[i],
-                 i == 0 ? UI_ACCENT.r : UI_TEXT.r, i == 0 ? UI_ACCENT.g : UI_TEXT.g,
-                 i == 0 ? UI_ACCENT.b : UI_TEXT.b, 1.0f);
+        bool primary = (i == 0);
+        // Кнопка — светлая полупрозрачная полоса, у «Играть» она заметно светлее.
+        drawUIRect(x, y, w, h, 0, 0.88f, 0.87f, 0.83f, primary ? 0.26f : 0.15f, false);
+        uiThinFrame(x, y, w, h, primary ? UI_ACCENT : UI_LINE, primary ? 0.85f : 0.45f);
+        // Прочерк слева — та самая расточка, по которой узнаётся меню Rust.
+        float tick = 4.0f * s;
+        drawUIRect(x, y, tick, h, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b,
+                   primary ? 0.95f : 0.45f, false);
+        drawTextCentered(x + w * 0.5f, y + h * 0.26f, h * 0.40f, labels[i],
+                         primary ? UI_ACCENT.r : UI_TEXT.r,
+                         primary ? UI_ACCENT.g : UI_TEXT.g,
+                         primary ? UI_ACCENT.b : UI_TEXT.b, 1.0f);
     }
 
     char buf[128];
     snprintf(buf, sizeof(buf), "сид мира: %s   |   %.0f FPS", WORLD_SEED_TEXT, (double)fps_);
-    drawText(titleX, (float)SCR_H - 40.0f * s, 17.0f * s, buf,
-             UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.8f);
+    drawTextCentered(cx, (float)SCR_H - 40.0f * s, 17.0f * s, buf,
+                     UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.8f);
 }
 
 bool GameClient::handleMenuTouch(float x, float y){
