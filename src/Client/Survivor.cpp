@@ -401,8 +401,13 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
     if(pendingHit_ && swingCooldown_ <= swingPeriod_ * 0.55f){
         pendingHit_ = false;
         Block b = voxels_.blockAt(pendX_, pendY_, pendZ_);
-        if(isHarvestable(b))      hitTarget(b, pendX_, pendY_, pendZ_);
-        else if(isBuildBlock(b) && onHitBuild) onHitBuild(b, pendX_, pendY_, pendZ_);
+        if(isHarvestable(b)){
+            hitTarget(b, pendX_, pendY_, pendZ_);
+            if(onHitLanded) onHitLanded(b, pendX_, pendY_, pendZ_);
+        } else if(isBuildBlock(b)){
+            if(onHitBuild)  onHitBuild(b, pendX_, pendY_, pendZ_);
+            if(onHitLanded) onHitLanded(b, pendX_, pendY_, pendZ_);
+        }
     }
 
     // ---- Кнопка взаимодействия: поставить объект, залутать ящик, открыть печь,

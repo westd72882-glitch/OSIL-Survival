@@ -247,7 +247,10 @@ private:
     Vec2  deathMark_{0,0};
     bool  deathMarkValid_ = false;
     GLuint texBuild_ = 0, texBuildAccept_ = 0;
-    GLuint texCatFoundation_ = 0, texCatFloor_ = 0, texCatDoor_ = 0;
+    GLuint texCatFoundation_ = 0, texCatFloor_ = 0, texCatDoor_ = 0, texCatWall_ = 0;
+    // Метка попадания, значок «открыть» у двери, огонь в печи и значок радиации.
+    GLuint texHitMark_ = 0, texOpen_ = 0, texFire_ = 0, texRadiation_ = 0;
+    float  hitMarkAge_ = 99.0f;   // сколько секунд назад удар попал в цель
     // Значок на каждый вид предмета: индекс — ItemType. Чему картинки нет, тот
     // рисуется цветом.
     GLuint texItems_[(int)ItemType::COUNT] = {};

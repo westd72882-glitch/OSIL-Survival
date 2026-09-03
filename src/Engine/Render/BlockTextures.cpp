@@ -29,6 +29,8 @@ enum Layer {
     LAYER_CRATE,
     LAYER_BUILD,
     LAYER_WATER,
+    LAYER_CUPBOARD,
+    LAYER_BOX,
     LAYER_COUNT
 };
 
@@ -48,6 +50,8 @@ const char* kLayerFiles[LAYER_COUNT] = {
     "block_crate.png",
     "block_build.png",
     "block_water.png",
+    "block_cupboard.png",
+    "block_box.png",
 };
 
 GLuint g_array = 0;
@@ -222,10 +226,8 @@ int blockTextureLayer(Block b){
         case Block::BuildDoorZ:
         case Block::BuildFloor:
         case Block::BuildDoor:  return LAYER_BUILD;
-        // Шкаф и ящик пока берут картинку лутового ящика: своих текстур для них в
-        // репозиторий не приносили, а деревянный ящик им обоим к лицу.
-        case Block::Cupboard:
-        case Block::Box:        return LAYER_CRATE;
+        case Block::Cupboard:   return LAYER_CUPBOARD;
+        case Block::Box:        return LAYER_BOX;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
     }
 }

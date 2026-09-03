@@ -145,6 +145,17 @@ JOBS = {
     'item_planks.png':   ('Wall_Wood_0.png', 128),
     'item_dirt.png':     ('Dirt_01.png', 128),
     'item_sand.png':     ('T_Ground_Sand_02_A_Sm.png', 128),
+    # Новый набор из репозитория: шкаф, ящик, значок стены для ленты стройки, метка
+    # попадания, кнопка «открыть» у двери, огонь и радиация.
+    'item_cupboard.png': ('Cupboard.png', 128),
+    'item_box.png':      ('Crate.png', 128),
+    'block_cupboard.png':('Cupboard.png', 256),
+    'block_box.png':     ('Crate.png', 256),
+    'ui_cat_wall.png':   ('Wall_Category.png', 128),
+    'ui_hitmark.png':    ('CriticalHit_Marker.png', 96),
+    'ui_open.png':       ('Open.png', 128),
+    'ui_fire.png':       ('Fire.png', 128),
+    'ui_radiation.png':  ('radiation.png', 96),
     'menu_bg.png':       ('menu-bg-update.png', 0),            # 0 — оставить как есть
 }
 

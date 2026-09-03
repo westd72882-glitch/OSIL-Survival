@@ -1078,6 +1078,8 @@ void GameClient::initWorld(){
     player_->onOpenFurnace = [this](){ overlay_ = Overlay::Furnace; };
     // Удар по дому считает клиент: прочность детали живёт в его реестре построек.
     player_->onHitBuild = [this](Block b, int x, int y, int z){ hitBuildPiece(b, x, y, z); };
+    // Метка попадания: короткая вспышка у прицела, чтобы удар читался как удар.
+    player_->onHitLanded = [this](Block, int, int, int){ hitMarkAge_ = 0.0f; };
     // Шкаф и ящик: их содержимое тоже у клиента.
     player_->onOpenObject = [this](Block b, int x, int y, int z){
         if(b == Block::Box){
@@ -1913,7 +1915,8 @@ void GameClient::placeBuildPart(){
 
 void GameClient::renderBuildBar(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    GLuint icons[4] = { texCatFoundation_, texCatFloor_, texCatFloor_, texCatDoor_ };
+    GLuint icons[4] = { texCatFoundation_, texCatWall_ ? texCatWall_ : texCatFloor_,
+                        texCatFloor_, texCatDoor_ };
     for(int i = 0; i < kBuildPartCount; ++i){
         float x, y, w, h;
         buildPartRect(i, x, y, w, h);
@@ -2008,6 +2011,14 @@ void GameClient::renderFurnace(){
     drawUIRect(barX, sy + slot * 0.42f, barW, 14.0f * s, 0, 0.18f, 0.18f, 0.19f, 0.9f, false);
     drawUIRect(barX, sy + slot * 0.42f, barW * clampf(furnace_.progress, 0.0f, 1.0f), 14.0f * s,
                0, 0.95f, 0.55f, 0.18f, 0.95f, false);
+
+    // Огонь у полосы плавки: пока идёт плавка, печь топится, и это должно быть видно.
+    if(furnace_.oreCount > 0 && texFire_){
+        float fsz = 30.0f * s;
+        float flick = 0.75f + 0.25f * sinf(animTime_ * 9.0f);
+        drawUIRect(barX + barW * 0.5f - fsz * 0.5f, sy + slot * 0.42f - fsz - 6.0f * s,
+                   fsz, fsz, texFire_, 1, 1, 1, flick, true);
+    }
 
     float outX = barX + barW + 18.0f * s;
     ItemStack outStack{ furnace_.result, furnace_.done };
@@ -2820,6 +2831,46 @@ void GameClient::renderHud(){
         drawUIRect(cx - 9.0f, cy - 1.5f, 18.0f, 3.0f, 0, 1,1,1, 0.55f, false);
     }
     // Полосы добычи больше нет: удар стал дискретным, копить прогресс нечему.
+
+    // ---- Метка попадания: живёт треть секунды и за это время расходится и гаснет.
+    hitMarkAge_ += 1.0f / 60.0f;
+    if(overlay_ == Overlay::None && hitMarkAge_ < 0.35f && texHitMark_){
+        float k = clampf(hitMarkAge_ / 0.35f, 0.0f, 1.0f);
+        float size = (44.0f + 26.0f * k) * s;
+        drawUIRect(cx - size * 0.5f, cy - size * 0.5f, size, size, texHitMark_,
+                   1, 1, 1, (1.0f - k) * 0.95f, true);
+    }
+
+    // ---- Подсказка у двери: её открывают и закрывают кнопкой «рука».
+    if(overlay_ == Overlay::None){
+        const RayHit& t = player_->target();
+        bool atDoor = t.hit && isDoorBlock(t.block);
+        bool nearOpen = false;
+        if(!atDoor){
+            Vec3 pp = player_->position();
+            for(const BuildPiece& p : pieces_){
+                if(!p.open || !isDoorBlock(p.block)) continue;
+                float dx = (float)p.x + 0.5f - pp.x, dz = (float)p.z + 0.5f - pp.z;
+                if(dx * dx + dz * dz < 12.0f){ nearOpen = true; break; }
+            }
+        }
+        if(atDoor || nearOpen){
+            float isz = 54.0f * s;
+            float ix = cx - isz * 0.5f, iy = cy + 30.0f * s;
+            if(texOpen_) drawUIRect(ix, iy, isz, isz, texOpen_, 1, 1, 1, 0.95f, true);
+            drawTextCentered(cx, iy + isz + 2.0f * s, 17.0f * s,
+                             atDoor ? "ОТКРЫТЬ" : "ЗАКРЫТЬ", 1, 1, 1, 0.9f);
+        }
+    }
+
+    // ---- Радиация: значок с числом появляется, только когда она есть.
+    if(player_->radiation() > 0.5f){
+        float isz = 34.0f * s;
+        float ix = pad, iy = y + 6.0f * s;
+        if(texRadiation_) drawUIRect(ix, iy, isz, isz, texRadiation_, 1, 1, 1, 0.95f, true);
+        snprintf(buf, sizeof(buf), "%.0f", (double)player_->radiation());
+        drawText(ix + isz + 6.0f * s, iy + isz * 0.2f, 20.0f * s, buf, 0.85f, 0.95f, 0.45f, 0.95f);
+    }
 
     // ---- Прочность детали дома под прицелом (только у побитой).
     renderBuildTargetInfo();
@@ -3787,6 +3838,11 @@ void GameClient::loadInterfaceTextures(){
         { "ui_cat_foundation.png", &texCatFoundation_ },
         { "ui_cat_floor.png",      &texCatFloor_ },
         { "ui_cat_door.png",       &texCatDoor_ },
+        { "ui_cat_wall.png",       &texCatWall_ },
+        { "ui_hitmark.png",        &texHitMark_ },
+        { "ui_open.png",           &texOpen_ },
+        { "ui_fire.png",           &texFire_ },
+        { "ui_radiation.png",      &texRadiation_ },
         { "ui_map_mark.png",       &texMapMark_ },
         { "ui_death_mark.png",     &texDeathMark_ },
     };
@@ -3819,10 +3875,8 @@ void GameClient::loadInterfaceTextures(){
         { ItemType::Planks,    "item_planks.png" },
         { ItemType::Dirt,      "item_dirt.png" },
         { ItemType::Sand,      "item_sand.png" },
-        // Своих иконок у шкафа и ящика пока нет — берём картинку деревянного ящика и
-        // строительной доски, чтобы в инвентаре был предмет, а не цветной квадрат.
-        { ItemType::Box,       "block_crate.png" },
-        { ItemType::Cupboard,  "block_build.png" },
+        { ItemType::Box,       "item_box.png" },
+        { ItemType::Cupboard,  "item_cupboard.png" },
     };
     int itemsLoaded = 0;
     for(const auto& it : itemIcons){

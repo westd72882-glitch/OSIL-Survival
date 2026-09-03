@@ -136,6 +136,8 @@ public:
     std::function<void(Block block, int x, int y, int z)> onObjectPlaced;
     // Ударил топором по части постройки: прочность считает клиент, он же её и рисует.
     std::function<void(Block block, int x, int y, int z)> onHitBuild;
+    // Удар дошёл до цели — клиент рисует метку попадания.
+    std::function<void(Block block, int x, int y, int z)> onHitLanded;
 private:
     // Единственная точка, где здоровье уменьшается. Здесь же фиксируется смерть:
     // раньше урон и проверка смерти стояли в разных местах, и регенерация успевала
