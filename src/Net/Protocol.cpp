@@ -93,17 +93,54 @@ PlayerState decodePlayer(const JsonValue& v){
 }
 } // namespace
 
+std::string encodeEvents(const std::vector<Event>& events){
+    std::string s = "[";
+    for(size_t i = 0; i < events.size(); ++i){
+        const Event& e = events[i];
+        if(i) s += ",";
+        s += "{\"t\":" + std::to_string(e.type) + ",\"i\":" + std::to_string(e.id) +
+             ",\"a\":" + std::to_string(e.a) + ",\"b\":" + std::to_string(e.b) +
+             ",\"x\":" + num(e.x) + ",\"y\":" + num(e.y) + ",\"z\":" + num(e.z);
+        if(e.seq) s += ",\"s\":" + std::to_string(e.seq);
+        s += "}";
+    }
+    s += "]";
+    return s;
+}
+
+void decodeEvents(const JsonValue& arr, std::vector<Event>& out){
+    out.clear();
+    for(size_t i = 0; i < arr.size(); ++i){
+        const JsonValue& v = arr[i];
+        Event e;
+        e.type = v["t"].asInt();
+        e.id = v["i"].asInt();
+        e.a = v["a"].asInt();
+        e.b = v["b"].asInt();
+        e.x = v["x"].asFloat();
+        e.y = v["y"].asFloat();
+        e.z = v["z"].asFloat();
+        e.seq = (long long)v["s"].asDouble(0.0);
+        out.push_back(e);
+    }
+}
+
 std::string encodeSyncRequest(const PlayerState& me, const std::vector<Edit>& edits,
-                              long long sinceSeq){
+                              const std::vector<Event>& events,
+                              long long sinceSeq, long long sinceEventSeq){
     std::string s = "{\"me\":" + encodePlayer(me);
     s += ",\"since\":" + std::to_string(sinceSeq);
+    s += ",\"esince\":" + std::to_string(sinceEventSeq);
     s += ",\"edits\":" + encodeEdits(edits);
+    s += ",\"events\":" + encodeEvents(events);
     s += "}";
     return s;
 }
 
 std::string encodeSyncResponse(const std::vector<PlayerState>& players,
-                               const std::vector<Edit>& edits, long long headSeq,
+                               const std::vector<Edit>& edits,
+                               const std::vector<Event>& events,
+                               long long headSeq, long long eventHeadSeq,
                                float timeOfDay){
     std::string s = "{\"players\":[";
     for(size_t i = 0; i < players.size(); ++i){
@@ -111,31 +148,39 @@ std::string encodeSyncResponse(const std::vector<PlayerState>& players,
         s += encodePlayer(players[i]);
     }
     s += "],\"edits\":" + encodeEdits(edits);
+    s += ",\"events\":" + encodeEvents(events);
     s += ",\"head\":" + std::to_string(headSeq);
+    s += ",\"ehead\":" + std::to_string(eventHeadSeq);
     s += ",\"time\":" + num(timeOfDay);
     s += "}";
     return s;
 }
 
 bool decodeSyncRequest(const std::string& json, PlayerState& out,
-                       std::vector<Edit>& edits, long long& sinceSeq){
+                       std::vector<Edit>& edits, std::vector<Event>& events,
+                       long long& sinceSeq, long long& sinceEventSeq){
     JsonValue root;
     if(!jsonParse(json.c_str(), json.size(), root)) return false;
     out = decodePlayer(root["me"]);
     sinceSeq = (long long)root["since"].asDouble(0.0);
+    sinceEventSeq = (long long)root["esince"].asDouble(0.0);
     decodeEdits(root["edits"], edits);
+    decodeEvents(root["events"], events);
     return true;
 }
 
 bool decodeSyncResponse(const std::string& json, std::vector<PlayerState>& players,
-                        std::vector<Edit>& edits, long long& headSeq, float& timeOfDay){
+                        std::vector<Edit>& edits, std::vector<Event>& events,
+                        long long& headSeq, long long& eventHeadSeq, float& timeOfDay){
     JsonValue root;
     if(!jsonParse(json.c_str(), json.size(), root)) return false;
     players.clear();
     const JsonValue& arr = root["players"];
     for(size_t i = 0; i < arr.size(); ++i) players.push_back(decodePlayer(arr[i]));
     decodeEdits(root["edits"], edits);
+    decodeEvents(root["events"], events);
     headSeq = (long long)root["head"].asDouble(0.0);
+    eventHeadSeq = (long long)root["ehead"].asDouble(0.0);
     timeOfDay = root["time"].asFloat(timeOfDay);
     return true;
 }

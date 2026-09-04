@@ -46,10 +46,20 @@ private:
     Config cfg_;
     net::Server http_;
     std::unordered_map<int, Slot> players_;
-    std::vector<net::Edit> journal_;      // правки мира по порядку
+    std::vector<net::Edit> journal_;        // правки мира по порядку
+    std::vector<net::Event> eventJournal_;  // события: дропы, деревья, взрывы, удары
+    // Долгоживущее состояние мира, которое надо отдать тому, кто вошёл позже: что
+    // лежит на земле и какие деревья уже срублены. Взрывы и удары так не хранятся —
+    // они разовые, и повторять их новичку незачем (да и вредно).
+    std::unordered_map<int, net::Event> liveDrops_;
+    std::vector<net::Event> felledTrees_;
+    static const size_t FELLED_LIMIT = 3000;
     long long headSeq_ = 0;
+    long long eventSeq_ = 0;
     int nextId_ = 1;
     float timeOfDay_ = 8.0f;
     // Журнал не растёт бесконечно: старые правки уже разъехались по всем, кто в игре.
     static const size_t JOURNAL_LIMIT = 20000;
+    // События живут недолго: подобранный дроп и отгремевший взрыв никому не нужны.
+    static const size_t EVENT_LIMIT = 2000;
 };

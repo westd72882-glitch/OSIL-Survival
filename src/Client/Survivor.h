@@ -67,6 +67,9 @@ public:
     // Сколько секунд осталось до автоматического возрождения.
     float respawnLeft() const { return respawnLeft_; }
     void setAmbientRadiation(float radPerSec){ ambientRadiation_ = radPerSec; }
+    // Урон извне: попадание чужого топора, взрыв гранаты. Считает и применяет его
+    // клиент-жертва — он же единственный, кто авторитарен для своего здоровья.
+    void hurt(float amount, const char* cause){ applyDamage(amount, cause); }
 
     // ---- Взаимодействие с блоками
     const RayHit& target() const { return target_; }
@@ -114,6 +117,7 @@ private:
     float swingPeriod_ = 0.0f;     // длительность текущего замаха
     // Удар засчитывается не в момент нажатия, а когда инструмент дошёл до цели.
     bool  pendingHit_ = false;
+    bool  impactPending_ = false;   // ждём середины замаха, чтобы сообщить об ударе
     int   pendX_ = 0, pendY_ = 0, pendZ_ = 0;
     // Сколько ударов осталось по объекту, по которому бьём сейчас.
     int   hitX_ = 0, hitY_ = 0, hitZ_ = 0, hitsLeft_ = 0;
@@ -138,6 +142,9 @@ public:
     std::function<void(Block block, int x, int y, int z)> onHitBuild;
     // Удар дошёл до цели — клиент рисует метку попадания.
     std::function<void(Block block, int x, int y, int z)> onHitLanded;
+    // Момент удара, независимо от того, попал ли он по блоку: по нему клиент проверяет,
+    // не оказался ли на пути другой игрок.
+    std::function<void()> onSwingImpact;
 private:
     // Единственная точка, где здоровье уменьшается. Здесь же фиксируется смерть:
     // раньше урон и проверка смерти стояли в разных местах, и регенерация успевала

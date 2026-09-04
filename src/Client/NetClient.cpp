@@ -142,7 +142,17 @@ bool NetClient::join(const std::string& address, const std::string& playerName){
         since_ = (long long)root["head"].asDouble(0.0);
         outgoing_.clear();
         incoming_.clear();
+        outEvents_.clear();
+        inEvents_.clear();
+        // Сервер отдал состояние мира: что лежит на земле и какие деревья уже упали.
+        // Прогоняем это через обычный разбор событий — обработчик у них один.
+        {
+            std::vector<net::Event> replay;
+            net::decodeEvents(root["replay"], replay);
+            for(const net::Event& e : replay) inEvents_.push_back(e);
+        }
         others_.clear();
+        eventSince_ = (long long)root["ehead"].asDouble(0.0);
         status_ = "подключено";
     }
     id_.store(root["id"].asInt());
@@ -226,6 +236,20 @@ std::vector<net::Edit> NetClient::takeEdits(){
     return out;
 }
 
+void NetClient::pushEvent(const net::Event& e){
+    if(!connected_.load()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(outEvents_.size() > 400) return;
+    outEvents_.push_back(e);
+}
+
+std::vector<net::Event> NetClient::takeEvents(){
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<net::Event> out;
+    out.swap(inEvents_);
+    return out;
+}
+
 void NetClient::loop(){
     net::Url url;
     {
@@ -237,7 +261,8 @@ void NetClient::loop(){
     while(running_.load()){
         net::PlayerState me;
         std::vector<net::Edit> send;
-        long long since = 0;
+        std::vector<net::Event> sendEvents;
+        long long since = 0, esince = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             me = local_;
@@ -248,14 +273,16 @@ void NetClient::loop(){
             me.id = id_.load();
             me.name = name_;
             since = since_;
+            esince = eventSince_;
             // За один обмен отправляем не больше двух сотен правок: остальное уедет
             // следующим, а пакет останется небольшим.
             size_t take = outgoing_.size() > 200 ? 200 : outgoing_.size();
             send.assign(outgoing_.begin(), outgoing_.begin() + (long)take);
             outgoing_.erase(outgoing_.begin(), outgoing_.begin() + (long)take);
+            sendEvents.swap(outEvents_);
         }
 
-        std::string body = net::encodeSyncRequest(me, send, since);
+        std::string body = net::encodeSyncRequest(me, send, sendEvents, since, esince);
         std::string reply;
         int status = 0;
         long long t0 = nowMs();
@@ -266,13 +293,16 @@ void NetClient::loop(){
             failures = 0;
             std::vector<net::PlayerState> players;
             std::vector<net::Edit> edits;
-            long long head = since;
+            std::vector<net::Event> events;
+            long long head = since, ehead = esince;
             float time = serverTime_.load();
-            if(net::decodeSyncResponse(reply, players, edits, head, time)){
+            if(net::decodeSyncResponse(reply, players, edits, events, head, ehead, time)){
                 std::lock_guard<std::mutex> lock(mutex_);
                 others_ = players;
                 since_ = head;
+                eventSince_ = ehead;
                 for(const net::Edit& e : edits) incoming_.push_back(e);
+                for(const net::Event& e : events) inEvents_.push_back(e);
                 status_ = "подключено";
             }
             serverTime_.store(time);

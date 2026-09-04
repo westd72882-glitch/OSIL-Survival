@@ -35,10 +35,14 @@ public:
     void setLocalState(const net::PlayerState& st);
     // Правка мира от НАС: её надо разослать остальным.
     void pushEdit(int x, int y, int z, int block);
+    // Событие от НАС: выброшенный предмет, упавшее дерево, взрыв, удар по игроку.
+    void pushEvent(const net::Event& e);
     // Снимок остальных игроков (копия — её можно спокойно читать в отрисовке).
     std::vector<net::PlayerState> players() const;
     // Правки, пришедшие от других: забираются один раз и применяются к миру.
     std::vector<net::Edit> takeEdits();
+    // То же самое для событий.
+    std::vector<net::Event> takeEvents();
     float serverTimeOfDay() const { return serverTime_.load(); }
     // Сколько миллисекунд занял последний обмен — это и есть пинг в списке серверов.
     int  pingMs() const { return ping_.load(); }
@@ -75,6 +79,8 @@ private:
     net::PlayerState local_;
     std::vector<net::Edit> outgoing_;   // наши правки, ждущие отправки
     std::vector<net::Edit> incoming_;   // чужие правки, ждущие применения
+    std::vector<net::Event> outEvents_, inEvents_;
     std::vector<net::PlayerState> others_;
     long long since_ = 0;
+    long long eventSince_ = 0;
 };

@@ -28,6 +28,7 @@ const ItemDef kItems[(int)ItemType::COUNT] = {
     { "build_plan",  "План постройки",Block::Air,            1,   0,  0,  0.72f,0.66f,0.48f },
     { "cupboard",    "Шкаф",          Block::Cupboard,      3,   0,  0,  0.60f,0.46f,0.28f },
     { "box",         "Ящик",          Block::Box,           5,   0,  0,  0.66f,0.52f,0.30f },
+    { "grenade",     "Граната",       Block::Air,          10,   0,  0,  0.35f,0.42f,0.30f },
 };
 } // namespace
 

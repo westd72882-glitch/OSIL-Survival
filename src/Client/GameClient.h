@@ -110,6 +110,7 @@ private:
     std::vector<ServerRow> servers_;
     int  menuTab_ = 0;             // Сервера / Друзья / Любимые / История
     int  menuSelected_ = 0;
+    bool menuRefreshed_ = false;   // список уже опрашивали в этом запуске
     bool menuAddOpen_ = false;     // открыт ввод адреса
     bool menuEditName_ = false;    // вводится имя игрока
     std::string menuInput_;
@@ -131,8 +132,30 @@ private:
     // ---- Сеть: живые игроки на сервере.
     NetClient net_;
     bool netApplying_ = false;     // применяем чужую правку — обратно её слать не надо
+    bool netFelling_ = false;      // валим дерево локально: блоки не шлём, шлём событие
+    bool netSilentFell_ = false;   // дерево упало до нашего входа — убираем без анимации
     void netPumpState();
     void netApplyEdits();
+    void netApplyEvents();
+    void netSendEvent(net::EventType type, int id, int a, int b, Vec3 pos);
+    // Кого задел удар: возвращает id игрока перед лицом или 0.
+    int  remotePlayerInFront(float reach) const;
+    void onSwingImpact();
+
+    // ---- Гранаты. Летит, тикает три секунды, взрывается: постройке минус 50 прочности,
+    // живым — до 150 здоровья, чем ближе, тем больше.
+    struct Grenade {
+        Vec3 pos{}, vel{};
+        float fuse = 3.0f;
+        float spin = 0.0f;
+    };
+    std::vector<Grenade> grenades_;
+    void throwGrenade();
+    void updateGrenades(float dt);
+    void renderGrenades(const Mat4& view, const Mat4& proj);
+    // Взрыв в точке: урон постройкам, игрокам и себе. remote — взрыв пришёл по сети,
+    // тогда постройки уже посчитал тот, кто бросал.
+    void explode(Vec3 at, int maxDamage, bool remote);
     struct RemoteView {
         int id = 0;
         std::string name;
@@ -317,12 +340,19 @@ private:
         float age = 0.0f;
         ItemType type = ItemType::None;
         int count = 0;
+        int netId = 0;          // метка для сети (0 — дроп только наш, до отправки)
         // Куда куб спроецировался на экран в этом кадре — по этому HUD рисует подпись.
         float screenX = 0.0f, screenY = 0.0f;
         bool  onScreen = false;
     };
     std::vector<DroppedItem> drops_;
+    // Метка дропа в сети: у каждого своя нумерация, к ней подмешан номер игрока —
+    // так метки не сталкиваются даже без согласования с сервером.
+    int nextDropId_ = 1;
+    int makeDropId();
     void dropStackToWorld(int slotIndex);
+    // Тот же дроп, но пришедший от другого игрока.
+    void spawnRemoteDrop(int netId, ItemType type, int count, Vec3 pos);
     void updateDrops(float dt);
     void renderDrops(const Mat4& view, const Mat4& proj);
     void renderDropLabels();

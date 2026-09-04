@@ -385,6 +385,7 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
         swingCooldown_ = swingPeriod_;
         stamina_ = clampf(stamina_ - 1.6f, 0.0f, 100.0f);
         pendingHit_ = false;
+        impactPending_ = true;
         if(canHit){
             pendingHit_ = true;
             pendX_ = target_.x; pendY_ = target_.y; pendZ_ = target_.z;
@@ -395,9 +396,12 @@ void Survivor::updateInteraction(const SurvivorInput& in, float dt){
         }
     }
 
-    // Ресурс капает в середине замаха — в момент, когда инструмент дошёл до цели.
-    // Начислять его в момент нажатия неправильно: дерево прибавлялось раньше, чем
-    // топор до него долетал.
+    // Момент удара: инструмент дошёл до цели. Отсюда и ресурс, и проверка, не попали
+    // ли по другому игроку (её делает клиент — он видит всех).
+    if(impactPending_ && swingCooldown_ > 0.0f && swingCooldown_ <= swingPeriod_ * 0.55f){
+        impactPending_ = false;
+        if(onSwingImpact) onSwingImpact();
+    }
     if(pendingHit_ && swingCooldown_ <= swingPeriod_ * 0.55f){
         pendingHit_ = false;
         Block b = voxels_.blockAt(pendX_, pendY_, pendZ_);

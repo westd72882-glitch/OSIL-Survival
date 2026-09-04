@@ -51,6 +51,9 @@ const Recipe kRecipes[] = {
       "Порох из серы и угля. Пойдёт на патроны и взрывчатку." },
     { ItemType::Box, 1, ItemType::Wood, 60, ItemType::None, 0,
       "Ящик. Поставьте в доме и складывайте в него ресурсы: в рюкзаке места мало." },
+    { ItemType::Grenade, 1, ItemType::Gunpowder, 20, ItemType::MetalFrag, 20,
+      "Граната. Возьмите в руки и нажмите удар — полетит. Взрывается через три секунды: "
+      "сносит 50 прочности постройке и до 150 здоровья тому, кто рядом." },
     { ItemType::Cupboard, 1, ItemType::Wood, 100, ItemType::None, 0,
       "Шкаф дома. В него кладут дерево на аренду: 10 дерева в сутки за каждую деталь "
       "постройки. Не заплатил — дом начинает гнить." },
@@ -568,6 +571,226 @@ bool GameClient::handleCupboardTouch(float x, float y){
     return true;
 }
 
+// ==================== СЕТЕВЫЕ СОБЫТИЯ, ГРАНАТЫ И БОЙ ====================
+// Правки блоков разъезжаются сами (см. onBlockChanged), но всё разовое — выброшенный
+// предмет, упавшее дерево, взрыв, удар по игроку — блоками не описывается. Для этого
+// в протоколе есть события, и вся их обработка собрана здесь.
+
+int GameClient::makeDropId(){
+    // Номер игрока в старших разрядах: два клиента не выдадут одинаковую метку, а
+    // сговариваться с сервером ради этого незачем.
+    int player = net_.connected() ? net_.playerId() : 1;
+    return player * 100000 + (nextDropId_++);
+}
+
+void GameClient::netSendEvent(net::EventType type, int id, int a, int b, Vec3 pos){
+    if(!net_.connected()) return;
+    net::Event e;
+    e.type = (int)type;
+    e.id = id;
+    e.a = a;
+    e.b = b;
+    e.x = pos.x; e.y = pos.y; e.z = pos.z;
+    net_.pushEvent(e);
+}
+
+void GameClient::spawnRemoteDrop(int netId, ItemType type, int count, Vec3 pos){
+    for(const DroppedItem& d : drops_) if(d.netId == netId) return;   // уже есть
+    DroppedItem d;
+    d.pos = pos;
+    d.type = type;
+    d.count = count;
+    d.netId = netId;
+    drops_.push_back(d);
+}
+
+void GameClient::netApplyEvents(){
+    if(!net_.connected()) return;
+    std::vector<net::Event> events = net_.takeEvents();
+    for(const net::Event& e : events){
+        switch((net::EventType)e.type){
+            case net::EventType::Drop:
+                if(e.a > 0 && e.a < (int)ItemType::COUNT && e.b > 0)
+                    spawnRemoteDrop(e.id, (ItemType)e.a, e.b, Vec3{ e.x, e.y, e.z });
+                break;
+            case net::EventType::Pickup:
+                for(size_t i = 0; i < drops_.size(); ++i){
+                    if(drops_[i].netId != e.id) continue;
+                    drops_.erase(drops_.begin() + (long)i);
+                    break;
+                }
+                break;
+            case net::EventType::TreeFell: {
+                // Дерево валит каждый у себя: мир один и тот же, значит и куски те же.
+                // Блоки при этом наружу не уходят — иначе на сеть уезжали бы сотни правок.
+                // a == 1 — дерево упало до нашего входа: убираем его молча, без падения.
+                int bx = (int)floorf(e.x), by = (int)floorf(e.y), bz = (int)floorf(e.z);
+                if(isHarvestable(voxels_->blockAt(bx, by, bz))){
+                    netFelling_ = true;
+                    netSilentFell_ = (e.a == 1);
+                    voxels_->fellCluster(bx, by, bz);
+                    netSilentFell_ = false;
+                    netFelling_ = false;
+                }
+                break;
+            }
+            case net::EventType::Explosion:
+                explode(Vec3{ e.x, e.y, e.z }, e.b, true);
+                break;
+            case net::EventType::Hit:
+                // Урон применяет тот, по кому попали: своё здоровье считает только он.
+                if(net_.playerId() != 0 && e.id == net_.playerId() && !player_->isDead())
+                    player_->hurt((float)e.b, "Вас убили");
+                break;
+        }
+    }
+}
+
+// Кто оказался перед лицом на расстоянии удара. Проверка простая — расстояние от
+// игрока до отрезка взгляда; для рукопашной этого достаточно.
+int GameClient::remotePlayerInFront(float reach) const {
+    if(remote_.empty()) return 0;
+    Vec3 eye = player_->eyePosition();
+    Vec3 dir = player_->lookDirection();
+    int best = 0;
+    float bestT = reach;
+    for(const RemoteView& v : remote_){
+        if(v.pose == (int)net::Pose::Dead) continue;
+        // Центр фигуры — примерно на метре над её ногами.
+        Vec3 c{ v.pos.x, v.pos.y + 1.0f, v.pos.z };
+        Vec3 rel{ c.x - eye.x, c.y - eye.y, c.z - eye.z };
+        float t = rel.x * dir.x + rel.y * dir.y + rel.z * dir.z;
+        if(t < 0.0f || t > reach) continue;
+        Vec3 close{ eye.x + dir.x * t - c.x, eye.y + dir.y * t - c.y, eye.z + dir.z * t - c.z };
+        float miss = sqrtf(close.x * close.x + close.y * close.y + close.z * close.z);
+        if(miss > 0.9f) continue;              // мимо: полметра шире фигуры
+        if(t < bestT){ bestT = t; best = v.id; }
+    }
+    return best;
+}
+
+void GameClient::onSwingImpact(){
+    if(!net_.connected()) return;
+    int target = remotePlayerInFront(3.2f);
+    if(target == 0) return;
+    // Урон по игроку: топором больнее, факелом слабее, кулаком совсем чуть-чуть.
+    const ItemStack& sel = inventory_.selectedStack();
+    int damage = 5;
+    if(!sel.empty() && sel.type == ItemType::Axe)   damage = 20;
+    if(!sel.empty() && sel.type == ItemType::Torch) damage = 10;
+    netSendEvent(net::EventType::Hit, target, net_.playerId(), damage, player_->position());
+    hitMarkAge_ = 0.0f;
+}
+
+// ---- Гранаты
+void GameClient::throwGrenade(){
+    const ItemStack& sel = inventory_.selectedStack();
+    if(sel.empty() || sel.type != ItemType::Grenade) return;
+    Grenade g;
+    Vec3 eye = player_->eyePosition();
+    Vec3 dir = player_->lookDirection();
+    g.pos = Vec3{ eye.x + dir.x * 0.5f, eye.y + dir.y * 0.5f, eye.z + dir.z * 0.5f };
+    // Бросок с руки: скорость по взгляду плюс подброс, чтобы граната летела дугой.
+    g.vel = Vec3{ dir.x * 15.0f, dir.y * 15.0f + 3.0f, dir.z * 15.0f };
+    g.fuse = 3.0f;
+    grenades_.push_back(g);
+    inventory_.consumeSelected();
+}
+
+void GameClient::updateGrenades(float dt){
+    for(size_t i = 0; i < grenades_.size(); ){
+        Grenade& g = grenades_[i];
+        g.fuse -= dt;
+        g.spin += dt * 6.0f;
+        g.vel.y -= 20.0f * dt;
+        Vec3 next{ g.pos.x + g.vel.x * dt, g.pos.y + g.vel.y * dt, g.pos.z + g.vel.z * dt };
+        // Отскок от твёрдого: граната не проваливается сквозь стены и пол.
+        if(voxels_->isSolidAt((int)floorf(next.x), (int)floorf(next.y), (int)floorf(next.z))){
+            g.vel = Vec3{ g.vel.x * -0.35f, g.vel.y * -0.35f, g.vel.z * -0.35f };
+            next = g.pos;
+        }
+        g.pos = next;
+        if(g.fuse <= 0.0f || g.pos.y < -8.0f){
+            Vec3 at = g.pos;
+            grenades_.erase(grenades_.begin() + (long)i);
+            explode(at, 150, false);
+            continue;
+        }
+        ++i;
+    }
+}
+
+void GameClient::explode(Vec3 at, int maxDamage, bool remote){
+    // Осколки и вспышка: взрыв должен быть виден и слышен всем, кто рядом.
+    for(int i = 0; i < 40; ++i){
+        Particle p;
+        Rng rng(splitMix64((uint64_t)(animTime_ * 1000.0f) + (uint64_t)i * 977ULL));
+        p.pos = at;
+        p.vel = Vec3{ (rng.nextFloat() - 0.5f) * 12.0f, rng.nextFloat() * 9.0f,
+                      (rng.nextFloat() - 0.5f) * 12.0f };
+        p.life = 0.5f + rng.nextFloat() * 0.7f;
+        p.size = 0.10f + rng.nextFloat() * 0.12f;
+        p.r = 1.6f; p.g = 0.9f; p.b = 0.35f;
+        p.layer = (float)blockTextureLayer(Block::Sand);
+        particles_.push_back(p);
+    }
+    hitMarkAge_ = 0.0f;
+
+    // Постройки: минус 50 прочности всему, что в радиусе. Считает тот, кто бросил, —
+    // у остальных это приедет обычными правками блоков.
+    if(!remote){
+        const float BUILD_RADIUS = 4.5f;
+        for(size_t i = 0; i < pieces_.size(); ){
+            const BuildPiece& p = pieces_[i];
+            float cx = (float)p.x + p.sx * 0.5f, cy = (float)p.y + p.sy * 0.5f,
+                  cz = (float)p.z + p.sz * 0.5f;
+            float dx = cx - at.x, dy = cy - at.y, dz = cz - at.z;
+            if(sqrtf(dx * dx + dy * dy + dz * dz) > BUILD_RADIUS){ ++i; continue; }
+            pieces_[i].health -= 50;
+            if(pieces_[i].health <= 0){
+                fillPieceCells(pieces_[i], false);
+                pieces_.erase(pieces_.begin() + (long)i);
+            } else ++i;
+        }
+        netSendEvent(net::EventType::Explosion, 0, 0, maxDamage, at);
+    }
+
+    // Живым — по расстоянию: в эпицентре весь урон, к восьми метрам ноль. Свой урон
+    // каждый считает сам, поэтому здесь только про себя.
+    Vec3 me = player_->position();
+    float dx = me.x - at.x, dy = me.y + 0.9f - at.y, dz = me.z - at.z;
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+    const float BLAST = 8.0f;
+    if(dist < BLAST && !player_->isDead()){
+        float k = 1.0f - dist / BLAST;
+        player_->hurt((float)maxDamage * k * k, "Вас разорвало взрывом");
+    }
+}
+
+void GameClient::renderGrenades(const Mat4& view, const Mat4& proj){
+    if(grenades_.empty()) return;
+    std::vector<VoxelVertex> verts;
+    verts.reserve(grenades_.size() * 36);
+    for(const Grenade& g : grenades_){
+        // Мигает всё чаще к концу запала — по этому и понимают, что пора убегать.
+        float blink = (g.fuse < 1.0f) ? (sinf(g.fuse * 40.0f) > 0.0f ? 1.8f : 0.6f) : 1.0f;
+        pushCube(verts, g.pos, 0.10f, 0.45f * blink, 0.55f * blink, 0.38f * blink,
+                 (float)blockTextureLayer(Block::Stone));
+    }
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    bindBlockTextures();
+    glBindVertexArray(partVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
+    size_t maxVerts = 64 * 36;
+    if(verts.size() > maxVerts) verts.resize(maxVerts);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+}
+
 // ==================== ДРУГИЕ ИГРОКИ ====================
 // Сервер присылает голые числа: где игрок, куда смотрит, с какой скоростью идёт и в
 // какой фазе замах. Модель, походка и инструмент в руке — забота клиента. Фигурка
@@ -1005,8 +1228,11 @@ void GameClient::dropStackToWorld(int slotIndex){
     d.type = st.type;
     d.count = st.count;
     d.spin = 0.0f;
+    d.netId = makeDropId();
     drops_.push_back(d);
     inventory_.dropSlot(slotIndex);
+    // Выброшенное видят все: событие уезжает на сервер, у остальных куб появляется там же.
+    netSendEvent(net::EventType::Drop, d.netId, (int)d.type, d.count, d.pos);
 
     char buf[96];
     snprintf(buf, sizeof(buf), "Выброшено: %s x%d", itemDef(st.type).nameRu, st.count);
@@ -1076,8 +1302,12 @@ bool GameClient::handlePickupTouch(float x, float y){
     int left = inventory_.add(d.type, d.count);
     if(left >= d.count) return true;      // инвентарь полон — предмет остаётся лежать
     d.count = left;
-    if(d.count <= 0)
+    if(d.count <= 0){
+        int netId = d.netId;
         drops_.erase(drops_.begin() + idx);
+        // Подобранное исчезает у всех, а не только у того, кто нагнулся.
+        netSendEvent(net::EventType::Pickup, netId, 0, 0, Vec3{});
+    }
     return true;
 }
 
@@ -1235,7 +1465,9 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     float windup = smoothstepf(0.0f, 0.28f, phase);      // отвод назад
     float strike = smoothstepf(0.26f, 0.52f, phase);     // проход по цели
     float back   = smoothstepf(0.58f, 1.0f, phase);      // возврат в стойку
-    float swing = (-0.30f * windup + 1.30f * strike) * (1.0f - back);
+    // Знак положительный: удар идёт в ТУ ЖЕ сторону, куда смотрит лезвие. Раньше топор
+    // лежал головой вправо, а замах уводил его влево — удар читался как промах мимо себя.
+    float swing = (0.30f * windup - 1.30f * strike) * (1.0f - back);
 
     Vec3 right0 = v3norm(v3cross(forward, Vec3{0,1,0}));
     Vec3 up = v3cross(right0, forward);
@@ -1285,9 +1517,11 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     // Прямой инструмент занимает больше места по высоте, поэтому он отодвинут правее
     // и ниже: иначе рукоять с кистью уходила за нижний край, а голова топора лезла в
     // середину экрана.
+    // На проходе удара swing отрицателен, поэтому знаки такие: инструмент уходит
+    // вправо (куда смотрит лезвие), вниз и вперёд от лица.
     float offX = 0.205f - swing * 0.085f;
-    float offZ = 0.52f + swing * 0.17f;   // на ударе инструмент уходит вперёд от лица
-    float offY = (axe ? -0.205f : -0.185f) + bob - swing * 0.24f;
+    float offZ = 0.52f - swing * 0.17f;
+    float offY = (axe ? -0.205f : -0.185f) + bob + swing * 0.24f;
 
     std::vector<VoxelVertex> verts;
     verts.reserve(6 * 36);
@@ -1396,7 +1630,7 @@ void GameClient::initWorld(){
         chunks_.markDirty(x, y, z);
         // Всё, что построил или выбил ИГРОК, уезжает на сервер. Растекание воды в сеть
         // не шлём: оно детерминировано и повторится у каждого само.
-        if(!netApplying_ && net_.connected()){
+        if(!netApplying_ && !netFelling_ && net_.connected()){
             Block b = voxels_->blockAt(x, y, z);
             if(b != Block::Water) net_.pushEdit(x, y, z, (int)b);
         }
@@ -1405,7 +1639,14 @@ void GameClient::initWorld(){
     player_->onNodeBroken = [this](Block b, int x, int y, int z){ spawnBreakParticles(b, x, y, z); };
     // Дерево срублено: мир отдал его блоки целиком, дальше их роняет клиент.
     voxels_->onClusterFelled = [this](const std::vector<VoxelWorld::FelledCell>& cells, bool tree){
-        if(tree) spawnFallenTree(cells);
+        if(tree && !netSilentFell_) spawnFallenTree(cells);
+        // Своё сваленное дерево отправляем ОДНИМ событием: остальные повалят его сами,
+        // мир-то у всех одинаковый. Иначе на сеть уезжали бы сотни правок блоков.
+        if(!netFelling_ && !cells.empty() && net_.connected()){
+            const VoxelWorld::FelledCell& base = cells.front();
+            netSendEvent(net::EventType::TreeFell, 0, 0, 0,
+                         Vec3{ (float)base.x + 0.5f, (float)base.y + 0.5f, (float)base.z + 0.5f });
+        }
     };
     // Отсчёт вышел — поднимаем игрока на новом месте сами, без нажатия кнопки.
     player_->onOpenFurnace = [this](){ overlay_ = Overlay::Furnace; };
@@ -1413,6 +1654,8 @@ void GameClient::initWorld(){
     player_->onHitBuild = [this](Block b, int x, int y, int z){ hitBuildPiece(b, x, y, z); };
     // Метка попадания: короткая вспышка у прицела, чтобы удар читался как удар.
     player_->onHitLanded = [this](Block, int, int, int){ hitMarkAge_ = 0.0f; };
+    // Середина замаха: смотрим, не оказался ли на пути другой игрок.
+    player_->onSwingImpact = [this](){ onSwingImpact(); };
     // Шкаф и ящик: их содержимое тоже у клиента.
     player_->onOpenObject = [this](Block b, int x, int y, int z){
         if(b == Block::Box){
@@ -2854,7 +3097,14 @@ void GameClient::update(float dt){
         // Зажатая кнопка бьёт раз за разом, но не быстрее, чем идёт анимация замаха:
         // сам ритм ударов задаёт Survivor, а не частота кадров. Отдельно читаем
         // «нажали»: короткий тап короче кадра иначе потерялся бы.
-        in.attack = controls_.attackHeld() || controls_.attackPressed();
+        bool attack = controls_.attackHeld() || controls_.attackPressed();
+        // С гранатой в руке та же кнопка не машет, а бросает — и ровно один раз.
+        const ItemStack& held = inventory_.selectedStack();
+        if(!held.empty() && held.type == ItemType::Grenade){
+            if(controls_.attackPressed()) throwGrenade();
+            attack = false;
+        }
+        in.attack = attack;
         in.place = controls_.placePressed();
         // «Рука» сначала пробует открыть или закрыть дверь: сама дверь — часть дома,
         // и мир о ней ничего не знает, её состояние держит реестр построек.
@@ -2882,7 +3132,9 @@ void GameClient::update(float dt){
     // Сеть: отдать своё состояние, применить чужие правки, сгладить чужие фигурки.
     netPumpState();
     netApplyEdits();
+    netApplyEvents();
     updateRemotePlayers(dt);
+    updateGrenades(dt);
 
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
@@ -3012,6 +3264,7 @@ void GameClient::renderScene(){
     // ---- Осколки и предмет в руке. Оба прохода до воды и БЕЗ очистки глубины.
     renderParticles(view, proj);
     renderFallenTrees(view, proj);
+    renderGrenades(view, proj);
     renderRemotePlayers(view, proj);
     if(state_ == GameState::Playing) renderDrops(view, proj);
     if(buildMode()) renderBuildGhost(view, proj);
@@ -3936,6 +4189,10 @@ void GameClient::inventoryCloseRect(float& x, float& y, float& w, float& h) cons
 // и пингом, снизу — «обновить», «добавить сервер» и «играть». Никаких подсказок и
 // пояснений на экране: список говорит сам за себя.
 
+// Официальный сервер: он всегда в списке первой строкой после одиночной игры, чтобы
+// игроку не приходилось никуда вписывать адрес — зашёл и играешь.
+const char* OFFICIAL_SERVER = "https://osil-survival1.onrender.com";
+
 void GameClient::loadServerList(){
     servers_.clear();
     // Первая строка всегда одна и та же: локальный мир без сети.
@@ -3947,6 +4204,12 @@ void GameClient::loadServerList(){
     local.online = true;
     servers_.push_back(local);
 
+    ServerRow official;
+    official.address = OFFICIAL_SERVER;
+    official.name = "Официальный сервер";
+    official.map = "Survival Island";
+    servers_.push_back(official);
+
     // Остальное — то, что игрок добавил сам. Файл лежит рядом с настройками.
     std::string path = g_writableDir + "servers.txt";
     FILE* f = fopen(path.c_str(), "rb");
@@ -3957,6 +4220,7 @@ void GameClient::loadServerList(){
             while(!a.empty() && (a.back() == '\n' || a.back() == '\r' || a.back() == ' ')) a.pop_back();
             if(a.empty()) continue;
             if(a.rfind("name=", 0) == 0){ playerName_ = a.substr(5); continue; }
+            if(a == OFFICIAL_SERVER) continue;   // он уже стоит в списке
             ServerRow r;
             r.address = a;
             r.name = a;
@@ -3973,6 +4237,7 @@ void GameClient::saveServerList(){
     fprintf(f, "name=%s\n", playerName_.c_str());
     for(const ServerRow& r : servers_){
         if(r.local || r.address.empty()) continue;
+        if(r.address == OFFICIAL_SERVER) continue;   // он и так добавляется сам
         fprintf(f, "%s\n", r.address.c_str());
     }
     fclose(f);
@@ -4044,6 +4309,12 @@ void GameClient::menuActionRect(int i, float& x, float& y, float& w, float& h) c
 
 void GameClient::renderMainMenu(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    // Список опрашивается сам при первом показе меню: игрок должен сразу видеть, живы
+    // ли сервера и сколько там народу, а не жать «обновить».
+    if(!menuRefreshed_){
+        menuRefreshed_ = true;
+        refreshServers();
+    }
     if(texMenuBg_){
         drawMenuBackground();
         drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.55f, false);

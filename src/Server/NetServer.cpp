@@ -75,12 +75,25 @@ std::string NetServer::handle(const std::string& method, const std::string& path
         players_[id] = slot;
         LOG_INFO("сеть: вошёл %s (%d), всего игроков %d", name.c_str(), id, (int)players_.size());
 
+        // Вошедшему отдаём состояние мира: лежащие предметы и уже сваленные деревья.
+        // Без этого он видел бы лес, которого давно нет, и пустую поляну вместо чужого
+        // выброшенного ящика.
+        std::vector<net::Event> replay;
+        replay.reserve(liveDrops_.size() + felledTrees_.size());
+        for(const auto& kv : liveDrops_) replay.push_back(kv.second);
+        for(net::Event e : felledTrees_){
+            e.a = 1;                 // «тихо»: дерево уже упало, анимацию показывать не надо
+            replay.push_back(e);
+        }
+
         std::string s = "{\"id\":" + std::to_string(id);
         s += ",\"max\":" + std::to_string(cfg_.maxPlayers);
         s += ",\"seed\":" + std::to_string(cfg_.seed);
         s += ",\"head\":" + std::to_string(headSeq_);
+        s += ",\"ehead\":" + std::to_string(eventSeq_);
         s += ",\"name\":\"" + net::jsonEscape(cfg_.name) + "\"";
-        s += ",\"time\":" + std::to_string((int)timeOfDay_) + "}";
+        s += ",\"time\":" + std::to_string((int)timeOfDay_);
+        s += ",\"replay\":" + net::encodeEvents(replay) + "}";
         return s;
     }
 
@@ -97,8 +110,9 @@ std::string NetServer::handle(const std::string& method, const std::string& path
     if(route == "/sync" && method == "POST"){
         net::PlayerState me;
         std::vector<net::Edit> incoming;
-        long long since = 0;
-        if(!net::decodeSyncRequest(body, me, incoming, since)){
+        std::vector<net::Event> incomingEvents;
+        long long since = 0, esince = 0;
+        if(!net::decodeSyncRequest(body, me, incoming, incomingEvents, since, esince)){
             status = 400;
             return "{\"error\":\"плохой запрос\"}";
         }
@@ -121,6 +135,24 @@ std::string NetServer::handle(const std::string& method, const std::string& path
         if(journal_.size() > JOURNAL_LIMIT)
             journal_.erase(journal_.begin(), journal_.begin() + (long)(journal_.size() - JOURNAL_LIMIT));
 
+        // События (дропы, упавшие деревья, взрывы, удары) идут своим журналом: они
+        // короткоживущие, и держать их вместе с постройками незачем.
+        for(net::Event e : incomingEvents){
+            e.seq = ++eventSeq_;
+            eventJournal_.push_back(e);
+            // Заодно ведём состояние мира: что лежит на земле и что уже срублено.
+            if(e.type == (int)net::EventType::Drop){
+                liveDrops_[e.id] = e;
+            } else if(e.type == (int)net::EventType::Pickup){
+                liveDrops_.erase(e.id);
+            } else if(e.type == (int)net::EventType::TreeFell){
+                if(felledTrees_.size() < FELLED_LIMIT) felledTrees_.push_back(e);
+            }
+        }
+        if(eventJournal_.size() > EVENT_LIMIT)
+            eventJournal_.erase(eventJournal_.begin(),
+                                eventJournal_.begin() + (long)(eventJournal_.size() - EVENT_LIMIT));
+
         // В ответ — все, кроме самого игрока, и правки, которых у него ещё нет.
         std::vector<net::PlayerState> others;
         others.reserve(players_.size());
@@ -134,7 +166,15 @@ std::string NetServer::handle(const std::string& method, const std::string& path
             fresh.push_back(e);
             if(fresh.size() >= 400) break;    // порциями: телефон не должен захлебнуться
         }
-        return net::encodeSyncResponse(others, fresh, headSeq_, timeOfDay_);
+        std::vector<net::Event> freshEvents;
+        for(const net::Event& e : eventJournal_){
+            if(e.seq <= esince) continue;
+            // Свои же события обратно не возвращаем: их отправитель уже применил.
+            if(e.type == (int)net::EventType::Hit && e.id != me.id && e.a == me.id) continue;
+            freshEvents.push_back(e);
+            if(freshEvents.size() >= 200) break;
+        }
+        return net::encodeSyncResponse(others, fresh, freshEvents, headSeq_, eventSeq_, timeOfDay_);
     }
 
     status = 404;
