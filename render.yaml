@@ -1,0 +1,19 @@
+# ==================== РАЗВЁРТЫВАНИЕ НА RENDER.COM ====================
+# Один веб-сервис из Dockerfile в корне репозитория. Render сам выдаёт порт через
+# переменную PORT и проверяет живость по «/», а сервер как раз отдаёт там свою карточку.
+#
+# Как выложить: в панели Render — New → Blueprint → указать этот репозиторий. После
+# сборки адрес вида https://osil-survival.onrender.com вписывается в игре
+# (Мультиплеер → Добавить сервер).
+services:
+  - type: web
+    name: osil-survival
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: SERVER_NAME
+        value: "[RU] OSIL Survival #1"

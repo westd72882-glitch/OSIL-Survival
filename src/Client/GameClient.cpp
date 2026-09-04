@@ -21,6 +21,7 @@
 #include <SDL2/SDL_ttf.h>
 #include <algorithm>
 #include <cmath>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -91,6 +92,9 @@ bool GameClient::initPlatform(){
     consoleInit();
     initWritablePaths();
     loadSettings();
+    // Список серверов и имя игрока лежат рядом с настройками: меню — это браузер
+    // серверов, и без списка ему нечего показывать.
+    loadServerList();
 
     if(TTF_Init() != 0) SDL_Log("TTF_Init: %s", TTF_GetError());
     IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
@@ -221,6 +225,8 @@ bool GameClient::initGraphics(){
     // Буфер под срубленные деревья: ствол с кроной — это сотни кубов, и они рисуются
     // одним вызовом.
     makeDynamicVoxelBuffer(fallVao_, fallVbo_, 1024 * 36);
+    // Буфер под чужих игроков: у каждого дюжина брусков.
+    makeDynamicVoxelBuffer(remoteVao_, remoteVbo_, 24 * 12 * 36);
 
     return true;
 }
@@ -557,6 +563,304 @@ bool GameClient::handleCupboardTouch(float x, float y){
         return true;
     }
     return true;
+}
+
+// ==================== ДРУГИЕ ИГРОКИ ====================
+// Сервер присылает голые числа: где игрок, куда смотрит, с какой скоростью идёт и в
+// какой фазе замах. Модель, походка и инструмент в руке — забота клиента. Фигурка
+// собрана из брусков в духе кубических игр: голова, корпус, две руки, две ноги.
+namespace {
+// Брусок в произвольной ориентации: три оси и полуразмеры по ним. Тем же способом
+// собран инструмент в руке, но здесь оси задаёт скелет, а не камера.
+void pushBox(std::vector<VoxelVertex>& out, Vec3 c, Vec3 ax, Vec3 ay, Vec3 az,
+             float hx, float hy, float hz, float r, float g, float b, float layer){
+    static const int SX[6] = { 0, 0, 1, -1, 0, 0 };
+    static const int SY[6] = { 1, -1, 0, 0, 0, 0 };
+    static const int SZ[6] = { 0, 0, 0, 0, 1, -1 };
+    for(int f = 0; f < 6; ++f){
+        Vec3 n{ ax.x * SX[f] + ay.x * SY[f] + az.x * SZ[f],
+                ax.y * SX[f] + ay.y * SY[f] + az.y * SZ[f],
+                ax.z * SX[f] + ay.z * SY[f] + az.z * SZ[f] };
+        Vec3 t1, t2; float h1, h2;
+        if(SY[f] != 0){ t1 = ax; h1 = hx; t2 = az; h2 = hz; }
+        else if(SX[f] != 0){ t1 = ay; h1 = hy; t2 = az; h2 = hz; }
+        else { t1 = ax; h1 = hx; t2 = ay; h2 = hy; }
+        float off = SY[f] ? hy : (SX[f] ? hx : hz);
+        Vec3 base{ c.x + n.x * off, c.y + n.y * off, c.z + n.z * off };
+        float face = (SY[f] > 0) ? 1.0f : (SY[f] < 0 ? 0.6f : (SX[f] ? 0.84f : 0.92f));
+        VoxelVertex q[4];
+        for(int k = 0; k < 4; ++k){
+            float s1 = (k == 0 || k == 3) ? -1.0f : 1.0f;
+            float s2 = (k < 2) ? -1.0f : 1.0f;
+            q[k] = VoxelVertex{
+                base.x + t1.x * h1 * s1 + t2.x * h2 * s2,
+                base.y + t1.y * h1 * s1 + t2.y * h2 * s2,
+                base.z + t1.z * h1 * s1 + t2.z * h2 * s2,
+                n.x, n.y, n.z,
+                r * face, g * face, b * face,
+                (k == 1 || k == 2) ? 1.0f : 0.0f, (k >= 2) ? 1.0f : 0.0f, layer };
+        }
+        out.push_back(q[0]); out.push_back(q[1]); out.push_back(q[2]);
+        out.push_back(q[0]); out.push_back(q[2]); out.push_back(q[3]);
+    }
+}
+} // namespace
+
+void GameClient::updateRemotePlayers(float dt){
+    if(!net_.connected()){
+        if(!remote_.empty()) remote_.clear();
+        return;
+    }
+    std::vector<net::PlayerState> snapshot = net_.players();
+
+    // Обновляем то, что уже рисуем, и заводим новых.
+    for(const net::PlayerState& p : snapshot){
+        RemoteView* view = nullptr;
+        for(RemoteView& v : remote_) if(v.id == p.id){ view = &v; break; }
+        if(!view){
+            RemoteView v;
+            v.id = p.id;
+            v.pos = Vec3{ p.x, p.y, p.z };
+            remote_.push_back(v);
+            view = &remote_.back();
+        }
+        view->name = p.name;
+        view->target = Vec3{ p.x, p.y, p.z };
+        view->yaw = p.yaw;
+        view->pitch = p.pitch;
+        view->speed = p.speed;
+        view->swing = p.swing;
+        view->held = p.held;
+        view->pose = p.pose;
+        view->health = p.health;
+    }
+    // Тех, кого сервер больше не присылает, убираем.
+    for(size_t i = 0; i < remote_.size(); ){
+        bool alive = false;
+        for(const net::PlayerState& p : snapshot) if(p.id == remote_[i].id){ alive = true; break; }
+        if(alive) ++i;
+        else remote_.erase(remote_.begin() + (long)i);
+    }
+
+    for(RemoteView& v : remote_){
+        // Позиция догоняет присланную: обмен идёт десять раз в секунду, и без
+        // сглаживания чужой игрок дёргался бы рывками.
+        float k = clampf(dt * 12.0f, 0.0f, 1.0f);
+        v.pos.x += (v.target.x - v.pos.x) * k;
+        v.pos.y += (v.target.y - v.pos.y) * k;
+        v.pos.z += (v.target.z - v.pos.z) * k;
+        // Фаза шага крутится от скорости — по ней ходят ноги и руки.
+        v.phase += dt * (1.6f + v.speed * 1.5f);
+        if(v.phase > 6.28318f) v.phase -= 6.28318f;
+    }
+}
+
+void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
+    for(RemoteView& v : remote_) v.onScreen = false;
+    if(remote_.empty()) return;
+
+    std::vector<VoxelVertex> verts;
+    verts.reserve(remote_.size() * 12 * 36);
+    // Слой берём почти белый: поверх него краска фигурки читается как краска, а не как
+    // подкрашенные доски. На тёмной текстуре и кожа, и одежда сливались в бурое пятно.
+    float layer = (float)blockTextureLayer(Block::Snow);
+
+    for(RemoteView& v : remote_){
+        Vec3 fwd{ -sinf(v.yaw), 0.0f, -cosf(v.yaw) };
+        Vec3 right{ -fwd.z, 0.0f, fwd.x };
+        Vec3 up{ 0.0f, 1.0f, 0.0f };
+
+        bool dead = (v.pose == (int)net::Pose::Dead);
+        bool crouch = (v.pose == (int)net::Pose::Crouch);
+        float scale = crouch ? 0.82f : 1.0f;
+        // Ход: чем быстрее идёт, тем шире шаг. Стоящий игрок не машет конечностями.
+        float gait = clampf(v.speed / 4.5f, 0.0f, 1.4f);
+        float legA = sinf(v.phase) * 0.7f * gait;
+        float armA = -legA;
+        // Замах перебивает походку у правой руки: удар важнее шага.
+        float swingA = 0.0f;
+        if(v.swing > 0.001f) swingA = -sinf(v.swing * 3.14159265f) * 1.9f;
+
+        Vec3 base = v.pos;
+        auto bodyPoint = [&](float upM, float rightM, float fwdM){
+            return Vec3{ base.x + up.x * upM * scale + right.x * rightM + fwd.x * fwdM,
+                         base.y + up.y * upM * scale + right.y * rightM + fwd.y * fwdM,
+                         base.z + up.z * upM * scale + right.z * rightM + fwd.z * fwdM };
+        };
+        // Конечность: висит из точки крепления и поворачивается вокруг поперечной оси.
+        auto limb = [&](Vec3 pivot, float angle, float len, float halfW, float halfD,
+                        float r, float g, float b){
+            float ca = cosf(angle), sa = sinf(angle);
+            Vec3 dir{ fwd.x * sa - up.x * ca, fwd.y * sa - up.y * ca, fwd.z * sa - up.z * ca };
+            Vec3 c{ pivot.x + dir.x * len * 0.5f, pivot.y + dir.y * len * 0.5f,
+                    pivot.z + dir.z * len * 0.5f };
+            Vec3 ay{ -dir.x, -dir.y, -dir.z };
+            Vec3 az{ right.y * ay.z - right.z * ay.y,
+                     right.z * ay.x - right.x * ay.z,
+                     right.x * ay.y - right.y * ay.x };
+            pushBox(verts, c, right, ay, az, halfW, len * 0.5f, halfD, r, g, b, layer);
+            return Vec3{ pivot.x + dir.x * len, pivot.y + dir.y * len, pivot.z + dir.z * len };
+        };
+
+        if(dead){
+            // Труп лежит: один плоский брусок вместо фигуры.
+            Vec3 c = bodyPoint(0.25f, 0.0f, 0.0f);
+            pushBox(verts, c, right, up, fwd, 0.30f, 0.22f, 0.85f,
+                    0.42f, 0.30f, 0.28f, layer);
+            continue;
+        }
+
+        // Ноги, корпус, голова.
+        // Пропорции сложены так, чтобы фигурка укладывалась в те же 1.8 м, что и сам
+        // игрок: ноги 0.85, корпус до 1.55, голова до 1.9.
+        Vec3 hipL = bodyPoint(0.86f, -0.12f, 0.0f);
+        Vec3 hipR = bodyPoint(0.86f,  0.12f, 0.0f);
+        limb(hipL,  legA, 0.86f * scale, 0.105f, 0.105f, 0.22f, 0.24f, 0.32f);
+        limb(hipR, -legA, 0.86f * scale, 0.105f, 0.105f, 0.22f, 0.24f, 0.32f);
+
+        Vec3 torso = bodyPoint(1.21f, 0.0f, 0.0f);
+        pushBox(verts, torso, right, up, fwd, 0.23f, 0.33f * scale, 0.13f,
+                0.52f, 0.44f, 0.34f, layer);
+
+        Vec3 head = bodyPoint(1.72f, 0.0f, 0.0f);
+        // Голова доворачивается по наклону взгляда: так видно, куда смотрит игрок.
+        float hp = clampf(v.pitch, -0.9f, 0.9f);
+        Vec3 headUp{ up.x * cosf(hp) + fwd.x * sinf(hp),
+                     up.y * cosf(hp) + fwd.y * sinf(hp),
+                     up.z * cosf(hp) + fwd.z * sinf(hp) };
+        Vec3 headFwd{ fwd.x * cosf(hp) - up.x * sinf(hp),
+                      fwd.y * cosf(hp) - up.y * sinf(hp),
+                      fwd.z * cosf(hp) - up.z * sinf(hp) };
+        pushBox(verts, head, right, headUp, headFwd, 0.19f, 0.19f, 0.19f,
+                0.88f, 0.70f, 0.55f, layer);
+
+        Vec3 shoulderL = bodyPoint(1.50f, -0.30f, 0.0f);
+        Vec3 shoulderR = bodyPoint(1.50f,  0.30f, 0.0f);
+        limb(shoulderL, armA, 0.66f * scale, 0.075f, 0.075f, 0.88f, 0.70f, 0.55f);
+        Vec3 hand = limb(shoulderR, (v.swing > 0.001f ? swingA : -armA), 0.66f * scale,
+                         0.075f, 0.075f, 0.88f, 0.70f, 0.55f);
+
+        // Инструмент в руке: его видно всем, как и просили. Топор — рукоять и голова,
+        // факел — палка с огоньком.
+        ItemType heldType = (v.held > 0 && v.held < (int)ItemType::COUNT)
+                            ? (ItemType)v.held : ItemType::None;
+        if(heldType == ItemType::Axe || heldType == ItemType::Torch){
+            float angle = (v.swing > 0.001f ? swingA : -armA);
+            float ca = cosf(angle), sa = sinf(angle);
+            Vec3 along{ fwd.x * sa - up.x * ca, fwd.y * sa - up.y * ca, fwd.z * sa - up.z * ca };
+            Vec3 shaftUp{ -along.x, -along.y, -along.z };
+            Vec3 az{ right.y * shaftUp.z - right.z * shaftUp.y,
+                     right.z * shaftUp.x - right.x * shaftUp.z,
+                     right.x * shaftUp.y - right.y * shaftUp.x };
+            Vec3 mid{ hand.x + along.x * 0.10f, hand.y + along.y * 0.10f, hand.z + along.z * 0.10f };
+            if(heldType == ItemType::Axe){
+                pushBox(verts, mid, right, shaftUp, az, 0.028f, 0.15f, 0.028f,
+                        0.42f, 0.30f, 0.18f, (float)blockTextureLayer(Block::Wood));
+                Vec3 headPos{ mid.x + shaftUp.x * 0.15f + fwd.x * 0.03f,
+                              mid.y + shaftUp.y * 0.15f + fwd.y * 0.03f,
+                              mid.z + shaftUp.z * 0.15f + fwd.z * 0.03f };
+                pushBox(verts, headPos, right, shaftUp, az, 0.035f, 0.06f, 0.07f,
+                        0.72f, 0.72f, 0.74f, (float)blockTextureLayer(Block::Stone));
+            } else {
+                pushBox(verts, mid, right, shaftUp, az, 0.024f, 0.15f, 0.024f,
+                        0.42f, 0.30f, 0.18f, (float)blockTextureLayer(Block::Wood));
+                Vec3 flame{ mid.x + shaftUp.x * 0.19f, mid.y + shaftUp.y * 0.19f,
+                            mid.z + shaftUp.z * 0.19f };
+                float flick = 0.85f + 0.15f * sinf(animTime_ * 11.0f + (float)v.id);
+                pushBox(verts, flame, right, shaftUp, az, 0.04f, 0.05f, 0.04f,
+                        1.9f * flick, 1.2f * flick, 0.35f, (float)blockTextureLayer(Block::Sand));
+            }
+        }
+
+        // Куда попала голова на экране — по этому HUD подпишет имя.
+        float wp[4] = { head.x, head.y + 0.42f, head.z, 1.0f };
+        float vp[4], cp[4];
+        for(int i = 0; i < 4; ++i)
+            vp[i] = view.m[i] * wp[0] + view.m[4 + i] * wp[1] + view.m[8 + i] * wp[2] + view.m[12 + i] * wp[3];
+        for(int i = 0; i < 4; ++i)
+            cp[i] = proj.m[i] * vp[0] + proj.m[4 + i] * vp[1] + proj.m[8 + i] * vp[2] + proj.m[12 + i] * vp[3];
+        if(cp[3] > 0.001f){
+            float ndcX = cp[0] / cp[3], ndcY = cp[1] / cp[3];
+            v.screenX = (float)SCR_W * (ndcX * 0.5f + 0.5f);
+            v.screenY = (float)SCR_H * (0.5f - ndcY * 0.5f);
+            v.onScreen = (ndcX > -1.1f && ndcX < 1.1f && ndcY > -1.1f && ndcY < 1.1f);
+        }
+    }
+    if(verts.empty()) return;
+
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    bindBlockTextures();
+    glDisable(GL_CULL_FACE);
+    glBindVertexArray(remoteVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, remoteVbo_);
+    size_t maxVerts = 24 * 12 * 36;
+    if(verts.size() > maxVerts) verts.resize(maxVerts);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+}
+
+// Имя над головой и полоска здоровья: без них в сетевой игре не отличить своих.
+void GameClient::renderRemoteLabels(){
+    if(remote_.empty() || overlay_ != Overlay::None) return;
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    Vec3 eye = player_->eyePosition();
+    for(const RemoteView& v : remote_){
+        if(!v.onScreen) continue;
+        float dx = v.pos.x - eye.x, dy = v.pos.y - eye.y, dz = v.pos.z - eye.z;
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+        if(dist > 60.0f) continue;
+        float fh = clampf(20.0f * s * (12.0f / fmaxf(dist, 6.0f)), 11.0f * s, 22.0f * s);
+        float tw = textWidth(fh, v.name);
+        drawUIRect(v.screenX - tw * 0.5f - 6.0f * s, v.screenY - fh * 0.3f,
+                   tw + 12.0f * s, fh * 1.5f, 0, 0.05f, 0.05f, 0.06f, 0.5f, false);
+        drawTextCentered(v.screenX, v.screenY, fh, v.name, 1, 1, 1, 0.95f);
+        // Полоска здоровья под именем.
+        float bw = fmaxf(tw, 40.0f * s), bh = 4.0f * s;
+        float by = v.screenY + fh * 1.35f;
+        drawUIRect(v.screenX - bw * 0.5f, by, bw, bh, 0, 0.1f, 0.1f, 0.1f, 0.6f, false);
+        drawUIRect(v.screenX - bw * 0.5f, by, bw * clampf(v.health / 100.0f, 0.0f, 1.0f), bh,
+                   0, 0.75f, 0.25f, 0.22f, 0.9f, false);
+    }
+}
+
+// Раз в кадр отдаём сети своё состояние и забираем чужие правки мира.
+void GameClient::netPumpState(){
+    if(!net_.connected()) return;
+    net::PlayerState st;
+    Vec3 p = player_->position();
+    st.x = p.x; st.y = p.y; st.z = p.z;
+    st.yaw = yaw_;
+    st.pitch = pitch_;
+    st.speed = player_->speed();
+    st.swing = player_->swingPhase();
+    st.held = (int)inventory_.selectedStack().type;
+    st.health = (int)player_->health();
+    if(player_->isDead())            st.pose = (int)net::Pose::Dead;
+    else if(buildMode())             st.pose = (int)net::Pose::Build;
+    else if(player_->swinging())     st.pose = (int)net::Pose::Swing;
+    else if(player_->isCrouching())  st.pose = (int)net::Pose::Crouch;
+    else if(player_->speed() > 5.0f) st.pose = (int)net::Pose::Run;
+    else if(player_->speed() > 0.4f) st.pose = (int)net::Pose::Walk;
+    else                             st.pose = (int)net::Pose::Idle;
+    net_.setLocalState(st);
+}
+
+void GameClient::netApplyEdits(){
+    if(!net_.connected()) return;
+    std::vector<net::Edit> edits = net_.takeEdits();
+    if(edits.empty()) return;
+    // Пока применяем чужое, свои правки наружу не уходят — иначе они бы гуляли по кругу.
+    netApplying_ = true;
+    for(const net::Edit& e : edits){
+        if(e.block < 0 || e.block >= (int)Block::COUNT) continue;
+        voxels_->setBlock(e.x, e.y, e.z, (Block)e.block);
+    }
+    netApplying_ = false;
 }
 
 // ==================== ПАДЕНИЕ СРУБЛЕННОГО ДЕРЕВА ====================
@@ -930,8 +1234,18 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     float back   = smoothstepf(0.58f, 1.0f, phase);      // возврат в стойку
     float swing = (-0.30f * windup + 1.30f * strike) * (1.0f - back);
 
-    Vec3 right = v3norm(v3cross(forward, Vec3{0,1,0}));
-    Vec3 up = v3cross(right, forward);
+    Vec3 right0 = v3norm(v3cross(forward, Vec3{0,1,0}));
+    Vec3 up = v3cross(right0, forward);
+    // Инструмент развёрнут вокруг вертикали почти вдоль взгляда: раньше топор и факел
+    // висели ПОПЕРЁК экрана, боком к игроку, и лезвие смотрело в сторону, а не вперёд.
+    const float TOOL_YAW = 1.15f;   // ~66 градусов
+    float cy2 = cosf(TOOL_YAW), sy2 = sinf(TOOL_YAW);
+    Vec3 right{ right0.x * cy2 + forward.x * sy2,
+                right0.y * cy2 + forward.y * sy2,
+                right0.z * cy2 + forward.z * sy2 };
+    Vec3 depth{ forward.x * cy2 - right0.x * sy2,
+                forward.y * cy2 - right0.y * sy2,
+                forward.z * cy2 - right0.z * sy2 };
 
     // Бруски топорика в своей плоской системе: x поперёк рукояти, y вдоль неё.
     struct Part { float cx, cy, hx, hy, hz; Block block; };
@@ -999,13 +1313,13 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
         static const int SY[6] = { 1, -1, 0, 0, 0, 0 };
         static const int SZ[6] = { 0, 0, 0, 0, 1, -1 };
         for(int f = 0; f < 6; ++f){
-            Vec3 n{ ax.x * SX[f] + ay.x * SY[f] + forward.x * SZ[f],
-                    ax.y * SX[f] + ay.y * SY[f] + forward.y * SZ[f],
-                    ax.z * SX[f] + ay.z * SY[f] + forward.z * SZ[f] };
+            Vec3 n{ ax.x * SX[f] + ay.x * SY[f] + depth.x * SZ[f],
+                    ax.y * SX[f] + ay.y * SY[f] + depth.y * SZ[f],
+                    ax.z * SX[f] + ay.z * SY[f] + depth.z * SZ[f] };
             // Два касательных направления грани и их полуразмеры.
             Vec3 t1, t2; float h1, h2;
-            if(SY[f] != 0){ t1 = ax; h1 = hx; t2 = forward; h2 = hz; }
-            else if(SX[f] != 0){ t1 = ay; h1 = hy; t2 = forward; h2 = hz; }
+            if(SY[f] != 0){ t1 = ax; h1 = hx; t2 = depth; h2 = hz; }
+            else if(SX[f] != 0){ t1 = ay; h1 = hy; t2 = depth; h2 = hz; }
             else { t1 = ax; h1 = hx; t2 = ay; h2 = hy; }
             Vec3 base{ centre.x + n.x * (SY[f] ? hy : SX[f] ? hx : hz),
                        centre.y + n.y * (SY[f] ? hy : SX[f] ? hx : hz),
@@ -1067,7 +1381,15 @@ void GameClient::initWorld(){
 
     // Любая правка мира (игрок сломал блок ИЛИ вода растеклась) помечает чанк на
     // пересборку. Подписываемся на сам мир, а не на игрока: у воды своего игрока нет.
-    voxels_->onBlockChanged = [this](int x, int y, int z){ chunks_.markDirty(x, y, z); };
+    voxels_->onBlockChanged = [this](int x, int y, int z){
+        chunks_.markDirty(x, y, z);
+        // Всё, что построил или выбил ИГРОК, уезжает на сервер. Растекание воды в сеть
+        // не шлём: оно детерминировано и повторится у каждого само.
+        if(!netApplying_ && net_.connected()){
+            Block b = voxels_->blockAt(x, y, z);
+            if(b != Block::Water) net_.pushEdit(x, y, z, (int)b);
+        }
+    };
     player_.reset(new Survivor(*voxels_, *env_, inventory_));
     player_->onNodeBroken = [this](Block b, int x, int y, int z){ spawnBreakParticles(b, x, y, z); };
     // Дерево срублено: мир отдал его блоки целиком, дальше их роняет клиент.
@@ -1353,7 +1675,9 @@ bool GameClient::handlePauseTouch(float x, float y){
             case 0: overlay_ = Overlay::None; break;
             case 1: overlay_ = Overlay::Map; break;
             case 2: overlay_ = Overlay::Settings; break;
-            case 3: overlay_ = Overlay::None; state_ = GameState::MainMenu; break;
+            // Выход в меню рвёт связь с сервером: висеть в списке игроков «призраком»
+            // до таймаута незачем.
+            case 3: overlay_ = Overlay::None; net_.leave(); state_ = GameState::MainMenu; break;
         }
         return true;
     }
@@ -2312,9 +2636,28 @@ void GameClient::handleEvents(){
         // в меню — выходят из игры. Случайный выход посреди выживания недопустим.
         if(e.type == SDL_KEYDOWN && (e.key.keysym.sym == SDLK_AC_BACK || e.key.keysym.sym == SDLK_ESCAPE)){
             if(overlay_ != Overlay::None){ overlay_ = Overlay::None; dragSlot_ = -1; }
-            else if(state_ == GameState::Playing) state_ = GameState::MainMenu;
+            else if(state_ == GameState::Playing){ net_.leave(); state_ = GameState::MainMenu; }
             else running_ = false;
             continue;
+        }
+        // Ввод адреса сервера и имени: экранная клавиатура присылает SDL_TEXTINPUT.
+        if(e.type == SDL_TEXTINPUT && state_ == GameState::MainMenu){
+            menuTextInput(e.text.text);
+            continue;
+        }
+        if(e.type == SDL_KEYDOWN && state_ == GameState::MainMenu &&
+           (menuAddOpen_ || menuEditName_)){
+            if(e.key.keysym.sym == SDLK_BACKSPACE){ menuBackspace(); continue; }
+            if(e.key.keysym.sym == SDLK_RETURN || e.key.keysym.sym == SDLK_KP_ENTER){
+                // Enter = «готово»: повторяем то же, что делает кнопка.
+                float bx, by, bw, bh;
+                menuActionRect(0, bx, by, bw, bh);
+                float sc = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+                float pw = fminf((float)SCR_W * 0.6f, 760.0f * sc), ph = 150.0f * sc;
+                float px = ((float)SCR_W - pw) * 0.5f, py = (float)SCR_H * 0.32f;
+                handleMenuTouch(px + pw - 96.0f * sc, py + ph - 37.0f * sc);
+                continue;
+            }
         }
         if(e.type == SDL_KEYDOWN && e.key.keysym.sym >= SDLK_1 && e.key.keysym.sym <= SDLK_6){
             inventory_.select(e.key.keysym.sym - SDLK_1);
@@ -2475,6 +2818,10 @@ void GameClient::update(float dt){
     updateFallenTrees(dt);
     updateParticles(dt);
     updateDrops(dt);
+    // Сеть: отдать своё состояние, применить чужие правки, сгладить чужие фигурки.
+    netPumpState();
+    netApplyEdits();
+    updateRemotePlayers(dt);
 
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
@@ -2604,6 +2951,7 @@ void GameClient::renderScene(){
     // ---- Осколки и предмет в руке. Оба прохода до воды и БЕЗ очистки глубины.
     renderParticles(view, proj);
     renderFallenTrees(view, proj);
+    renderRemotePlayers(view, proj);
     if(state_ == GameState::Playing) renderDrops(view, proj);
     if(buildMode()) renderBuildGhost(view, proj);
     if(state_ == GameState::Playing)
@@ -2875,6 +3223,9 @@ void GameClient::renderHud(){
     // ---- Прочность детали дома под прицелом (только у побитой).
     renderBuildTargetInfo();
 
+    // ---- Имена других игроков.
+    renderRemoteLabels();
+
     // ---- Выброшенные предметы: подписи над кубами и кнопка «поднять».
     renderDropLabels();
 
@@ -3100,13 +3451,15 @@ void GameClient::craftPanelGeometry(float& dx, float& dy, float& dw, float& dh,
     if(sel >= kRecipeCount) sel = kRecipeCount - 1;
     const Recipe& r = kRecipes[sel];
 
-    float bigIcon = tile * 0.72f;
-    float headerH = fmaxf(bigIcon, 46.0f * s) + 14.0f * s;
-    notesY = dy + 14.0f * s + headerH;
+    // Значок предмета и шапка стали компактнее, а таблица стоимости поднялась к ним:
+    // после прошлой правки она уехала слишком низко и панель выглядела полупустой.
+    float bigIcon = tile * 0.50f;
+    float headerH = fmaxf(bigIcon, 40.0f * s) + 8.0f * s;
+    notesY = dy + 12.0f * s + headerH;
 
     float noteH = 18.0f * s;
     size_t lineCount = wrapText(r.note, noteH, dw - 36.0f * s).size();
-    tableY = notesY + (float)lineCount * noteH * 1.35f + 20.0f * s;
+    tableY = notesY + (float)lineCount * noteH * 1.35f + 12.0f * s;
 
     int rows = 1 + (r.costB != ItemType::None ? 1 : 0);
     float tableH = 30.0f * s + (float)rows * 28.0f * s;
@@ -3191,10 +3544,10 @@ void GameClient::renderCraft(){
 
     // Заголовок описания: название слева, крупный значок предмета справа. Название
     // переносится по словам и не залезает под значок.
-    float bigIcon = tile * 0.72f;
+    float bigIcon = tile * 0.50f;
     GLuint resIcon = itemIcon(r.result);
     if(resIcon)
-        drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 14.0f * s, bigIcon, bigIcon,
+        drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 12.0f * s, bigIcon, bigIcon,
                    resIcon, 1, 1, 1, 1.0f, true);
     snprintf(buf, sizeof(buf), "%s x%d", res.nameRu, r.resultCount);
     {
@@ -3516,82 +3869,362 @@ void GameClient::inventoryCloseRect(float& x, float& y, float& w, float& h) cons
     if(x + w > (float)SCR_W - 8.0f * s) x = (float)SCR_W - w - 8.0f * s;
 }
 
-// ==================== ГЛАВНОЕ МЕНЮ ====================
-// Стиль меню — «раст»: узкие светлые кнопки-полосы с прочерком слева, заголовок с
-// разрядкой и тонкая линейка под ним. Всё строго по центру экрана: раньше и заголовок,
-// и подпись начинались от левого края условной коробки и висели слева.
-void GameClient::menuButtonRect(int index, float& x, float& y, float& w, float& h) const {
+// ==================== ГЛАВНОЕ МЕНЮ: БРАУЗЕР СЕРВЕРОВ ====================
+// Меню сделано как список серверов, а не как три кнопки: игра теперь и одиночная, и
+// сетевая, и выбирать надо именно сервер. Слева — вкладки, справа — список с игроками
+// и пингом, снизу — «обновить», «добавить сервер» и «играть». Никаких подсказок и
+// пояснений на экране: список говорит сам за себя.
+
+void GameClient::loadServerList(){
+    servers_.clear();
+    // Первая строка всегда одна и та же: локальный мир без сети.
+    ServerRow local;
+    local.name = "Одиночная игра";
+    local.map = "Survival Island";
+    local.local = true;
+    local.max = 1;
+    local.online = true;
+    servers_.push_back(local);
+
+    // Остальное — то, что игрок добавил сам. Файл лежит рядом с настройками.
+    std::string path = g_writableDir + "servers.txt";
+    FILE* f = fopen(path.c_str(), "rb");
+    if(f){
+        char line[512];
+        while(fgets(line, sizeof(line), f)){
+            std::string a(line);
+            while(!a.empty() && (a.back() == '\n' || a.back() == '\r' || a.back() == ' ')) a.pop_back();
+            if(a.empty()) continue;
+            if(a.rfind("name=", 0) == 0){ playerName_ = a.substr(5); continue; }
+            ServerRow r;
+            r.address = a;
+            r.name = a;
+            servers_.push_back(r);
+        }
+        fclose(f);
+    }
+}
+
+void GameClient::saveServerList(){
+    std::string path = g_writableDir + "servers.txt";
+    FILE* f = fopen(path.c_str(), "wb");
+    if(!f) return;
+    fprintf(f, "name=%s\n", playerName_.c_str());
+    for(const ServerRow& r : servers_){
+        if(r.local || r.address.empty()) continue;
+        fprintf(f, "%s\n", r.address.c_str());
+    }
+    fclose(f);
+}
+
+// Опрос всех адресов из списка. Идёт в отдельном потоке: сервер за океаном отвечает
+// полсекунды, и меню на это время не должно замирать.
+void GameClient::refreshServers(){
+    menuNotice_ = "обновляем список...";
+    menuNoticeAge_ = 0.0f;
+    std::vector<std::string> addresses;
+    for(const ServerRow& r : servers_) if(!r.local) addresses.push_back(r.address);
+    if(addresses.empty()){
+        menuNotice_ = "серверов в списке нет";
+        return;
+    }
+    std::thread([this, addresses]{
+        for(const std::string& a : addresses){
+            NetClient::Info info = NetClient::query(a);
+            for(ServerRow& r : servers_){
+                if(r.address != a) continue;
+                r.online = info.ok;
+                r.players = info.players;
+                r.max = info.max ? info.max : 100;
+                r.ping = info.ping;
+                if(info.ok && !info.name.empty()) r.name = info.name;
+                if(info.ok && !info.map.empty()) r.map = info.map;
+            }
+        }
+        menuNotice_ = "список обновлён";
+        menuNoticeAge_ = 0.0f;
+    }).detach();
+}
+
+void GameClient::menuListArea(float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    w = clampf((float)SCR_W * 0.30f, 260.0f, 420.0f);
-    h = 58.0f * s;
-    x = ((float)SCR_W - w) * 0.5f;
-    y = (float)SCR_H * 0.46f + (float)index * (h + 12.0f * s);
+    x = (float)SCR_W * 0.26f;
+    y = 34.0f * s;
+    w = (float)SCR_W * 0.63f - x;
+    h = (float)SCR_H - y - 24.0f * s;
+}
+
+void GameClient::menuRowRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float lx, ly, lw, lh;
+    menuListArea(lx, ly, lw, lh);
+    h = 56.0f * s;
+    x = lx;
+    w = lw;
+    y = ly + 26.0f * s + (float)i * (h + 4.0f * s);
+}
+
+void GameClient::menuTabRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    x = (float)SCR_W * 0.075f + 8.0f * s;
+    w = (float)SCR_W * 0.26f - x - 8.0f * s;
+    h = 62.0f * s;
+    y = 20.0f * s + (float)i * (h + 6.0f * s);
+}
+
+void GameClient::menuActionRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    x = (float)SCR_W * 0.075f + 8.0f * s;
+    w = (float)SCR_W * 0.26f - x - 8.0f * s;
+    h = 56.0f * s;
+    // Кнопки прижаты к низу колонки вкладок, как в образце.
+    y = (float)SCR_H - (float)(3 - i) * (h + 10.0f * s) - 20.0f * s;
 }
 
 void GameClient::renderMainMenu(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float cx = (float)SCR_W * 0.5f;
-    // Фон меню — своя картинка на весь экран; если её нет, остаётся живой мир под затемнением.
     if(texMenuBg_){
         drawMenuBackground();
-        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.35f, false);
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.55f, false);
     } else {
-        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.40f, false);
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.75f, false);
     }
-    // Полоса-виньетка по центру: на пёстром фоне белые буквы иначе теряются.
-    float bandW = clampf((float)SCR_W * 0.46f, 380.0f, 720.0f);
-    drawUIRect(cx - bandW * 0.5f, (float)SCR_H * 0.12f, bandW, (float)SCR_H * 0.74f, 0,
-               0.04f, 0.04f, 0.045f, 0.34f, false);
 
-    // Заголовок с разрядкой между букв: так набирают шапки в Rust, и на фоне пейзажа
-    // строка читается как эмблема, а не как подпись.
-    float titleH = clampf(64.0f * s, 40.0f, 110.0f);
-    drawTextCentered(cx, (float)SCR_H * 0.19f, titleH, "O S I L",
-                     UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
-    drawTextCentered(cx, (float)SCR_H * 0.19f + titleH * 1.05f, titleH * 0.52f, "S U R V I V A L",
-                     1.0f, 0.96f, 0.90f, 0.95f);
-    // Тонкая линейка под заголовком — граница шапки.
-    float ruleW = bandW * 0.62f;
-    float ruleY = (float)SCR_H * 0.19f + titleH * 1.75f;
-    drawUIRect(cx - ruleW * 0.5f, ruleY, ruleW, fmaxf(1.0f, 2.0f * s), 0,
-               UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.55f, false);
-    drawTextCentered(cx, ruleY + 12.0f * s, 19.0f * s,
-                     "ОСТРОВ. ТОПОР. НОЧЬ ВПЕРЕДИ.",
-                     UI_TEXT.r, UI_TEXT.g, UI_TEXT.b, 0.85f);
+    // ---- Левая полоса со значками: она же место для логотипа.
+    float railW = (float)SCR_W * 0.075f;
+    drawUIRect(0, 0, railW, (float)SCR_H, 0, 0.07f, 0.07f, 0.08f, 0.92f, false);
+    float logo = railW * 0.62f;
+    drawUIRect(railW * 0.19f, railW * 0.19f, logo, logo, 0, UI_ACCENT.r * 0.5f,
+               UI_ACCENT.g * 0.6f, UI_ACCENT.b * 0.5f, 0.95f, false);
+    uiThinFrame(railW * 0.19f, railW * 0.19f, logo, logo, UI_ACCENT, 0.9f);
+    GLuint railIcons[3] = { texInventory_, texCraft_, texSettings_ };
+    for(int i = 0; i < 3; ++i){
+        float isz = railW * 0.44f;
+        float ix = railW * 0.28f, iy = railW * 1.15f + (float)i * (isz + 22.0f * s);
+        if(railIcons[i]) drawUIRect(ix, iy, isz, isz, railIcons[i], 1, 1, 1, 0.55f, true);
+    }
 
-    const char* labels[3] = { "ИГРАТЬ", "НАСТРОЙКИ", "ВЫХОД" };
+    // ---- Колонка вкладок.
+    drawUIRect(railW, 0, (float)SCR_W * 0.26f - railW, (float)SCR_H, 0,
+               0.11f, 0.11f, 0.12f, 0.78f, false);
+    const char* tabs[4] = { "Сервера", "Друзья", "Любимые", "История" };
+    int online = 0, playersTotal = 0;
+    for(const ServerRow& r : servers_){ if(r.online && !r.local) ++online; playersTotal += r.players; }
+    char buf[160];
+    for(int i = 0; i < 4; ++i){
+        float x, y, w, h;
+        menuTabRect(i, x, y, w, h);
+        bool on = (i == menuTab_);
+        drawUIRect(x, y, w, h, 0, 0.88f, 0.87f, 0.83f, on ? 0.16f : 0.06f, false);
+        drawText(x + 12.0f * s, y + 8.0f * s, 24.0f * s, tabs[i], 1, 1, 1, on ? 0.98f : 0.65f);
+        if(i == 0) snprintf(buf, sizeof(buf), "%d сервер(ов), %d игрок(ов)", online, playersTotal);
+        else       snprintf(buf, sizeof(buf), "пусто");
+        drawText(x + 12.0f * s, y + 34.0f * s, 16.0f * s, buf, 1, 1, 1, 0.45f);
+    }
+
+    // ---- Кнопки внизу колонки.
+    const char* actions[3] = { "ДОБАВИТЬ СЕРВЕР", "ОБНОВИТЬ", "ИГРАТЬ" };
     for(int i = 0; i < 3; ++i){
         float x, y, w, h;
-        menuButtonRect(i, x, y, w, h);
-        bool primary = (i == 0);
-        // Кнопка — светлая полупрозрачная полоса, у «Играть» она заметно светлее.
-        drawUIRect(x, y, w, h, 0, 0.88f, 0.87f, 0.83f, primary ? 0.26f : 0.15f, false);
-        uiThinFrame(x, y, w, h, primary ? UI_ACCENT : UI_LINE, primary ? 0.85f : 0.45f);
-        // Прочерк слева — та самая расточка, по которой узнаётся меню Rust.
-        float tick = 4.0f * s;
-        drawUIRect(x, y, tick, h, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b,
-                   primary ? 0.95f : 0.45f, false);
-        drawTextCentered(x + w * 0.5f, y + h * 0.26f, h * 0.40f, labels[i],
+        menuActionRect(i, x, y, w, h);
+        bool primary = (i == 2);
+        drawUIRect(x, y, w, h, 0, 0.88f, 0.87f, 0.83f, primary ? 0.26f : 0.12f, false);
+        uiThinFrame(x, y, w, h, primary ? UI_ACCENT : UI_LINE, primary ? 0.9f : 0.4f);
+        drawTextCentered(x + w * 0.5f, y + h * 0.28f, h * 0.38f, actions[i],
                          primary ? UI_ACCENT.r : UI_TEXT.r,
                          primary ? UI_ACCENT.g : UI_TEXT.g,
                          primary ? UI_ACCENT.b : UI_TEXT.b, 1.0f);
     }
 
-    char buf[128];
-    snprintf(buf, sizeof(buf), "сид мира: %s   |   %.0f FPS", WORLD_SEED_TEXT, (double)fps_);
-    drawTextCentered(cx, (float)SCR_H - 40.0f * s, 17.0f * s, buf,
-                     UI_TEXT_DIM.r, UI_TEXT_DIM.g, UI_TEXT_DIM.b, 0.8f);
+    // ---- Список серверов: шапка и строки.
+    float lx, ly, lw, lh;
+    menuListArea(lx, ly, lw, lh);
+    drawText(lx, ly - 24.0f * s, 19.0f * s, "названия серверов", 1, 1, 1, 0.55f);
+    drawText(lx + lw - 190.0f * s, ly - 24.0f * s, 19.0f * s, "игроки", 1, 1, 1, 0.55f);
+    drawText(lx + lw - 70.0f * s, ly - 24.0f * s, 19.0f * s, "пинг", 1, 1, 1, 0.55f);
+
+    for(size_t i = 0; i < servers_.size(); ++i){
+        float x, y, w, h;
+        menuRowRect((int)i, x, y, w, h);
+        if(y + h > (float)SCR_H - 10.0f * s) break;
+        const ServerRow& r = servers_[i];
+        bool sel = ((int)i == menuSelected_);
+        drawUIRect(x, y, w, h, 0, 0.85f, 0.84f, 0.80f, sel ? 0.22f : 0.10f, false);
+        if(sel) uiThinFrame(x, y, w, h, UI_ACCENT, 0.9f);
+        drawText(x + 44.0f * s, y + 7.0f * s, 21.0f * s, r.name, 1, 1, 1,
+                 (r.online || r.local) ? 0.97f : 0.5f);
+        drawText(x + 44.0f * s, y + 32.0f * s, 15.0f * s, r.map, 1, 1, 1, 0.45f);
+        // Звёздочка слева — как в образце; сейчас она просто метка строки.
+        drawUIRect(x + 16.0f * s, y + h * 0.5f - 5.0f * s, 10.0f * s, 10.0f * s, 0,
+                   1, 1, 1, sel ? 0.9f : 0.35f, false);
+        if(r.local) snprintf(buf, sizeof(buf), "0/1");
+        else        snprintf(buf, sizeof(buf), "%d/%d", r.players, r.max);
+        drawText(x + w - 190.0f * s, y + 18.0f * s, 19.0f * s, buf, 1, 1, 1, 0.85f);
+        snprintf(buf, sizeof(buf), "%d", r.ping);
+        drawText(x + w - 70.0f * s, y + 18.0f * s, 19.0f * s, buf, 1, 1, 1, 0.85f);
+    }
+
+    // ---- Карточка игрока справа и версия внизу.
+    float cardX = (float)SCR_W * 0.90f;
+    drawUIRect(cardX, 0, (float)SCR_W - cardX, (float)SCR_H, 0, 0.07f, 0.07f, 0.08f, 0.85f, false);
+    float av = ((float)SCR_W - cardX) * 0.55f;
+    drawUIRect(cardX + av * 0.4f, 18.0f * s, av, av, 0, 0.55f, 0.55f, 0.58f, 0.9f, false);
+    drawTextCentered(cardX + ((float)SCR_W - cardX) * 0.5f, 18.0f * s + av + 6.0f * s,
+                     19.0f * s, playerName_, 1, 1, 1, 0.95f);
+    drawTextCentered(cardX + ((float)SCR_W - cardX) * 0.5f, (float)SCR_H - 30.0f * s,
+                     15.0f * s, "Open alfa 0.2", 1, 1, 1, 0.55f);
+
+    // ---- Ввод адреса или имени: одна строка поверх списка.
+    if(menuAddOpen_ || menuEditName_){
+        float bw = fminf((float)SCR_W * 0.6f, 760.0f * s), bh = 150.0f * s;
+        float bx = ((float)SCR_W - bw) * 0.5f, by = (float)SCR_H * 0.32f;
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.02f, 0.03f, 0.55f, false);
+        drawUIRect(bx, by, bw, bh, 0, 0.14f, 0.14f, 0.15f, 0.96f, false);
+        uiThinFrame(bx, by, bw, bh, UI_ACCENT, 0.9f);
+        drawText(bx + 18.0f * s, by + 12.0f * s, 20.0f * s,
+                 menuAddOpen_ ? "адрес сервера" : "имя игрока", 1, 1, 1, 0.7f);
+        std::string shown = menuInput_ + "_";
+        drawText(bx + 18.0f * s, by + 48.0f * s, 26.0f * s, shown, 1, 1, 1, 0.98f);
+        float okW = 160.0f * s, okH = 46.0f * s;
+        drawUIRect(bx + bw - okW - 16.0f * s, by + bh - okH - 14.0f * s, okW, okH, 0,
+                   0.88f, 0.87f, 0.83f, 0.24f, false);
+        uiThinFrame(bx + bw - okW - 16.0f * s, by + bh - okH - 14.0f * s, okW, okH, UI_ACCENT, 0.9f);
+        drawTextCentered(bx + bw - okW * 0.5f - 16.0f * s, by + bh - okH - 2.0f * s,
+                         22.0f * s, "ГОТОВО", 1, 1, 1, 0.95f);
+        float cancelW = 130.0f * s;
+        drawUIRect(bx + 16.0f * s, by + bh - okH - 14.0f * s, cancelW, okH, 0,
+                   0.88f, 0.87f, 0.83f, 0.12f, false);
+        drawTextCentered(bx + 16.0f * s + cancelW * 0.5f, by + bh - okH - 2.0f * s,
+                         22.0f * s, "ОТМЕНА", 1, 1, 1, 0.8f);
+    }
+
+    // ---- Короткое сообщение о последнем действии (не подсказка, а ответ игре).
+    menuNoticeAge_ += 1.0f / 60.0f;
+    if(!menuNotice_.empty() && menuNoticeAge_ < 6.0f)
+        drawText(lx, (float)SCR_H - 26.0f * s, 17.0f * s, menuNotice_, 1, 1, 1, 0.6f);
+}
+
+// Запуск выбранной строки: локальный мир или подключение к серверу.
+void GameClient::startSelectedServer(){
+    if(menuSelected_ < 0 || menuSelected_ >= (int)servers_.size()) return;
+    const ServerRow row = servers_[(size_t)menuSelected_];
+    if(row.local){
+        net_.leave();
+        state_ = GameState::Playing;
+        menuNotice_.clear();
+        return;
+    }
+    menuNotice_ = "подключаемся к " + row.address + "...";
+    menuNoticeAge_ = 0.0f;
+    if(net_.join(row.address, playerName_)){
+        state_ = GameState::Playing;
+        menuNotice_.clear();
+        // Мир у всех строится из сида, и если сервер живёт на другом — постройки и
+        // деревья окажутся не там, где их видят соседи. Молчать об этом нельзя.
+        unsigned long long mine = seedFromString(WORLD_SEED_TEXT);
+        if(net_.seed() != 0 && net_.seed() != mine)
+            SDL_Log("сеть: сид сервера %llu не совпадает с сидом клиента %llu",
+                    (unsigned long long)net_.seed(), mine);
+    } else {
+        menuNotice_ = net_.statusText();
+        menuNoticeAge_ = 0.0f;
+    }
+}
+
+void GameClient::menuTextInput(const char* text){
+    if(!menuAddOpen_ && !menuEditName_) return;
+    if(menuInput_.size() > 120) return;
+    menuInput_ += text;
+}
+
+void GameClient::menuBackspace(){
+    if(menuInput_.empty()) return;
+    // UTF-8: сносим целый символ, а не байт, иначе в строке остаётся мусор.
+    size_t n = menuInput_.size();
+    do { --n; } while(n > 0 && ((unsigned char)menuInput_[n] & 0xC0) == 0x80);
+    menuInput_.resize(n);
 }
 
 bool GameClient::handleMenuTouch(float x, float y){
     if(overlay_ == Overlay::Settings) return handleSettingsTouch(x, y);
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+
+    // Ввод адреса или имени перехватывает всё: пока строка не закрыта, меню под ней
+    // не нажимается.
+    if(menuAddOpen_ || menuEditName_){
+        float bw = fminf((float)SCR_W * 0.6f, 760.0f * s), bh = 150.0f * s;
+        float bx = ((float)SCR_W - bw) * 0.5f, by = (float)SCR_H * 0.32f;
+        float okW = 160.0f * s, okH = 46.0f * s;
+        float okX = bx + bw - okW - 16.0f * s, okY = by + bh - okH - 14.0f * s;
+        float cancelW = 130.0f * s, cancelX = bx + 16.0f * s;
+        if(x >= okX && x <= okX + okW && y >= okY && y <= okY + okH){
+            std::string value = menuInput_;
+            while(!value.empty() && value.back() == ' ') value.pop_back();
+            if(menuAddOpen_ && !value.empty()){
+                ServerRow r;
+                r.address = value;
+                r.name = value;
+                servers_.push_back(r);
+                menuSelected_ = (int)servers_.size() - 1;
+                saveServerList();
+                refreshServers();
+            } else if(menuEditName_ && !value.empty()){
+                playerName_ = value;
+                saveServerList();
+            }
+            menuAddOpen_ = menuEditName_ = false;
+            menuInput_.clear();
+            SDL_StopTextInput();
+            return true;
+        }
+        if(x >= cancelX && x <= cancelX + cancelW && y >= okY && y <= okY + okH){
+            menuAddOpen_ = menuEditName_ = false;
+            menuInput_.clear();
+            SDL_StopTextInput();
+            return true;
+        }
+        return true;
+    }
+
+    // Вкладки.
+    for(int i = 0; i < 4; ++i){
+        float bx, by, bw, bh;
+        menuTabRect(i, bx, by, bw, bh);
+        if(x >= bx && x <= bx + bw && y >= by && y <= by + bh){ menuTab_ = i; return true; }
+    }
+
+    // Кнопки: добавить сервер, обновить, играть.
     for(int i = 0; i < 3; ++i){
         float bx, by, bw, bh;
-        menuButtonRect(i, bx, by, bw, bh);
+        menuActionRect(i, bx, by, bw, bh);
         if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
-        if(i == 0) state_ = GameState::Playing;
-        else if(i == 1) overlay_ = Overlay::Settings;
-        else running_ = false;
+        if(i == 0){
+            menuAddOpen_ = true;
+            menuInput_.clear();
+            SDL_StartTextInput();   // на телефоне это и поднимает экранную клавиатуру
+        } else if(i == 1){
+            refreshServers();
+        } else {
+            startSelectedServer();
+        }
+        return true;
+    }
+
+    // Карточка игрока справа — по ней меняют имя.
+    if(x > (float)SCR_W * 0.90f && y < (float)SCR_H * 0.25f){
+        menuEditName_ = true;
+        menuInput_ = playerName_;
+        SDL_StartTextInput();
+        return true;
+    }
+
+    // Строки списка: первое касание выбирает, второе по той же строке — запускает.
+    for(size_t i = 0; i < servers_.size(); ++i){
+        float bx, by, bw, bh;
+        menuRowRect((int)i, bx, by, bw, bh);
+        if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
+        if(menuSelected_ == (int)i) startSelectedServer();
+        else menuSelected_ = (int)i;
         return true;
     }
     return true;
@@ -3661,6 +4294,11 @@ int GameClient::run(int argc, char** argv){
             else if(what == "cupboard") overlayOverride_ = Overlay::Cupboard;
         } else if(a == "--dig" && i + 1 < argc){
             digDepth_ = atoi(argv[++i]);
+        } else if(a == "--server" && i + 1 < argc){
+            // Отладка и проверка сети: сразу войти на сервер, минуя меню.
+            joinOnStart_ = argv[++i];
+        } else if(a == "--name" && i + 1 < argc){
+            playerName_ = argv[++i];
         } else if(a == "--menu"){
             stayInMenu_ = true;    // снять главное меню на скриншот
         } else if(a == "--play"){
@@ -3689,6 +4327,14 @@ int GameClient::run(int argc, char** argv){
 
     drawLoadingScreen("Строим кубический мир 1000x1000...");
     initWorld();
+    // Вход на сервер из командной строки: удобно проверять сеть двумя окнами.
+    if(!joinOnStart_.empty()){
+        if(net_.join(joinOnStart_, playerName_))
+            SDL_Log("сеть: вошли на %s", joinOnStart_.c_str());
+        else
+            SDL_Log("сеть: не удалось войти на %s (%s)", joinOnStart_.c_str(),
+                    net_.statusText().c_str());
+    }
     overlay_ = overlayOverride_;
     // Окна ящика и шкафа знают, ЧТО открыто: без выбранного объекта они пустые.
     if(overlay_ == Overlay::Box && !boxes_.empty()) openBox_ = 0;

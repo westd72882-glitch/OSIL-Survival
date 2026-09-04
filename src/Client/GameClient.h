@@ -9,6 +9,7 @@
 // переедет на сервер — состояние игрока (Survivor), инвентарь и ввод (TouchControls)
 // уже разделены именно ради этого.
 #include "Inventory.h"
+#include "NetClient.h"
 #include "Survivor.h"
 #include "TouchControls.h"
 #include "../Engine/Render/Mesh.h"
@@ -96,6 +97,56 @@ private:
     void renderMainMenu();
     // Геометрия кнопок главного меню — одна на отрисовку и на попадания пальца.
     void menuButtonRect(int index, float& x, float& y, float& w, float& h) const;
+    // ---- Главное меню: браузер серверов. Строка «Одиночная игра» — это локальный мир,
+    // всё остальное — адреса серверов, которые игрок добавил сам.
+    struct ServerRow {
+        std::string address;       // пусто — локальная одиночная игра
+        std::string name;
+        std::string map = "Survival Island";
+        int  players = 0, max = 100, ping = 0;
+        bool online = false;
+        bool local = false;
+    };
+    std::vector<ServerRow> servers_;
+    int  menuTab_ = 0;             // Сервера / Друзья / Любимые / История
+    int  menuSelected_ = 0;
+    bool menuAddOpen_ = false;     // открыт ввод адреса
+    bool menuEditName_ = false;    // вводится имя игрока
+    std::string menuInput_;
+    std::string playerName_ = "выживший";
+    std::string joinOnStart_;      // ключ --server: войти сразу, минуя меню
+    std::string menuNotice_;       // короткая строка о результате действия
+    float menuNoticeAge_ = 99.0f;
+    void loadServerList();
+    void saveServerList();
+    void refreshServers();
+    void menuRowRect(int i, float& x, float& y, float& w, float& h) const;
+    void menuTabRect(int i, float& x, float& y, float& w, float& h) const;
+    void menuActionRect(int i, float& x, float& y, float& w, float& h) const;
+    void menuListArea(float& x, float& y, float& w, float& h) const;
+    void startSelectedServer();
+    void menuTextInput(const char* text);
+    void menuBackspace();
+
+    // ---- Сеть: живые игроки на сервере.
+    NetClient net_;
+    bool netApplying_ = false;     // применяем чужую правку — обратно её слать не надо
+    void netPumpState();
+    void netApplyEdits();
+    struct RemoteView {
+        int id = 0;
+        std::string name;
+        Vec3 pos{}, target{};
+        float yaw = 0, pitch = 0, speed = 0, swing = 0, phase = 0;
+        int   held = 0, pose = 0, health = 100;
+        float screenX = 0, screenY = 0;
+        bool  onScreen = false;
+    };
+    std::vector<RemoteView> remote_;
+    void updateRemotePlayers(float dt);
+    void renderRemotePlayers(const Mat4& view, const Mat4& proj);
+    void renderRemoteLabels();
+    GLuint remoteVao_ = 0, remoteVbo_ = 0;
     // Крестик выхода из инвентаря: одна геометрия и для отрисовки, и для попадания.
     // Пока их считали в двух местах, кнопка нажималась левее того места, где нарисована.
     void inventoryCloseRect(float& x, float& y, float& w, float& h) const;

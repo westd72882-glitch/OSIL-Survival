@@ -111,6 +111,26 @@ Releases; как собрать его локально — в [docs/ANDROID.md]
 
 ![карта мира](docs/images/map_example.png)
 
+## Мультиплеер
+
+Меню игры — браузер серверов: первая строка «Одиночная игра» запускает локальный мир,
+остальные строки добавляет сам игрок кнопкой «Добавить сервер».
+
+Сервер лежит в этом же репозитории и разворачивается на render.com одной кнопкой:
+в корне есть `Dockerfile` и `render.yaml` (**New → Blueprint** в панели Render). Порт
+хостинг выдаёт сам через `PORT`, проверка живости идёт на `/` — по этому адресу сервер
+отдаёт свою карточку, её видно прямо в браузере.
+
+Локально:
+
+```sh
+cmake --build build --target osil_server -j
+PORT=28015 ./build/bin/osil_server
+```
+
+Подробности протокола и известные ограничения (в том числе про https) —
+[docs/network.md](docs/network.md).
+
 ## Документация
 
 | Документ | О чём |
@@ -119,6 +139,7 @@ Releases; как собрать его локально — в [docs/ANDROID.md]
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | структура проекта, слои, цели сборки, цикл сервера |
 | [docs/WORLDGEN.md](docs/WORLDGEN.md) | как устроена генерация мира и почему именно так |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | сетевой протокол, снапшоты, RPC, лагокомпенсация (этап 2) |
+| [docs/network.md](docs/network.md) | мультиплеер: обмен по HTTP, выкладка сервера на render.com |
 | [docs/DATABASE.md](docs/DATABASE.md) | схема SQLite (этап 2) |
 | [docs/VOXELS.md](docs/VOXELS.md) | кубический мир: хранение блоков, сборка чанков, отсечение, затенение, добыча |
 | [docs/ANDROID.md](docs/ANDROID.md) | Android-клиент: сборка APK, управление на телефоне, настройки производительности |

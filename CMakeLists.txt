@@ -59,8 +59,11 @@ target_link_libraries(osil_core PUBLIC Threads::Threads)
 # ---------------- Выделенный сервер ----------------
 add_executable(osil_server
     src/Server/ConsoleHost.cpp
+    src/Server/NetServer.cpp
     src/Server/ServerApp.cpp
     src/Server/main.cpp
+    src/Net/Http.cpp
+    src/Net/Protocol.cpp
 )
 target_link_libraries(osil_server PRIVATE osil_core)
 
@@ -101,6 +104,9 @@ if(SDL2_FOUND AND SDL2_IMAGE_FOUND AND SDL2_TTF_FOUND AND SDL2_MIXER_FOUND)
         src/Engine/Render/UIStyle.cpp
         src/Client/GameClient.cpp
         src/Client/Inventory.cpp
+        src/Client/NetClient.cpp
+        src/Net/Http.cpp
+        src/Net/Protocol.cpp
         src/Client/Survivor.cpp
         src/Client/TouchControls.cpp
         src/Client/TouchControlsRender.cpp

@@ -7,6 +7,7 @@
 //   - симуляция идёт шагами tickrate, независимо от нагрузки;
 //   - управление — через реестр консольных команд (общий со будущим RCON).
 #include "ConsoleHost.h"
+#include "NetServer.h"
 #include "../Core/Config.h"
 #include "../World/Environment.h"
 #include "../World/Monuments.h"
@@ -53,6 +54,7 @@ private:
     std::unique_ptr<MonumentMap> monuments_;
     std::unique_ptr<Environment> env_;
     ConsoleHost console_;
+    NetServer net_;
 
     double secondsSinceStatus_ = 0.0;
     uint64_t tickCounter_ = 0;

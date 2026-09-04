@@ -81,7 +81,7 @@ void ServerApp::registerCommands(){
                        settings_.hostname.c_str(), env_->timeString(),
                        weatherName(env_->weather()), (double)(env_->weatherIntensity() * 100.0f),
                        (double)env_->windSpeed(), (unsigned long long)tickCounter_,
-                       settings_.maxPlayers);
+                       net_.playerCount(), settings_.maxPlayers);
         }});
 
     console_.registerCommand({"time", "time [часы]", "показать или задать время суток",
@@ -203,6 +203,9 @@ void ServerApp::tick(float dt){
     //   5. окружение (время суток и погода)     — уже здесь
     //   6. рассылка снапшотов                   (этап 2)
     env_->tick(dt);
+    // Сеть: выкинуть отвалившихся и отдать всем текущее время суток. Сам обмен идёт
+    // в потоках HTTP-сервера, здесь только «пульс».
+    net_.update(dt, env_->timeOfDay());
     ++tickCounter_;
 }
 
@@ -224,6 +227,14 @@ int ServerApp::run(int argc, char** argv){
 
     logSetLevel(logLevelFromString(config_.getString("server.loglevel", "info")));
     settings_ = ServerSettings::fromConfig(config_);
+    // Облачные хостинги (render.com и все остальные) сами говорят, какой порт слушать,
+    // через переменную PORT. Она сильнее конфига: иначе сервис не пройдёт проверку и
+    // будет считаться упавшим.
+    if(const char* envPort = getenv("PORT")){
+        int p = atoi(envPort);
+        if(p > 0 && p < 65536) settings_.port = p;
+    }
+    if(const char* envName = getenv("SERVER_NAME")) settings_.hostname = envName;
     if(!settings_.logFile.empty()) logSetFile(settings_.logFile);
 
     LOG_INFO("=== OSIL Survival — выделенный сервер (этап 1: мир и симуляция) ===");
@@ -241,14 +252,26 @@ int ServerApp::run(int argc, char** argv){
     LOG_INFO("мир готов; сид %llu — сохраните его, чтобы повторить карту",
              (unsigned long long)worldConfig_.seed);
 
-    // 3. Управление.
+    // 3. Сеть: игроки ходят по этому же миру, сервер сводит их состояния и правки.
+    {
+        NetServer::Config nc;
+        nc.name = settings_.hostname;
+        nc.maxPlayers = settings_.maxPlayers;
+        nc.seed = worldConfig_.seed;
+        nc.port = settings_.port;
+        if(!net_.start(nc))
+            LOG_ERROR("сеть: сервер не поднялся на порту %d — игроки не подключатся",
+                      settings_.port);
+    }
+
+    // 4. Управление.
     signal(SIGINT, handleSignal);
     signal(SIGTERM, handleSignal);
     registerCommands();
     console_.startStdinThread();
     LOG_INFO("введите help для списка команд; Ctrl+C — остановка");
 
-    // 4. Главный цикл: фиксированный тик, между тиками — сон, чтобы не жечь процессор.
+    // 5. Главный цикл: фиксированный тик, между тиками — сон, чтобы не жечь процессор.
     TickClock clock(settings_.tickRate);
     while(!g_shutdown.load()){
         console_.drain();
@@ -270,6 +293,7 @@ int ServerApp::run(int argc, char** argv){
 
     LOG_INFO("остановка сервера: тиков %llu, пропущено %llu",
              (unsigned long long)tickCounter_, (unsigned long long)clock.droppedTicks());
+    net_.stop();
     console_.stopStdinThread();
     logShutdown();
     return 0;

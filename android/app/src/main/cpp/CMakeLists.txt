@@ -95,6 +95,7 @@ file(GLOB_RECURSE OSIL_SOURCES
     ${OSIL_ROOT}/src/World/*.cpp
     ${OSIL_ROOT}/src/Engine/*.cpp
     ${OSIL_ROOT}/src/Client/*.cpp
+    ${OSIL_ROOT}/src/Net/*.cpp
 )
 list(LENGTH OSIL_SOURCES OSIL_SOURCE_COUNT)
 message(STATUS "OSIL Survival: собираю ${OSIL_SOURCE_COUNT} исходников из ${OSIL_ROOT}/src")
