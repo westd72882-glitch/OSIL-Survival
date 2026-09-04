@@ -95,6 +95,9 @@ bool GameClient::initPlatform(){
     // Список серверов и имя игрока лежат рядом с настройками: меню — это браузер
     // серверов, и без списка ему нечего показывать.
     loadServerList();
+    // https-транспорт поднимаем в главном потоке: на Android ссылку на Java-класс
+    // можно получить только отсюда, из сетевого потока её уже не найти.
+    net::initSecureTransport();
 
     if(TTF_Init() != 0) SDL_Log("TTF_Init: %s", TTF_GetError());
     IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
@@ -1236,9 +1239,10 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
 
     Vec3 right0 = v3norm(v3cross(forward, Vec3{0,1,0}));
     Vec3 up = v3cross(right0, forward);
-    // Инструмент развёрнут вокруг вертикали почти вдоль взгляда: раньше топор и факел
-    // висели ПОПЕРЁК экрана, боком к игроку, и лезвие смотрело в сторону, а не вперёд.
-    const float TOOL_YAW = 1.15f;   // ~66 градусов
+    // Разворот инструмента вокруг вертикали ровно на 180 градусов: лезвие топора и
+    // пламя факела теперь смотрят в другую сторону, а сам инструмент виден в профиль —
+    // его форму видно целиком, а не с торца.
+    const float TOOL_YAW = 3.14159265f;
     float cy2 = cosf(TOOL_YAW), sy2 = sinf(TOOL_YAW);
     Vec3 right{ right0.x * cy2 + forward.x * sy2,
                 right0.y * cy2 + forward.y * sy2,
@@ -1271,15 +1275,19 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     };
     const Part* parts = axe ? axeParts : torchParts;
     const int partCount = 6;
-    const float S = 0.86f;
+    const float S = 0.80f;
     // Факел держат почти прямо: с наклоном топора пламя уезжает к центру экрана и
     // теряется в пейзаже.
-    // На ударе инструмент заметно клюёт вперёд — отсюда и ощущение веса.
-    float angle = (axe ? 0.42f : 0.20f) - swing * 1.45f;
+    // В покое инструмент держат ПРЯМО, рукоятью вниз: наклон оставлен только удару —
+    // на нём топор и факел клюют вперёд, отсюда и ощущение веса.
+    float angle = -swing * 1.45f;
     float ca = cosf(angle), sa = sinf(angle);
-    float offX = 0.172f - swing * 0.085f;
+    // Прямой инструмент занимает больше места по высоте, поэтому он отодвинут правее
+    // и ниже: иначе рукоять с кистью уходила за нижний край, а голова топора лезла в
+    // середину экрана.
+    float offX = 0.205f - swing * 0.085f;
     float offZ = 0.52f + swing * 0.17f;   // на ударе инструмент уходит вперёд от лица
-    float offY = (axe ? -0.186f : -0.150f) + bob - swing * 0.24f;
+    float offY = (axe ? -0.205f : -0.185f) + bob - swing * 0.24f;
 
     std::vector<VoxelVertex> verts;
     verts.reserve(6 * 36);
@@ -1298,12 +1306,15 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
         }
         // Брусок собираем как «кубик» с разными полуразмерами: pushCube даёт куб, а
         // тут нужен вытянутый, поэтому строим грани здесь же по тем же правилам.
-        float lx = part.cx * S * ca - part.cy * S * sa + offX;
-        float ly = part.cx * S * sa + part.cy * S * ca + offY;
+        // Место инструмента на экране считается в осях КАМЕРЫ (right0 — вправо по
+        // экрану), а сами бруски раскладываются в осях самого инструмента. Пока это
+        // было одно и то же, разворот инструмента уводил его и в другой угол экрана.
+        float lx = part.cx * S * ca - part.cy * S * sa;
+        float ly = part.cx * S * sa + part.cy * S * ca;
         Vec3 centre{
-            eye.x + right.x * lx + up.x * ly + forward.x * offZ,
-            eye.y + right.y * lx + up.y * ly + forward.y * offZ,
-            eye.z + right.z * lx + up.z * ly + forward.z * offZ
+            eye.x + right.x * lx + up.x * (ly + offY) + right0.x * offX + forward.x * offZ,
+            eye.y + right.y * lx + up.y * (ly + offY) + right0.y * offX + forward.y * offZ,
+            eye.z + right.z * lx + up.z * (ly + offY) + right0.z * offX + forward.z * offZ
         };
         // Оси бруска в мировых координатах: рукоять повёрнута вместе с топором.
         Vec3 ax{ right.x * ca + up.x * sa, right.y * ca + up.y * sa, right.z * ca + up.z * sa };
@@ -1663,6 +1674,56 @@ void GameClient::renderPause(){
         // куске пейзажа за меню, и строка казалась темнее соседних.
         drawUIRect(x - 10.0f * s, y, w, h, 0, 0.06f, 0.06f, 0.07f, 0.55f, false);
         drawText(x, y + h * 0.22f, 30.0f * s, PAUSE_ROWS[i], 1, 1, 1, 1.0f);
+    }
+
+    // ---- Справа сверху: на каком сервере играем и кто на нём есть. Плитки с никами —
+    // как список онлайна в Rust: сразу видно, один ты на карте или нет.
+    float panelW = clampf((float)SCR_W * 0.26f, 240.0f, 420.0f);
+    float px = (float)SCR_W - panelW - 24.0f * s;
+    float py = 24.0f * s;
+
+    bool online = net_.connected();
+    std::string title = online ? net_.serverName() : std::string("Одиночная игра");
+    char buf[128];
+    if(online) snprintf(buf, sizeof(buf), "%d / %d игроков", net_.onlineCount(), net_.maxPlayers());
+    else       snprintf(buf, sizeof(buf), "локальный мир");
+
+    drawUIRect(px, py, panelW, 62.0f * s, 0, 0.06f, 0.06f, 0.07f, 0.62f, false);
+    uiThinFrame(px, py, panelW, 62.0f * s, online ? UI_ACCENT : UI_LINE, online ? 0.8f : 0.35f);
+    // Длинное имя сервера обрезаем по ширине панели, а не выпускаем за край.
+    {
+        float nameH = 22.0f * s;
+        std::string shown = title;
+        while(!shown.empty() && textWidth(nameH, shown) > panelW - 24.0f * s){
+            size_t n = shown.size();
+            do { --n; } while(n > 0 && ((unsigned char)shown[n] & 0xC0) == 0x80);
+            shown.resize(n);
+        }
+        if(shown.size() < title.size() && shown.size() > 1) shown += "…";
+        drawText(px + 12.0f * s, py + 8.0f * s, nameH, shown, 1, 1, 1, 0.97f);
+    }
+    drawText(px + 12.0f * s, py + 36.0f * s, 17.0f * s, buf, 1, 1, 1, 0.6f);
+
+    // Плитки с никами: сначала мы сами, потом остальные.
+    float tileH = 34.0f * s, gap = 6.0f * s;
+    float ty = py + 62.0f * s + 10.0f * s;
+    auto nameTile = [&](const std::string& nick, bool me, int health){
+        if(ty + tileH > (float)SCR_H - 20.0f * s) return;
+        drawUIRect(px, ty, panelW, tileH, 0, 0.85f, 0.84f, 0.80f, me ? 0.20f : 0.11f, false);
+        if(me) drawUIRect(px, ty, 4.0f * s, tileH, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.9f, false);
+        drawText(px + 14.0f * s, ty + tileH * 0.22f, 19.0f * s, nick, 1, 1, 1, me ? 0.98f : 0.85f);
+        // Здоровье игрока полоской у правого края плитки.
+        float hw = 54.0f * s, hh = 5.0f * s;
+        float hx = px + panelW - hw - 12.0f * s, hy = ty + tileH * 0.5f - hh * 0.5f;
+        drawUIRect(hx, hy, hw, hh, 0, 0.12f, 0.12f, 0.13f, 0.7f, false);
+        drawUIRect(hx, hy, hw * clampf(health / 100.0f, 0.0f, 1.0f), hh, 0,
+                   0.75f, 0.25f, 0.22f, 0.9f, false);
+        ty += tileH + gap;
+    };
+
+    nameTile(playerName_, true, (int)player_->health());
+    if(online){
+        for(const net::PlayerState& p : net_.players()) nameTile(p.name, false, p.health);
     }
 }
 
@@ -4292,6 +4353,7 @@ int GameClient::run(int argc, char** argv){
             else if(what == "settings") overlayOverride_ = Overlay::Settings;
             else if(what == "box")      overlayOverride_ = Overlay::Box;
             else if(what == "cupboard") overlayOverride_ = Overlay::Cupboard;
+            else if(what == "pause")    overlayOverride_ = Overlay::Pause;
         } else if(a == "--dig" && i + 1 < argc){
             digDepth_ = atoi(argv[++i]);
         } else if(a == "--server" && i + 1 < argc){

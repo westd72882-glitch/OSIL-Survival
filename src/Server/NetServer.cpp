@@ -76,6 +76,7 @@ std::string NetServer::handle(const std::string& method, const std::string& path
         LOG_INFO("сеть: вошёл %s (%d), всего игроков %d", name.c_str(), id, (int)players_.size());
 
         std::string s = "{\"id\":" + std::to_string(id);
+        s += ",\"max\":" + std::to_string(cfg_.maxPlayers);
         s += ",\"seed\":" + std::to_string(cfg_.seed);
         s += ",\"head\":" + std::to_string(headSeq_);
         s += ",\"name\":\"" + net::jsonEscape(cfg_.name) + "\"";

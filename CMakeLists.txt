@@ -56,6 +56,18 @@ target_include_directories(osil_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 find_package(Threads REQUIRED)
 target_link_libraries(osil_core PUBLIC Threads::Threads)
 
+# ---------------- TLS для настольной сборки ----------------
+# Нужен ровно для одного: зайти на сервер, который хостинг отдаёт по https (render.com
+# и все прочие облака). На Android эту работу делает системный HttpsURLConnection через
+# JNI, и OpenSSL там не нужен. Если библиотеки нет — сборка не ломается, просто https
+# в этой сборке не открывается.
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND)
+    message(STATUS "OSIL: OpenSSL найден — https в клиенте доступен")
+else()
+    message(STATUS "OSIL: OpenSSL не найден — https в настольной сборке отключён")
+endif()
+
 # ---------------- Выделенный сервер ----------------
 add_executable(osil_server
     src/Server/ConsoleHost.cpp
@@ -66,6 +78,10 @@ add_executable(osil_server
     src/Net/Protocol.cpp
 )
 target_link_libraries(osil_server PRIVATE osil_core)
+if(OpenSSL_FOUND)
+    target_compile_definitions(osil_server PRIVATE OSIL_HAVE_OPENSSL)
+    target_link_libraries(osil_server PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 
 # ---------------- Утилита предпросмотра карты ----------------
 add_executable(osil_mapgen
@@ -116,6 +132,10 @@ if(SDL2_FOUND AND SDL2_IMAGE_FOUND AND SDL2_TTF_FOUND AND SDL2_MIXER_FOUND)
         ${SDL2_INCLUDE_DIRS} ${SDL2_IMAGE_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS} ${SDL2_MIXER_INCLUDE_DIRS})
     target_link_libraries(osil_client PRIVATE osil_core
         ${SDL2_LIBRARIES} ${SDL2_IMAGE_LIBRARIES} ${SDL2_TTF_LIBRARIES} ${SDL2_MIXER_LIBRARIES} GLESv2)
+    if(OpenSSL_FOUND)
+        target_compile_definitions(osil_client PRIVATE OSIL_HAVE_OPENSSL)
+        target_link_libraries(osil_client PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
     message(STATUS "OSIL: настольная сборка клиента включена")
 else()
     message(STATUS "OSIL: SDL2 не найдена — цель osil_client пропущена (Android-сборка не затронута)")

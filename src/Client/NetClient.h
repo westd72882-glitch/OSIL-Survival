@@ -4,6 +4,7 @@
 // состояние и накопленные правки мира, забирает чужие. Игровой цикл с сетью не
 // разговаривает напрямую — он кладёт своё состояние и забирает снимок чужого, поэтому
 // никакая задержка сети не роняет кадры.
+#include "../Net/Http.h"
 #include "../Net/Protocol.h"
 
 #include <atomic>
@@ -26,6 +27,9 @@ public:
     unsigned long long seed() const { return seed_; }
     std::string statusText() const;
     std::string serverName() const;
+    int  maxPlayers() const { return maxPlayers_.load(); }
+    // Сколько народу на сервере сейчас: остальные плюс мы сами.
+    int  onlineCount() const;
 
     // ---- Обмен с игровым циклом
     void setLocalState(const net::PlayerState& st);
@@ -46,6 +50,10 @@ public:
         int players = 0, max = 0, ping = 0;
     };
     static Info query(const std::string& address);
+    // Подбирает рабочий адрес: «host» без схемы сначала пробуется как игровой сервер на
+    // http:28015, а если там тишина — как облачный на https. Так один и тот же список
+    // серверов работает и со своей машиной, и с хостингом.
+    static bool resolve(const std::string& address, net::Url& out, Info& info);
 
 private:
     void loop();
@@ -56,8 +64,12 @@ private:
     std::atomic<int>  id_{0};
     std::atomic<int>  ping_{0};
     std::atomic<float> serverTime_{8.0f};
+    std::atomic<int> maxPlayers_{100};
     unsigned long long seed_ = 0;
 
+    // Разобранный адрес: у него уже выбрана схема (http или https) и порт, поэтому
+    // сетевой поток не гадает заново на каждом обмене.
+    net::Url url_;
     mutable std::mutex mutex_;
     std::string address_, name_, status_, serverName_;
     net::PlayerState local_;

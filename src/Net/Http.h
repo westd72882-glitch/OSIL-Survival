@@ -24,8 +24,18 @@ struct Url {
     bool        secure = false;   // https:// — клиент такое пока не умеет (нет TLS)
 };
 
-// Понимает «example.com», «example.com:28015», «http://example.com/path».
+// Понимает «example.com», «example.com:28015», «http://example.com/path»,
+// «https://имя.onrender.com».
 bool parseUrl(const std::string& raw, Url& out);
+
+// Умеет ли эта сборка в https. На Android — через системный HttpsURLConnection (Java),
+// на настольной сборке — через OpenSSL, если он нашёлся при сборке.
+bool secureSupported();
+
+// Вызвать ОДИН раз из главного потока при запуске клиента: на Android здесь берётся
+// ссылка на Java-класс, через который идут https-запросы. Из рабочего потока найти
+// класс приложения нельзя — JNI ищет его загрузчиком системных классов и не находит.
+void initSecureTransport();
 
 // Один запрос и один ответ. Блокирующий вызов с таймаутом — крутится в сетевом потоке
 // клиента, к отрисовке отношения не имеет.

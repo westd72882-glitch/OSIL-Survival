@@ -14,47 +14,109 @@ long long nowMs(){
 
 NetClient::~NetClient(){ leave(); }
 
-NetClient::Info NetClient::query(const std::string& address){
-    Info info;
-    net::Url url;
-    if(!net::parseUrl(address, url)) return info;
+namespace {
+// Спрашиваем у сервера карточку по «/». Это же и проверка, что адрес живой.
+bool askStatus(const net::Url& url, NetClient::Info& info){
     std::string body;
     int status = 0;
     long long t0 = nowMs();
-    if(!net::request(url, "GET", "/", "", body, status, 3000) || status != 200) return info;
-    info.ping = (int)(nowMs() - t0);
-
+    if(!net::request(url, "GET", url.path.empty() ? "/" : url.path, "", body, status, 4000))
+        return false;
+    if(status != 200) return false;
     JsonValue root;
-    if(!jsonParse(body.c_str(), body.size(), root)) return info;
+    if(!jsonParse(body.c_str(), body.size(), root)) return false;
+    if(root["protocol"].isNull() && root["name"].isNull()) return false;
     info.ok = true;
-    info.name = root["name"].asString(address);
+    info.ping = (int)(nowMs() - t0);
+    info.name = root["name"].asString("сервер");
     info.map = root["map"].asString("Survival Island");
     info.players = root["players"].asInt();
     info.max = root["max"].asInt(100);
+    return true;
+}
+} // namespace
+
+namespace {
+// Похож ли адрес на голый IP («192.168.1.50»). Такой адрес — это чей-то компьютер или
+// VPS, а не облако, и лезть к нему по https незачем.
+bool looksLikeIp(const std::string& host){
+    int digits = 0, dots = 0;
+    for(char c : host){
+        if(c >= '0' && c <= '9') ++digits;
+        else if(c == '.') ++dots;
+        else return false;
+    }
+    return dots == 3 && digits >= 4;
+}
+} // namespace
+
+bool NetClient::resolve(const std::string& address, net::Url& out, Info& info){
+    net::Url url;
+    if(!net::parseUrl(address, url)) return false;
+
+    bool explicitScheme = (address.rfind("http://", 0) == 0) || (address.rfind("https://", 0) == 0);
+    std::string hostPart = address;
+    size_t schemePos = hostPart.find("://");
+    if(schemePos != std::string::npos) hostPart = hostPart.substr(schemePos + 3);
+    size_t slash = hostPart.find('/');
+    if(slash != std::string::npos) hostPart = hostPart.substr(0, slash);
+    bool explicitPort = hostPart.find(':') != std::string::npos;
+
+    // Схема или порт указаны руками — игрок знает, куда идёт, и подбирать нечего.
+    if(explicitScheme || explicitPort){
+        if(url.secure && !net::secureSupported()) return false;
+        if(askStatus(url, info)){ out = url; return true; }
+        return false;
+    }
+
+    // Голое имя. Доменное имя почти всегда означает облако (тот же render.com), где
+    // наружу торчит только https, а голый IP — чей-то сервер на игровом порту. С этого
+    // и начинаем, чтобы не ждать таймаута на заведомо закрытом порту.
+    net::Url plain = url;      // http на игровом порту 28015
+    net::Url secure = url;
+    secure.secure = true;
+    secure.port = 443;
+
+    bool cloudFirst = !looksLikeIp(url.host) && url.host.find('.') != std::string::npos;
+    if(cloudFirst && net::secureSupported()){
+        if(askStatus(secure, info)){ out = secure; return true; }
+        info = Info{};
+    }
+    if(askStatus(plain, info)){ out = plain; return true; }
+    if(!cloudFirst && net::secureSupported()){
+        info = Info{};
+        if(askStatus(secure, info)){ out = secure; return true; }
+    }
+    return false;
+}
+
+NetClient::Info NetClient::query(const std::string& address){
+    Info info;
+    net::Url url;
+    resolve(address, url, info);
     return info;
 }
 
 bool NetClient::join(const std::string& address, const std::string& playerName){
     leave();
 
+    // Сначала находим рабочий адрес: http на игровом порту или https, если сервер
+    // живёт в облаке. Заодно узнаём имя сервера и сколько там мест.
     net::Url url;
-    if(!net::parseUrl(address, url)){
+    Info info;
+    if(!resolve(address, url, info)){
         std::lock_guard<std::mutex> lock(mutex_);
-        status_ = "неверный адрес сервера";
-        return false;
-    }
-    if(url.secure){
-        std::lock_guard<std::mutex> lock(mutex_);
-        // Честно говорим, в чём дело: TLS в клиенте не собран, а https без него не
-        // открыть. Адрес того же сервера по http работает.
-        status_ = "https пока не поддержан — укажите адрес по http";
+        net::Url parsed;
+        if(!net::parseUrl(address, parsed))            status_ = "неверный адрес сервера";
+        else if(parsed.secure && !net::secureSupported()) status_ = "эта сборка не умеет https";
+        else                                            status_ = "сервер не отвечает";
         return false;
     }
 
-    std::string body, reply;
+    std::string body = "{\"name\":\"" + net::jsonEscape(playerName) + "\"}";
+    std::string reply;
     int status = 0;
-    body = "{\"name\":\"" + net::jsonEscape(playerName) + "\"}";
-    if(!net::request(url, "POST", "/join", body, reply, status, 5000)){
+    if(!net::request(url, "POST", "/join", body, reply, status, 6000)){
         std::lock_guard<std::mutex> lock(mutex_);
         status_ = "сервер не отвечает";
         return false;
@@ -73,9 +135,10 @@ bool NetClient::join(const std::string& address, const std::string& playerName){
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        url_ = url;
         address_ = address;
         name_ = playerName;
-        serverName_ = root["name"].asString(address);
+        serverName_ = root["name"].asString(info.name.empty() ? address : info.name);
         since_ = (long long)root["head"].asDouble(0.0);
         outgoing_.clear();
         incoming_.clear();
@@ -83,13 +146,15 @@ bool NetClient::join(const std::string& address, const std::string& playerName){
         status_ = "подключено";
     }
     id_.store(root["id"].asInt());
+    maxPlayers_.store(root["max"].asInt(info.max ? info.max : 100));
     seed_ = (unsigned long long)root["seed"].asDouble(0.0);
     serverTime_.store(root["time"].asFloat(8.0f));
     connected_.store(true);
     running_.store(true);
     worker_ = std::thread([this]{ loop(); });
-    LOG_INFO("сеть: вошли на сервер %s как %s (id %d)",
-             serverName_.c_str(), playerName.c_str(), id_.load());
+    LOG_INFO("сеть: вошли на сервер %s (%s) как %s (id %d)",
+             serverName_.c_str(), url.secure ? "https" : "http",
+             playerName.c_str(), id_.load());
     return true;
 }
 
@@ -100,12 +165,11 @@ void NetClient::leave(){
     if(connected_.exchange(false)){
         // Уходим по-человечески: сервер сразу уберёт нас из списка, а не через таймаут.
         net::Url url;
-        std::string address;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            address = address_;
+            url = url_;
         }
-        if(net::parseUrl(address, url)){
+        if(!url.host.empty()){
             std::string reply;
             int status = 0;
             net::request(url, "POST", "/leave",
@@ -144,6 +208,12 @@ void NetClient::pushEdit(int x, int y, int z, int block){
     outgoing_.push_back(e);
 }
 
+int NetClient::onlineCount() const {
+    if(!connected_.load()) return 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return (int)others_.size() + 1;
+}
+
 std::vector<net::PlayerState> NetClient::players() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return others_;
@@ -160,8 +230,9 @@ void NetClient::loop(){
     net::Url url;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if(!net::parseUrl(address_, url)) return;
+        url = url_;
     }
+    if(url.host.empty()) return;
     int failures = 0;
     while(running_.load()){
         net::PlayerState me;
@@ -170,6 +241,12 @@ void NetClient::loop(){
         {
             std::lock_guard<std::mutex> lock(mutex_);
             me = local_;
+            // Идентификатор берём из живого значения, а не из последнего кадра игры:
+            // первые обмены уходят раньше, чем игровой цикл успевает положить своё
+            // состояние, и сервер отвечал на них «нужен повторный вход» — из-за этого
+            // при каждом входе плодилась пачка призраков в списке игроков.
+            me.id = id_.load();
+            me.name = name_;
             since = since_;
             // За один обмен отправляем не больше двух сотен правок: остальное уедет
             // следующим, а пакет останется небольшим.
@@ -201,10 +278,10 @@ void NetClient::loop(){
             serverTime_.store(time);
         } else if(status == 409){
             // Сервер нас забыл (таймаут) — переподключаемся тем же именем.
-            std::string addr, nick;
+            std::string nick;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                addr = address_; nick = name_;
+                nick = name_;
                 status_ = "переподключение...";
             }
             std::string join = "{\"name\":\"" + net::jsonEscape(nick) + "\"}";
