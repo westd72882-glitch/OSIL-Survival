@@ -128,8 +128,9 @@ cmake --build build --target osil_server -j
 PORT=28015 ./build/bin/osil_server
 ```
 
-Подробности протокола и известные ограничения (в том числе про https) —
-[docs/network.md](docs/network.md).
+Пошаговый гайд «как поднять свой сервер» (VPS, домашняя сеть, render.com) —
+[docs/SERVER.md](docs/SERVER.md). Устройство протокола и известные ограничения (в том
+числе про https) — [docs/network.md](docs/network.md).
 
 ## Документация
 
@@ -139,6 +140,7 @@ PORT=28015 ./build/bin/osil_server
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | структура проекта, слои, цели сборки, цикл сервера |
 | [docs/WORLDGEN.md](docs/WORLDGEN.md) | как устроена генерация мира и почему именно так |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | сетевой протокол, снапшоты, RPC, лагокомпенсация (этап 2) |
+| [docs/SERVER.md](docs/SERVER.md) | как поднять свой сервер: VPS, домашняя сеть, render.com, команды консоли |
 | [docs/network.md](docs/network.md) | мультиплеер: обмен по HTTP, выкладка сервера на render.com |
 | [docs/DATABASE.md](docs/DATABASE.md) | схема SQLite (этап 2) |
 | [docs/VOXELS.md](docs/VOXELS.md) | кубический мир: хранение блоков, сборка чанков, отсечение, затенение, добыча |
