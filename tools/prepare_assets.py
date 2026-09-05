@@ -147,6 +147,7 @@ JOBS = {
     'item_sand.png':     ('T_Ground_Sand_02_A_Sm.png', 128),
     # Новый набор из репозитория: шкаф, ящик, значок стены для ленты стройки, метка
     # попадания, кнопка «открыть» у двери, огонь и радиация.
+    'item_grenade.png':  ('grenade.f1.png', 128),
     'item_cupboard.png': ('Cupboard.png', 128),
     'item_box.png':      ('Crate.png', 128),
     'block_cupboard.png':('Cupboard.png', 256),

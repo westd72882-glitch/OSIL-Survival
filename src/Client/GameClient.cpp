@@ -4929,6 +4929,7 @@ void GameClient::loadInterfaceTextures(){
         { ItemType::Sand,      "item_sand.png" },
         { ItemType::Box,       "item_box.png" },
         { ItemType::Cupboard,  "item_cupboard.png" },
+        { ItemType::Grenade,   "item_grenade.png" },
     };
     int itemsLoaded = 0;
     for(const auto& it : itemIcons){
