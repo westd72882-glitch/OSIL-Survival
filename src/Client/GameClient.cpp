@@ -61,10 +61,10 @@ const Recipe kRecipes[] = {
       "Киянка. Удар по своей детали дома сносит её без всякого шкафа, а кнопка «рука» "
       "улучшает деталь: дерево -> камень (40 камня, 200 прочности) -> железо "
       "(40 металла, 400 прочности)." },
-    { ItemType::Rifle, 1, ItemType::MetalFrag, 80, ItemType::Wood, 40,
-      "Винтовка. Бьёт далеко и точно: 35 здоровья за попадание. Патроны отдельно." },
-    { ItemType::RifleAmmo, 10, ItemType::Gunpowder, 10, ItemType::MetalFrag, 5,
-      "Винтовочные патроны, десять штук за раз." },
+    { ItemType::Revolver, 1, ItemType::MetalFrag, 80, ItemType::Wood, 40,
+      "Револьвер. Бьёт далеко и точно: 35 здоровья за попадание. Патроны отдельно." },
+    { ItemType::RevolverAmmo, 10, ItemType::Gunpowder, 10, ItemType::MetalFrag, 5,
+      "Патроны .44 к револьверу, десять штук за раз." },
     { ItemType::Launcher, 1, ItemType::MetalFrag, 150, ItemType::Wood, 50,
       "Ракетница. Оружие рейда: ракета из неё сносит 100 прочности постройке." },
     { ItemType::Rocket, 1, ItemType::Gunpowder, 60, ItemType::MetalFrag, 40,
@@ -261,8 +261,9 @@ bool GameClient::initGraphics(){
     // Буфер под срубленные деревья: ствол с кроной — это сотни кубов, и они рисуются
     // одним вызовом.
     makeDynamicVoxelBuffer(fallVao_, fallVbo_, 1024 * 36);
-    // Буфер под чужих игроков: у каждого дюжина брусков.
-    makeDynamicVoxelBuffer(remoteVao_, remoteVbo_, 24 * 12 * 36);
+    // Буфер под чужих игроков: у каждого до полутора десятков брусков — тело, глаз,
+    // оружие в руке и след пули.
+    makeDynamicVoxelBuffer(remoteVao_, remoteVbo_, 24 * 18 * 36);
 
     return true;
 }
@@ -270,6 +271,24 @@ bool GameClient::initGraphics(){
 // ==================== ЧАСТИЦЫ И ПРЕДМЕТ В РУКЕ ====================
 // Осколки от выработанной жилы и топорик в руке — это маленькие кубы, поэтому рисуются
 // тем же воксельным шейдером, что и мир: отдельной системы частиц заводить незачем.
+
+namespace {
+// Кладёт квад двумя треугольниками, ВСЕГДА обходом против часовой стрелки, если
+// смотреть снаружи. Обход у кубов и брусков раньше зависел от грани: у трёх сторон он
+// выходил обратным, и они выпадали из отсечения — куб выглядел дырявым с одной
+// стороны. Здесь это лечится один раз для всех: сравниваем нормаль треугольника с
+// нормалью грани и при несовпадении переставляем углы.
+void pushQuad(std::vector<VoxelVertex>& out, VoxelVertex q[4], float nx, float ny, float nz){
+    float e1x = q[1].px - q[0].px, e1y = q[1].py - q[0].py, e1z = q[1].pz - q[0].pz;
+    float e2x = q[2].px - q[0].px, e2y = q[2].py - q[0].py, e2z = q[2].pz - q[0].pz;
+    float cx = e1y * e2z - e1z * e2y;
+    float cy = e1z * e2x - e1x * e2z;
+    float cz = e1x * e2y - e1y * e2x;
+    if(cx * nx + cy * ny + cz * nz < 0.0f){ VoxelVertex t = q[1]; q[1] = q[3]; q[3] = t; }
+    out.push_back(q[0]); out.push_back(q[1]); out.push_back(q[2]);
+    out.push_back(q[0]); out.push_back(q[2]); out.push_back(q[3]);
+}
+} // namespace
 
 namespace {
 // Один кубик в набор вершин. Центр, полуразмер, цвет и слой текстуры.
@@ -299,8 +318,7 @@ void pushCube(std::vector<VoxelVertex>& out, Vec3 c, float half,
                                 n[0], n[1], n[2],
                                 r * face, g * face, b * face, uu, vv, layer };
         }
-        out.push_back(q[0]); out.push_back(q[1]); out.push_back(q[2]);
-        out.push_back(q[0]); out.push_back(q[2]); out.push_back(q[3]);
+        pushQuad(out, q, n[0], n[1], n[2]);
     }
 }
 } // namespace
@@ -656,13 +674,14 @@ int GameClient::makeDropId(){
     return player * 100000 + (nextDropId_++);
 }
 
-void GameClient::netSendEvent(net::EventType type, int id, int a, int b, Vec3 pos){
+void GameClient::netSendEvent(net::EventType type, int id, int a, int b, Vec3 pos, int c){
     if(!net_.connected()) return;
     net::Event e;
     e.type = (int)type;
     e.id = id;
     e.a = a;
     e.b = b;
+    e.c = c;
     e.x = pos.x; e.y = pos.y; e.z = pos.z;
     net_.pushEvent(e);
 }
@@ -721,6 +740,51 @@ void GameClient::netApplyEvents(){
             case net::EventType::Explosion:
                 explode(Vec3{ e.x, e.y, e.z }, e.b, true);
                 break;
+            case net::EventType::BagDrop: {
+                // Чужой мешок: собираем его ячейка за ячейкой. Свой пропускаем — он у
+                // нас уже есть, и второй раз рисовать его незачем.
+                if(e.owner == net_.playerId()) break;
+                LootBag* bag = nullptr;
+                for(LootBag& b : bags_) if(b.id == e.id){ bag = &b; break; }
+                if(!bag){
+                    LootBag nb;
+                    nb.id = e.id;
+                    nb.pos = Vec3{ e.x, e.y, e.z };
+                    bags_.push_back(nb);
+                    bag = &bags_.back();
+                }
+                if(e.c >= 0 && e.c < BAG_SLOTS)
+                    bag->slots[e.c] = ItemStack{ (ItemType)e.a, e.b };
+                break;
+            }
+            case net::EventType::BagTake: {
+                if(e.owner == net_.playerId()) break;
+                for(LootBag& b : bags_){
+                    if(b.id != e.id) continue;
+                    if(e.c >= 0 && e.c < BAG_SLOTS) b.slots[e.c].clear();
+                    break;
+                }
+                break;
+            }
+            case net::EventType::Shot:
+                for(RemoteView& v : remote_) if(v.id == e.owner){ v.shotAge = 0.0f; break; }
+                break;
+            case net::EventType::Throw: {
+                // Чужая граната или ракета: летит у нас по тем же правилам, что и у
+                // бросавшего, — начальная точка и скорость приехали в событии.
+                if(e.owner == net_.playerId()) break;
+                Grenade g;
+                g.pos = Vec3{ e.x, e.y, e.z };
+                g.vel = Vec3{ (float)e.a / 100.0f, (float)e.b / 100.0f, (float)e.c / 100.0f };
+                g.rocket = (e.id == 1);
+                g.fuse = g.rocket ? 6.0f : 3.0f;
+                g.buildDamage = g.rocket ? 100 : 50;
+                // Урон по постройкам считает бросавший: у нас снаряд только летит и
+                // рисуется, иначе одна граната снесла бы дом дважды.
+                g.remote = true;
+                grenades_.push_back(g);
+                break;
+            }
             case net::EventType::Hit:
                 // Сюда попадают только удары со старых серверов: новый сервер копит урон
                 // жертве и отдаёт его полем ответа, а событие не пересылает.
@@ -795,6 +859,9 @@ void GameClient::throwGrenade(){
     g.fuse = 3.0f;
     grenades_.push_back(g);
     inventory_.consumeSelected();
+    // Чтобы гранату видели все, а не только бросавший.
+    netSendEvent(net::EventType::Throw, 0, (int)(g.vel.x * 100.0f), (int)(g.vel.y * 100.0f),
+                 g.pos, (int)(g.vel.z * 100.0f));
 }
 
 // ---- Ракетница. Оружие рейда: ракета летит прямо и рвёт постройку на 100 прочности,
@@ -814,17 +881,24 @@ void GameClient::fireRocket(){
     g.rocket = true;
     g.buildDamage = 100;
     grenades_.push_back(g);
+    netSendEvent(net::EventType::Throw, 1, (int)(g.vel.x * 100.0f), (int)(g.vel.y * 100.0f),
+                 g.pos, (int)(g.vel.z * 100.0f));
+    // Пуск видно и по вспышке в руке — той же, что у револьвера.
+    shotFlash_ = 0.0f;
 }
 
-// ---- Винтовка. Луч, а не снаряд: на дистанции боя разница незаметна, зато попадание
+// ---- Револьвер. Луч, а не снаряд: на дистанции боя разница незаметна, зато попадание
 // считается тем же кодом, что и удар в упор.
-void GameClient::fireRifle(){
-    if(inventory_.countOf(ItemType::RifleAmmo) < 1){
+void GameClient::fireRevolver(){
+    if(inventory_.countOf(ItemType::RevolverAmmo) < 1){
         notice("Нет патронов");
         return;
     }
-    if(!adminMode_) inventory_.remove(ItemType::RifleAmmo, 1);
+    if(!adminMode_) inventory_.remove(ItemType::RevolverAmmo, 1);
     shotFlash_ = 0.0f;
+    // Выстрел видят все: остальным приедет вспышка и след пули.
+    netSendEvent(net::EventType::Shot, 0, (int)ItemType::Revolver, 0,
+                 player_->eyePosition());
     // Отдача: ствол подбрасывает вверх, и это же движение видно в руке.
     pitch_ = clampf(pitch_ + 0.9f, -89.0f, 89.0f);
     // Пуля не проходит сквозь стену: сначала смотрим, что первым встретит луч —
@@ -864,14 +938,36 @@ void GameClient::updateGrenades(float dt){
             // Ракета взрывается на месте попадания — за этим её и берут на рейд.
             Vec3 at = g.pos;
             int dmg = g.buildDamage;
+            bool rem = g.remote;
             grenades_.erase(grenades_.begin() + (long)i);
-            explode(at, 150, false, dmg);
+            explode(at, 150, rem, dmg);
             continue;
         }
-        // Отскок от твёрдого: граната не проваливается сквозь стены и пол.
+        // Столкновение по осям: гасим только ту составляющую скорости, которой граната
+        // упёрлась, остальные тормозим трением. Раньше скорость просто разворачивалась
+        // целиком, и граната отскакивала обратно в лицо бросавшему; теперь она
+        // проезжает по полу ещё немного и останавливается, как и положено железке.
         if(wall){
-            g.vel = Vec3{ g.vel.x * -0.35f, g.vel.y * -0.35f, g.vel.z * -0.35f };
-            next = g.pos;
+            auto blocked = [&](float x, float y, float z){
+                return voxels_->isSolidAt((int)floorf(x), (int)floorf(y), (int)floorf(z));
+            };
+            Vec3 step = g.pos;
+            if(!blocked(next.x, g.pos.y, g.pos.z)) step.x = next.x; else g.vel.x = 0.0f;
+            if(!blocked(step.x, next.y, g.pos.z)){
+                step.y = next.y;
+            } else {
+                // Удар о пол или потолок: вертикальную скорость съедаем целиком, чтобы
+                // граната не прыгала мячиком.
+                g.vel.y = 0.0f;
+                g.onGround = true;
+            }
+            if(!blocked(step.x, step.y, next.z)) step.z = next.z; else g.vel.z = 0.0f;
+            next = step;
+            // Трение о поверхность: за пару десятых секунды граната замирает.
+            float k = powf(0.02f, dt);
+            g.vel.x *= k; g.vel.z *= k;
+            if(fabsf(g.vel.x) < 0.05f) g.vel.x = 0.0f;
+            if(fabsf(g.vel.z) < 0.05f) g.vel.z = 0.0f;
         }
         g.pos = next;
         // Ракета летит и по чужой фигуре: попал в игрока — рвётся о него.
@@ -892,8 +988,9 @@ void GameClient::updateGrenades(float dt){
         if(g.fuse <= 0.0f || g.pos.y < -8.0f){
             Vec3 at = g.pos;
             int dmg = g.buildDamage;
+            bool rem = g.remote;
             grenades_.erase(grenades_.begin() + (long)i);
-            explode(at, 150, false, dmg);
+            explode(at, 150, rem, dmg);
             continue;
         }
         ++i;
@@ -955,17 +1052,20 @@ void GameClient::renderGrenades(const Mat4& view, const Mat4& proj){
     std::vector<VoxelVertex> verts;
     verts.reserve(grenades_.size() * 36);
     for(const Grenade& g : grenades_){
-        // Мигает всё чаще к концу запала — по этому и понимают, что пора убегать.
-        float blink = (g.fuse < 1.0f) ? (sinf(g.fuse * 40.0f) > 0.0f ? 1.8f : 0.6f) : 1.0f;
-        pushCube(verts, g.pos, 0.10f, 0.45f * blink, 0.55f * blink, 0.38f * blink,
-                 (float)blockTextureLayer(Block::Stone));
+        // Ровный цвет без мигания: мигание в кубическом мире читалось как поломка
+        // отрисовки, а не как тикающий запал. Ракета красная, граната зелёная.
+        if(g.rocket)
+            pushCube(verts, g.pos, 0.11f, 0.95f, 0.42f, 0.28f,
+                     (float)blockTextureLayer(Block::Stone));
+        else
+            pushCube(verts, g.pos, 0.10f, 0.45f, 0.55f, 0.38f,
+                     (float)blockTextureLayer(Block::Stone));
     }
     glUseProgram(voxelProg);
     glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
     glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
     glUniform1f(voxelAlphaLoc, 1.0f);
     bindBlockTextures();
-    glDisable(GL_CULL_FACE);
     glBindVertexArray(partVao_);
     glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
     size_t maxVerts = 64 * 36;
@@ -973,7 +1073,6 @@ void GameClient::renderGrenades(const Mat4& view, const Mat4& proj){
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
     glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
 }
 
 // ==================== ДРУГИЕ ИГРОКИ ====================
@@ -1011,8 +1110,7 @@ void pushBox(std::vector<VoxelVertex>& out, Vec3 c, Vec3 ax, Vec3 ay, Vec3 az,
                 r * face, g * face, b * face,
                 (k == 1 || k == 2) ? 1.0f : 0.0f, (k >= 2) ? 1.0f : 0.0f, layer };
         }
-        out.push_back(q[0]); out.push_back(q[1]); out.push_back(q[2]);
-        out.push_back(q[0]); out.push_back(q[2]); out.push_back(q[3]);
+        pushQuad(out, q, n.x, n.y, n.z);
     }
 }
 } // namespace
@@ -1023,6 +1121,7 @@ void GameClient::updateRemotePlayers(float dt){
         return;
     }
     std::vector<net::PlayerState> snapshot = net_.players();
+    for(RemoteView& v : remote_) v.shotAge += dt;
 
     // Обновляем то, что уже рисуем, и заводим новых.
     for(const net::PlayerState& p : snapshot){
@@ -1191,7 +1290,8 @@ void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
         // факел — палка с огоньком.
         ItemType heldType = (v.held > 0 && v.held < (int)ItemType::COUNT)
                             ? (ItemType)v.held : ItemType::None;
-        if(heldType == ItemType::Axe || heldType == ItemType::Torch){
+        if(heldType == ItemType::Axe || heldType == ItemType::Torch ||
+           heldType == ItemType::Hammer){
             float angle = (v.swing > 0.001f ? swingA : -armA);
             float ca = cosf(angle), sa = sinf(angle);
             Vec3 along{ fwd.x * sa - up.x * ca, fwd.y * sa - up.y * ca, fwd.z * sa - up.z * ca };
@@ -1208,7 +1308,7 @@ void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
                               mid.z + shaftUp.z * 0.15f + fwd.z * 0.03f };
                 pushBox(verts, headPos, right, shaftUp, az, 0.035f, 0.06f, 0.07f,
                         0.72f, 0.72f, 0.74f, (float)blockTextureLayer(Block::Stone));
-            } else {
+            } else if(heldType == ItemType::Torch){
                 pushBox(verts, mid, right, shaftUp, az, 0.024f, 0.15f, 0.024f,
                         0.42f, 0.30f, 0.18f, (float)blockTextureLayer(Block::Wood));
                 Vec3 flame{ mid.x + shaftUp.x * 0.19f, mid.y + shaftUp.y * 0.19f,
@@ -1216,6 +1316,44 @@ void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
                 float flick = 0.85f + 0.15f * sinf(animTime_ * 11.0f + (float)v.id);
                 pushBox(verts, flame, right, shaftUp, az, 0.04f, 0.05f, 0.04f,
                         1.9f * flick, 1.2f * flick, 0.35f, (float)blockTextureLayer(Block::Sand));
+            } else {
+                // Киянка: та же рукоять, но голова толстая и деревянная.
+                pushBox(verts, mid, right, shaftUp, az, 0.026f, 0.14f, 0.026f,
+                        0.42f, 0.30f, 0.18f, (float)blockTextureLayer(Block::Wood));
+                Vec3 headPos{ mid.x + shaftUp.x * 0.16f, mid.y + shaftUp.y * 0.16f,
+                              mid.z + shaftUp.z * 0.16f };
+                pushBox(verts, headPos, right, shaftUp, az, 0.075f, 0.05f, 0.045f,
+                        0.80f, 0.66f, 0.44f, (float)blockTextureLayer(Block::Wood));
+            }
+        } else if(heldType == ItemType::Grenade){
+            // Граната в чужой руке: маленький зелёный кубик, чтобы было видно, ЧЕМ
+            // сейчас замахиваются.
+            pushBox(verts, hand, right, up, fwd, 0.055f, 0.055f, 0.055f,
+                    0.30f, 0.44f, 0.26f, (float)blockTextureLayer(Block::Stone));
+        } else if(heldType == ItemType::Revolver || heldType == ItemType::Launcher){
+            // Стволы лежат ВДОЛЬ взгляда, а не вдоль руки: иначе чужой игрок целился
+            // бы в небо, куда бы ни смотрел.
+            bool big = (heldType == ItemType::Launcher);
+            float len = big ? 0.34f : 0.11f;
+            Vec3 barrel{ hand.x + fwd.x * len, hand.y + fwd.y * len, hand.z + fwd.z * len };
+            pushBox(verts, barrel, right, up, fwd,
+                    big ? 0.055f : 0.016f, big ? 0.055f : 0.018f, len,
+                    0.40f, 0.42f, 0.46f, (float)blockTextureLayer(Block::Stone));
+            if(!big)
+                pushBox(verts, hand, right, up, fwd, 0.022f, 0.05f, 0.03f,
+                        0.52f, 0.38f, 0.24f, (float)blockTextureLayer(Block::Wood));
+            // Вспышка и след пули: чужой выстрел иначе вообще ничем не выдаёт себя.
+            if(v.shotAge < 0.08f){
+                float k = 1.0f - v.shotAge / 0.08f;
+                Vec3 muzzle{ hand.x + fwd.x * (len * 2.0f + 0.06f),
+                             hand.y + fwd.y * (len * 2.0f + 0.06f),
+                             hand.z + fwd.z * (len * 2.0f + 0.06f) };
+                pushBox(verts, muzzle, right, up, fwd, 0.05f * k, 0.05f * k, 0.05f * k,
+                        2.4f, 1.8f * k, 0.7f * k, (float)blockTextureLayer(Block::Sand));
+                Vec3 mid2{ muzzle.x + fwd.x * 12.0f, muzzle.y + fwd.y * 12.0f,
+                           muzzle.z + fwd.z * 12.0f };
+                pushBox(verts, mid2, right, up, fwd, 0.012f, 0.012f, 12.0f,
+                        2.0f * k, 1.7f * k, 0.9f * k, (float)blockTextureLayer(Block::Sand));
             }
         }
 
@@ -1240,15 +1378,13 @@ void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
     glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
     glUniform1f(voxelAlphaLoc, 1.0f);
     bindBlockTextures();
-    glDisable(GL_CULL_FACE);
     glBindVertexArray(remoteVao_);
     glBindBuffer(GL_ARRAY_BUFFER, remoteVbo_);
-    size_t maxVerts = 24 * 12 * 36;
+    size_t maxVerts = 24 * 18 * 36;
     if(verts.size() > maxVerts) verts.resize(maxVerts);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
     glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
 }
 
 // Имя над головой и полоска здоровья: без них в сетевой игре не отличить своих.
@@ -1618,9 +1754,6 @@ void GameClient::renderDrops(const Mat4& view, const Mat4& proj){
     glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
     glUniform1f(voxelAlphaLoc, 1.0f);
     bindBlockTextures();
-    // Грани куба собраны тем же способом, что и бруски инструмента в руке, и их обход
-    // не совпадает с общим правилом отсечения — иначе куб пропадает целиком.
-    glDisable(GL_CULL_FACE);
     glBindVertexArray(partVao_);
     glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
     // Буфер частиц рассчитан на 64 куба — больше предметов за раз на землю не кладут.
@@ -1629,10 +1762,213 @@ void GameClient::renderDrops(const Mat4& view, const Mat4& proj){
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
     glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
 }
 
 // Подписи над выброшенными предметами и кнопка поднятия. Рисуются в HUD, поверх мира.
+// ==================== МЕШОК ПОГИБШЕГО ====================
+// Смерть должна что-то стоить, иначе выживание превращается в бег без последствий.
+// Весь рюкзак уходит в мешок на месте гибели: минуту его может обобрать кто угодно —
+// и сам погибший, если добежит раньше чужих. По сети мешок едет ячейка за ячейкой
+// событиями BagDrop, а взятая ячейка гасится у всех событием BagTake.
+
+void GameClient::dropLootBag(){
+    LootBag bag;
+    bag.id = makeDropId();
+    Vec3 p = player_->position();
+    bag.pos = Vec3{ p.x, p.y + 0.25f, p.z };
+    bag.mine = true;
+    bool any = false;
+    for(int i = 0; i < BAG_SLOTS; ++i){
+        ItemStack st = inventory_.slot(i);
+        if(st.empty()) continue;
+        bag.slots[i] = st;
+        inventory_.slot(i).clear();
+        any = true;
+        netSendEvent(net::EventType::BagDrop, bag.id, (int)st.type, st.count, bag.pos, i);
+    }
+    if(!any) return;                 // пустой рюкзак мешка не стоит
+    bags_.push_back(bag);
+    SDL_Log("мешок %d: выпал весь рюкзак", bag.id);
+}
+
+void GameClient::updateBags(float dt){
+    // Мешок сыплется РОВНО один раз за смерть: пока игрок лежит, кадров много.
+    if(player_->isDead()){
+        if(!deathBagSpawned_){
+            deathBagSpawned_ = true;
+            if(overlay_ == Overlay::Bag){ overlay_ = Overlay::None; openBag_ = -1; }
+            dropLootBag();
+        }
+    } else {
+        // Возрождение: рюкзак остался в мешке, поэтому выдаём стартовый набор заново.
+        // Без этого игрок вставал с голыми руками и не мог даже нарубить дерева.
+        if(deathBagSpawned_) giveStartingKit();
+        deathBagSpawned_ = false;
+    }
+    for(size_t i = 0; i < bags_.size(); ){
+        bags_[i].age += dt;
+        bool empty = true;
+        for(int k = 0; k < BAG_SLOTS; ++k) if(!bags_[i].slots[k].empty()){ empty = false; break; }
+        if(bags_[i].age > BAG_LIFETIME || empty){
+            if(openBag_ == (int)i){ openBag_ = -1; overlay_ = Overlay::None; }
+            if(openBag_ > (int)i) --openBag_;
+            bags_.erase(bags_.begin() + (long)i);
+            continue;
+        }
+        ++i;
+    }
+}
+
+int GameClient::bagNear(float reach) const {
+    Vec3 p = player_->position();
+    int best = -1;
+    float bestD = reach;
+    for(size_t i = 0; i < bags_.size(); ++i){
+        float dx = bags_[i].pos.x - p.x, dy = bags_[i].pos.y - p.y - 0.9f, dz = bags_[i].pos.z - p.z;
+        float d = sqrtf(dx * dx + dy * dy + dz * dz);
+        if(d < bestD){ bestD = d; best = (int)i; }
+    }
+    return best;
+}
+
+void GameClient::renderBags(const Mat4& view, const Mat4& proj){
+    if(bags_.empty()) return;
+    std::vector<VoxelVertex> verts;
+    verts.reserve(bags_.size() * 2 * 36);
+    for(const LootBag& b : bags_){
+        // Мешок: коричневый короб с горловиной поменьше сверху. Последние пять секунд
+        // он темнеет — видно, что вот-вот пропадёт.
+        float fade = (b.age > BAG_LIFETIME - 5.0f)
+                   ? clampf((BAG_LIFETIME - b.age) / 5.0f, 0.25f, 1.0f) : 1.0f;
+        float layer = (float)blockTextureLayer(Block::Wood);
+        pushCube(verts, b.pos, 0.22f, 0.52f * fade, 0.34f * fade, 0.18f * fade, layer);
+        pushCube(verts, Vec3{ b.pos.x, b.pos.y + 0.24f, b.pos.z }, 0.10f,
+                 0.42f * fade, 0.27f * fade, 0.14f * fade, layer);
+    }
+    glUseProgram(voxelProg);
+    glUniformMatrix4fv(voxelViewLoc, 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
+    glUniform1f(voxelAlphaLoc, 1.0f);
+    bindBlockTextures();
+    glBindVertexArray(partVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
+    size_t maxVerts = 64 * 36;
+    if(verts.size() > maxVerts) verts.resize(maxVerts);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+    glBindVertexArray(0);
+}
+
+void GameClient::renderBagLabels(){
+    if(bags_.empty() || overlay_ != Overlay::None) return;
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    int nearest = bagNear(2.8f);
+    if(nearest < 0) return;
+    float cx = (float)SCR_W * 0.5f, cy = (float)SCR_H * 0.5f;
+    char buf[96];
+    int left = (int)ceilf(BAG_LIFETIME - bags_[(size_t)nearest].age);
+    snprintf(buf, sizeof(buf), "МЕШОК  •  исчезнет через %d с", left < 0 ? 0 : left);
+    drawTextCentered(cx, cy + 74.0f * s, 18.0f * s, buf, 0.95f, 0.85f, 0.60f, 0.95f);
+    float isz = 54.0f * s;
+    float ix = cx - isz * 0.5f, iy = cy + 100.0f * s;
+    if(texOpen_) drawUIRect(ix, iy, isz, isz, texOpen_, 1, 1, 1, 0.95f, true);
+    drawTextCentered(cx, iy + isz + 2.0f * s, 17.0f * s, "ОБЫСКАТЬ", 1, 1, 1, 0.9f);
+}
+
+// Окно мешка устроено как окно ящика: слева мешок, справа рюкзак. Одинаковые окна
+// на телефоне важнее разнообразия — палец уже знает, куда жать.
+void GameClient::bagSlotPos(int i, float& x, float& y, float& slot) const {
+    float sc = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    slot = 62.0f * sc;
+    float gap = 7.0f * sc;
+    const int COLS = 5;
+    float bagW = slot * COLS + gap * (COLS - 1);
+    float invW = slot * Inventory::COLS + gap * (Inventory::COLS - 1);
+    float totalW = bagW + 46.0f * sc + invW;
+    float gx = ((float)SCR_W - totalW) * 0.5f;
+    float gy = (float)SCR_H * 0.20f;
+    if(i < 0){ x = gx + bagW + 46.0f * sc; y = gy; return; }
+    x = gx + (float)(i % COLS) * (slot + gap);
+    y = gy + (float)(i / COLS) * (slot + gap);
+}
+
+void GameClient::renderBag(){
+    if(openBag_ < 0 || openBag_ >= (int)bags_.size()){ overlay_ = Overlay::None; return; }
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    const LootBag& bag = bags_[(size_t)openBag_];
+    drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.32f, false);
+
+    float x0, y0, slot;
+    bagSlotPos(0, x0, y0, slot);
+    float bagX, bagY, unused;
+    bagSlotPos(-1, bagX, bagY, unused);
+    float gap = 7.0f * s;
+
+    char head[96];
+    int left = (int)ceilf(BAG_LIFETIME - bag.age);
+    snprintf(head, sizeof(head), "МЕШОК  (%d с)", left < 0 ? 0 : left);
+    drawText(x0, y0 - 34.0f * s, 24.0f * s, head, 1, 1, 1, 0.96f);
+    drawText(bagX, bagY - 34.0f * s, 24.0f * s, "РЮКЗАК", 1, 1, 1, 0.96f);
+    for(int i = 0; i < BAG_SLOTS; ++i){
+        float x, y, sl;
+        bagSlotPos(i, x, y, sl);
+        drawSlot(x, y, sl, bag.slots[i], false);
+    }
+    for(int i = 0; i < Inventory::SIZE; ++i){
+        float x = bagX + (float)(i % Inventory::COLS) * (slot + gap);
+        float y = bagY + (float)(i / Inventory::COLS) * (slot + gap);
+        drawSlot(x, y, slot, inventory_.slot(i), false);
+    }
+    drawTextCentered((float)SCR_W * 0.5f,
+                     y0 + slot * 6.0f + gap * 6.0f + 8.0f * s, 17.0f * s,
+                     "Нажмите на предмет, чтобы забрать", 1, 1, 1, 0.6f);
+
+    float cxb = bagX + slot * Inventory::COLS + gap * (Inventory::COLS - 1) + 14.0f * s;
+    float cyb = y0 - 40.0f * s;
+    float csz = 50.0f * s;
+    if(cxb + csz > (float)SCR_W - 8.0f * s) cxb = (float)SCR_W - csz - 8.0f * s;
+    if(texClose_) drawUIRect(cxb, cyb, csz, csz, texClose_, 1, 1, 1, 0.9f, true);
+    else {
+        drawUIRect(cxb, cyb, csz, csz, 0, 0.20f, 0.10f, 0.10f, 0.9f, false);
+        drawTextCentered(cxb + csz * 0.5f, cyb + csz * 0.25f, 24.0f * s, "X", 1, 1, 1, 0.95f);
+    }
+}
+
+bool GameClient::handleBagTouch(float x, float y){
+    if(openBag_ < 0 || openBag_ >= (int)bags_.size()){ overlay_ = Overlay::None; return true; }
+    LootBag& bag = bags_[(size_t)openBag_];
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float x0, y0, slot;
+    bagSlotPos(0, x0, y0, slot);
+    float bagX, bagY, unused;
+    bagSlotPos(-1, bagX, bagY, unused);
+    float gap = 7.0f * s;
+
+    float cxb = bagX + slot * Inventory::COLS + gap * (Inventory::COLS - 1) + 14.0f * s;
+    float cyb = y0 - 40.0f * s;
+    float csz = 50.0f * s;
+    if(cxb + csz > (float)SCR_W - 8.0f * s) cxb = (float)SCR_W - csz - 8.0f * s;
+    float pad = 12.0f * s;
+    if(x >= cxb - pad && x <= cxb + csz + pad && y >= cyb - pad && y <= cyb + csz + pad){
+        overlay_ = Overlay::None; openBag_ = -1;
+        return true;
+    }
+
+    for(int i = 0; i < BAG_SLOTS; ++i){
+        float bx, by, sl;
+        bagSlotPos(i, bx, by, sl);
+        if(x < bx || x > bx + sl || y < by || y > by + sl) continue;
+        if(bag.slots[i].empty()) return true;
+        int leftOver = inventory_.add(bag.slots[i].type, bag.slots[i].count);
+        if(leftOver > 0){ bag.slots[i].count = leftOver; return true; }   // рюкзак полон
+        bag.slots[i].clear();
+        // Ячейку гасим у всех: иначе один и тот же стак взяли бы двое.
+        netSendEvent(net::EventType::BagTake, bag.id, 0, 0, bag.pos, i);
+        return true;
+    }
+    return true;
+}
+
 void GameClient::renderDropLabels(){
     if(drops_.empty() || overlay_ != Overlay::None) return;
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
@@ -1693,9 +2029,9 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     bool torch = !sel.empty() && sel.type == ItemType::Torch;
     bool grenade = !sel.empty() && sel.type == ItemType::Grenade;
     bool hammer = !sel.empty() && sel.type == ItemType::Hammer;
-    bool rifle = !sel.empty() && sel.type == ItemType::Rifle;
+    bool revolver = !sel.empty() && sel.type == ItemType::Revolver;
     bool launcher = !sel.empty() && sel.type == ItemType::Launcher;
-    if(!axe && !torch && !grenade && !hammer && !rifle && !launcher) return;
+    if(!axe && !torch && !grenade && !hammer && !revolver && !launcher) return;
 
     heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
     float bob = (player_->speed() > 0.4f && player_->onGround())
@@ -1729,14 +2065,14 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     // Бруски инструмента в своей плоской системе: x поперёк рукояти, y вдоль неё.
     // yaw — поворот отдельной детали вокруг рукояти: так каменная голова топора
     // разворачивается лезвием вбок, а не плашмя к игроку.
-    // cz — вынос детали ВПЕРЁД от кисти. Он нужен стволам: винтовка и ракетница лежат
+    // cz — вынос детали ВПЕРЁД от кисти. Он нужен стволам: револьвер и ракетница лежат
     // вдоль взгляда, а не поперёк, и без выноса вся труба сидела бы в кулаке.
     struct Part { float cx, cy, cz, hx, hy, hz; Block block; float yaw; };
     // Пропорции сняты с картинок предметов. Топор: длинное топорище и широкая каменная
     // голова, насаженная СЛЕВА, чтобы её было видно. Факел: палка с горящим навершием.
     // Кисть — квадратный брусок у нижнего конца рукояти.
-    // Каменная голова и лезвие развёрнуты вокруг рукояти на 80 градусов вправо.
-    const float HEAD_YAW = 1.396f;   // 80 градусов
+    // Каменная голова и лезвие развёрнуты вокруг рукояти на 80 градусов ВЛЕВО.
+    const float HEAD_YAW = -1.396f;  // 80 градусов, знак минус — поворот влево
     const Part axeParts[] = {
         { 0.000f, -0.150f, 0.000f, 0.0400f, 0.045f, 0.0400f, Block::Sand,  0.0f },      // кисть
         { 0.000f, -0.070f, 0.000f, 0.0135f, 0.115f, 0.0135f, Block::Wood,  0.0f },      // топорище, низ
@@ -1775,13 +2111,15 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     };
     // Винтовка и ракетница лежат вдоль взгляда: приклад у плеча, ствол уходит вперёд.
     const float GUN_YAW = 0.21f;   // 12 градусов внутрь, к центру экрана
-    const Part rifleParts[] = {
-        { 0.000f, -0.120f, -0.020f, 0.0300f, 0.038f, 0.0300f, Block::Sand,  GUN_YAW }, // кисть
-        { 0.000f, -0.090f, -0.150f, 0.0220f, 0.045f, 0.0950f, Block::Wood,  GUN_YAW }, // приклад
-        { 0.000f, -0.050f,  0.010f, 0.0250f, 0.034f, 0.1100f, Block::Wood,  GUN_YAW }, // цевьё
-        { 0.000f, -0.028f,  0.230f, 0.0110f, 0.011f, 0.1400f, Block::Stone, GUN_YAW }, // ствол
-        { 0.000f,  0.008f,  0.030f, 0.0090f, 0.016f, 0.0700f, Block::Stone, GUN_YAW }, // прицельная планка
-        { 0.000f, -0.100f,  0.000f, 0.0130f, 0.034f, 0.0200f, Block::Stone, GUN_YAW }, // магазин
+    // Револьвер держат одной рукой: короткий ствол, барабан посередине, деревянная
+    // рукоять вниз-назад. Приклада и цевья у него нет — это не винтовка.
+    const Part revolverParts[] = {
+        { 0.000f, -0.135f, -0.045f, 0.0300f, 0.038f, 0.0300f, Block::Sand,  GUN_YAW }, // кисть
+        { 0.000f, -0.100f, -0.055f, 0.0170f, 0.042f, 0.0300f, Block::Wood,  GUN_YAW }, // рукоять
+        { 0.000f, -0.050f, -0.015f, 0.0170f, 0.024f, 0.0480f, Block::Stone, GUN_YAW }, // рамка
+        { 0.000f, -0.048f,  0.015f, 0.0250f, 0.025f, 0.0280f, Block::Stone, GUN_YAW }, // барабан
+        { 0.000f, -0.046f,  0.105f, 0.0100f, 0.012f, 0.0700f, Block::Stone, GUN_YAW }, // ствол
+        { 0.000f, -0.020f,  0.095f, 0.0055f, 0.009f, 0.0640f, Block::Stone, GUN_YAW }, // планка над стволом
     };
     const Part launcherParts[] = {
         { 0.000f, -0.120f, -0.030f, 0.0300f, 0.038f, 0.0300f, Block::Sand,  GUN_YAW }, // кисть
@@ -1795,7 +2133,7 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
                      : (torch ? torchParts
                      : (grenade ? grenadeParts
                      : (hammer ? hammerParts
-                     : (rifle ? rifleParts : launcherParts))));
+                     : (revolver ? revolverParts : launcherParts))));
     const int partCount = 6;
     const float S = 0.80f;
 
@@ -1806,11 +2144,12 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     // Оружие держат ближе к центру экрана и ниже: приклад у плеча, а не сбоку.
     // Оружие держим дальше от глаза: вплотную труба закрывала пол-экрана, а ствол
     // упирался в камеру и не читался.
-    if(rifle || launcher){ offX = 0.300f; offZ += 0.16f; }
-    float offY = (axe ? -0.205f : (grenade ? -0.165f : ((rifle || launcher) ? -0.170f : -0.185f)))
+    if(launcher){ offX = 0.300f; offZ += 0.16f; }
+    if(revolver){ offX = 0.215f; offZ += 0.04f; }
+    float offY = (axe ? -0.205f : (grenade ? -0.165f : ((revolver || launcher) ? -0.170f : -0.185f)))
                  + bob + swing * 0.12f;
-    // Отдача винтовки: ствол дёргается назад и вверх на первые кадры после выстрела.
-    if((rifle || launcher) && shotFlash_ < 0.16f){
+    // Отдача: ствол дёргается назад и вверх на первые кадры после выстрела.
+    if((revolver || launcher) && shotFlash_ < 0.16f){
         float k = 1.0f - clampf(shotFlash_ / 0.16f, 0.0f, 1.0f);
         offZ -= 0.10f * k;
         offY += 0.03f * k;
@@ -1842,14 +2181,14 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
             tb = steel ? 0.70f : 0.46f;
         }
         // Оружие — вороненая сталь; дерево приклада оставляем как есть.
-        if((rifle || launcher) && pi >= 1){
+        if((revolver || launcher) && pi >= 1){
             bool wood = (part.block == Block::Wood);
             tr = wood ? 0.66f : 0.42f;
             tg = wood ? 0.50f : 0.44f;
             tb = wood ? 0.34f : 0.46f;
             if(launcher && pi == 5){ tr = 1.05f; tg = 0.40f; tb = 0.28f; }   // боеголовка
             // Вспышка выстрела: ствол на пару кадров раскаляется добела.
-            if(rifle && pi == 3 && shotFlash_ < 0.07f){ tr = 2.4f; tg = 1.9f; tb = 0.9f; }
+            if(revolver && pi == 4 && shotFlash_ < 0.07f){ tr = 2.4f; tg = 1.9f; tb = 0.9f; }
         }
         // Граната — армейская зелень; кольцо посветлее, чтобы читалось.
         if(grenade && pi >= 1){
@@ -1911,13 +2250,33 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     glUniform1f(voxelFogDensityLoc, 0.0f);
     glUniform1f(voxelAlphaLoc, 1.0f);
     bindBlockTextures();
-    glDisable(GL_CULL_FACE);
     glBindVertexArray(heldVao_);
     glBindBuffer(GL_ARRAY_BUFFER, heldVbo_);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
     glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
+}
+
+// Стартовый набор. Вынесен отдельно, потому что мир строится ДО экрана входа, а
+// набор зависит от ника: раньше рюкзак набивался по имени из прошлого профиля, и
+// обычный тестер начинал игру с админским складом и двумя десятками факелов.
+void GameClient::giveStartingKit(){
+    for(int i = 0; i < Inventory::SIZE; ++i) inventory_.slot(i).clear();
+    // Топор и факел кладём ПРЯМО в пояс: добыча уходит в рюкзак, и через общий add
+    // они бы тоже улетели туда, оставив пояс пустым.
+    inventory_.slot(0) = ItemStack{ ItemType::Axe, 1 };
+    inventory_.slot(1) = ItemStack{ ItemType::Torch, 1 };
+    if(!adminMode_) return;
+    // AdminTester: ресурсы бесконечны. Проще всего это дать честными стаками — крафт
+    // и магазин ему и так ничего не стоят, а инвентарь раз в секунду добивается.
+    const ItemType kAdminKit[] = {
+        ItemType::Wood, ItemType::Stone, ItemType::OreMetal, ItemType::OreSulfur,
+        ItemType::MetalFrag, ItemType::Sulfur, ItemType::Gunpowder, ItemType::Cloth,
+        ItemType::Scrap, ItemType::Grenade, ItemType::BuildPlan, ItemType::Furnace,
+        ItemType::Box, ItemType::Cupboard, ItemType::Hammer,
+        ItemType::Revolver, ItemType::RevolverAmmo, ItemType::Launcher, ItemType::Rocket,
+    };
+    for(ItemType t : kAdminKit) inventory_.add(t, itemDef(t).maxStack);
 }
 
 void GameClient::initWorld(){
@@ -2012,25 +2371,7 @@ void GameClient::initWorld(){
     yaw_ = (yawOverride_ > -100.0f) ? yawOverride_ : 0.0f;
     pitch_ = (pitchOverride_ > -100.0f) ? pitchOverride_ : -0.15f;
 
-    // Стартовый набор: пара блоков, чтобы было чем строить с первой минуты.
-    // Стартовый набор: топор и факел. Топор берётся в руки выбором в поясе — с ним
-    // добыча идёт вдвое быстрее.
-    // Стартовые топор и факел кладём ПРЯМО в пояс: добыча теперь уходит в рюкзак, и
-    // через общий add они бы тоже улетели туда, оставив пояс пустым.
-    inventory_.slot(0) = ItemStack{ ItemType::Axe, 1 };
-    inventory_.slot(1) = ItemStack{ ItemType::Torch, 1 };
-    if(adminMode_){
-        // AdminTester: ресурсы бесконечны. Проще всего это дать честными стаками —
-        // крафт и магазин ему и так ничего не стоят, а инвентарь всегда полон.
-        const ItemType kAdminKit[] = {
-            ItemType::Wood, ItemType::Stone, ItemType::OreMetal, ItemType::OreSulfur,
-            ItemType::MetalFrag, ItemType::Sulfur, ItemType::Gunpowder, ItemType::Cloth,
-            ItemType::Scrap, ItemType::Grenade, ItemType::BuildPlan, ItemType::Furnace,
-            ItemType::Box, ItemType::Cupboard, ItemType::Torch, ItemType::Hammer,
-            ItemType::Rifle, ItemType::RifleAmmo, ItemType::Launcher, ItemType::Rocket,
-        };
-        for(ItemType t : kAdminKit) inventory_.add(t, itemDef(t).maxStack);
-    }
+    giveStartingKit();
     if(debugKit_){
         // Отладочный набор: план стройки кладём прямо в пояс, чтобы режим стройки
         // включался ключом --slot 2 и его было видно на снимке.
@@ -2038,11 +2379,11 @@ void GameClient::initWorld(){
         inventory_.slot(3) = ItemStack{ ItemType::Grenade, 5 };
         // Киянка и оружие тоже в поясе: их вид в руке проверяется снимком по --slot.
         inventory_.slot(4) = ItemStack{ ItemType::Hammer, 1 };
-        inventory_.slot(5) = ItemStack{ ItemType::Rifle, 1 };
+        inventory_.slot(5) = ItemStack{ ItemType::Revolver, 1 };
         inventory_.add(ItemType::Wood, 300);
         inventory_.add(ItemType::Stone, 100);
         inventory_.add(ItemType::MetalFrag, 200);
-        inventory_.add(ItemType::RifleAmmo, 60);
+        inventory_.add(ItemType::RevolverAmmo, 60);
         inventory_.add(ItemType::Launcher, 1);
         inventory_.add(ItemType::Rocket, 8);
         // Ящик и шкаф рядом со спавном: их окна надо чем-то открывать при проверке
@@ -2060,6 +2401,16 @@ void GameClient::initWorld(){
         voxels_->setBlock(cx2, cy2, cz2, Block::Cupboard);
         WorldCupboard nc; nc.x = cx2; nc.y = cy2; nc.z = cz2; nc.wood = 40; nc.stone = 20;
         cupboards_.push_back(nc);
+        // Мешок с лутом рядом: его окно тоже надо чем-то открывать при проверке снимком.
+        LootBag nbag;
+        nbag.id = 1;
+        nbag.pos = Vec3{ pp.x, pp.y + 0.25f, pp.z + 1.5f };
+        nbag.slots[0] = ItemStack{ ItemType::Wood, 120 };
+        nbag.slots[1] = ItemStack{ ItemType::Stone, 64 };
+        nbag.slots[2] = ItemStack{ ItemType::MetalFrag, 30 };
+        nbag.slots[5] = ItemStack{ ItemType::Axe, 1 };
+        nbag.slots[7] = ItemStack{ ItemType::RevolverAmmo, 24 };
+        bags_.push_back(nbag);
     }
     if(demoHouse_){
         // Стенд для проверки: три стены и три двери, по одной на уровень. Так на снимке
@@ -2194,14 +2545,16 @@ bool GameClient::handleHotbarTouch(float x, float y){
 // Геометрия крафта: сетка квадратных плиток слева, описание справа. Одна функция и для
 // отрисовки, и для попаданий — иначе они разъезжаются при первом же правке.
 const int CRAFT_COLS = 3;
+const int CRAFT_ROWS = 3;   // сколько рядов видно за раз; остальное — прокруткой
 
 void GameClient::craftGridGeometry(float& x, float& y, float& tile, float& gap) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     tile = clampf((float)SCR_H * 0.145f, 58.0f, 132.0f * s);
     gap = tile * 0.09f;
-    int rows = (kRecipeCount + CRAFT_COLS - 1) / CRAFT_COLS;
-    if(rows < 1) rows = 1;
-    float gridH = tile * rows + gap * (rows - 1);
+    // Окно всегда 3 на 3 плитки, сколько бы ни было рецептов: остальные пролистываются.
+    // Пока высота считалась по ВСЕМ рецептам, сетка росла с каждым новым рецептом и
+    // выползала за верх экрана.
+    float gridH = tile * CRAFT_ROWS + gap * (CRAFT_ROWS - 1);
     // Сетка и панель описания стоят одним блоком по центру экрана, а не липнут к
     // левому краю: раньше окно съезжало в угол и выглядело незакончённым.
     float gridW = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
@@ -2216,6 +2569,17 @@ void GameClient::craftGridGeometry(float& x, float& y, float& tile, float& gap) 
 float GameClient::craftPanelWidth() const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     return fminf((float)SCR_W * 0.42f, 560.0f * s);
+}
+
+// Видимое окно сетки: три ряда, ничего сверх. По нему и режутся плитки, и по нему же
+// отсекаются касания — иначе палец попадал бы по плиткам, уехавшим за край.
+void GameClient::craftViewport(float& vx, float& vy, float& vw, float& vh) const {
+    float gx, gy, tile, gap;
+    craftGridGeometry(gx, gy, tile, gap);
+    vx = gx;
+    vy = gy;
+    vw = tile * CRAFT_COLS + gap * (CRAFT_COLS - 1);
+    vh = tile * CRAFT_ROWS + gap * (CRAFT_ROWS - 1);
 }
 
 void GameClient::craftTilePos(int i, float& tx, float& ty) const {
@@ -2514,6 +2878,7 @@ bool GameClient::handleOverlayTouch(float x, float y){
     if(overlay_ == Overlay::Furnace) return handleFurnaceTouch(x, y);
     if(overlay_ == Overlay::Box) return handleBoxTouch(x, y);
     if(overlay_ == Overlay::Cupboard) return handleCupboardTouch(x, y);
+    if(overlay_ == Overlay::Bag) return handleBagTouch(x, y);
     if(overlay_ == Overlay::Settings) return handleSettingsTouch(x, y);
 
     if(overlay_ == Overlay::Craft){
@@ -2538,9 +2903,15 @@ bool GameClient::handleOverlayTouch(float x, float y){
             }
         }
 
+        // Плитки нажимаются только внутри окна прокрутки: уехавшая за край плитка
+        // рисуется обрезанной, и нажиматься она тоже не должна.
+        float vx, vy, vw, vh;
+        craftViewport(vx, vy, vw, vh);
+        bool inGrid = (x >= vx && x <= vx + vw && y >= vy && y <= vy + vh);
+
         // Магазин: плитка выбирает товар, кнопка покупает.
         if(shopMode_){
-            for(int i = 0; i < kShopCount; ++i){
+            for(int i = 0; inGrid && i < kShopCount; ++i){
                 float tx, ty;
                 craftTilePos(i, tx, ty);
                 if(x >= tx && x <= tx + tile && y >= ty && y <= ty + tile){
@@ -2556,7 +2927,7 @@ bool GameClient::handleOverlayTouch(float x, float y){
         }
         craftDragging_ = true;   // палец на экране крафта: возможно, список будут листать
         // Плитка рецепта — выбор, а не мгновенный крафт: сначала посмотреть, что нужно.
-        for(int i = 0; i < kRecipeCount; ++i){
+        for(int i = 0; inGrid && i < kRecipeCount; ++i){
             float tx, ty;
             craftTilePos(i, tx, ty);
             if(x >= tx && x <= tx + tile && y >= ty && y <= ty + tile){
@@ -3499,9 +3870,10 @@ void GameClient::handleOverlayDrag(float x, float y, float dx, float dy){
     if(overlay_ == Overlay::Craft && craftDragging_){
         float gx, gy, tile, gap;
         craftGridGeometry(gx, gy, tile, gap);
-        int rows = (kRecipeCount + CRAFT_COLS - 1) / CRAFT_COLS;
-        float contentH = rows * (tile + gap);
-        float viewH = (float)SCR_H - gy - tile * 0.4f;
+        int total = shopMode_ ? kShopCount : kRecipeCount;
+        int rows = (total + CRAFT_COLS - 1) / CRAFT_COLS;
+        float contentH = tile * rows + gap * (rows - 1);
+        float viewH = tile * CRAFT_ROWS + gap * (CRAFT_ROWS - 1);
         float maxScroll = contentH > viewH ? contentH - viewH : 0.0f;
         craftScroll_ = clampf(craftScroll_ - dy, 0.0f, maxScroll);
         return;
@@ -3744,27 +4116,30 @@ void GameClient::update(float dt){
         // сам ритм ударов задаёт Survivor, а не частота кадров. Отдельно читаем
         // «нажали»: короткий тап короче кадра иначе потерялся бы.
         bool attack = controls_.attackHeld() || controls_.attackPressed();
+        // «Нажали в этот кадр» — отдельно: оружие и киянка срабатывают ровно раз за
+        // нажатие, а не пока кнопка держится.
+        bool pressed = controls_.attackPressed();
         if(autoAttack_){
             autoAttackTimer_ += dt;
-            if(autoAttackTimer_ >= 1.5f){ autoAttackTimer_ = 0.0f; attack = true; }
+            if(autoAttackTimer_ >= 1.5f){ autoAttackTimer_ = 0.0f; attack = true; pressed = true; }
         }
         // Оружие и киянка перехватывают кнопку удара: махать ими по блокам нечего.
         const ItemStack& held = inventory_.selectedStack();
         ItemType heldType = held.empty() ? ItemType::None : held.type;
         bool hammer = (heldType == ItemType::Hammer);
         if(heldType == ItemType::Grenade){
-            if(controls_.attackPressed()) throwGrenade();
+            if(pressed) throwGrenade();
             attack = false;
         } else if(heldType == ItemType::Launcher){
-            if(controls_.attackPressed()) fireRocket();
+            if(pressed) fireRocket();
             attack = false;
-        } else if(heldType == ItemType::Rifle){
-            // Полуавтомат: одно нажатие — один выстрел, зажатая кнопка не поливает.
-            if(controls_.attackPressed()) fireRifle();
+        } else if(heldType == ItemType::Revolver){
+            // Самовзвод: одно нажатие — один выстрел, зажатая кнопка не поливает.
+            if(pressed) fireRevolver();
             attack = false;
         } else if(hammer){
             // Киянкой сносят СВОЮ деталь дома целиком и сразу — шкаф для этого не нужен.
-            if(controls_.attackPressed()) demolishPieceAimed();
+            if(pressed) demolishPieceAimed();
             attack = false;
         }
         in.attack = attack;
@@ -3773,6 +4148,12 @@ void GameClient::update(float dt){
         // и мир о ней ничего не знает, её состояние держит реестр построек.
         // С киянкой та же кнопка улучшает деталь: дерево -> камень -> железо.
         bool wantAction = controls_.actionPressed();
+        // Мешок обыскивают только живые: иначе погибший обирал бы собственный мешок,
+        // лёжа рядом с ним, и смерть не стоила бы ничего.
+        if(wantAction && !player_->isDead()){
+            int nb = bagNear(2.8f);
+            if(nb >= 0){ openBag_ = nb; overlay_ = Overlay::Bag; wantAction = false; }
+        }
         if(wantAction && hammer && upgradePieceAimed()) wantAction = false;
         if(wantAction && toggleDoorNear()) wantAction = false;
         in.action = wantAction;
@@ -3800,6 +4181,7 @@ void GameClient::update(float dt){
     netApplyEvents();
     updateRemotePlayers(dt);
     updateGrenades(dt);
+    updateBags(dt);
     // Бесконечные ресурсы админа: раз в секунду добиваем стаки обратно до полного.
     if(adminMode_){
         adminRefillTimer_ += dt;
@@ -3943,6 +4325,7 @@ void GameClient::renderScene(){
     renderParticles(view, proj);
     renderFallenTrees(view, proj);
     renderGrenades(view, proj);
+    renderBags(view, proj);
     renderRemotePlayers(view, proj);
     if(state_ == GameState::Playing) renderDrops(view, proj);
     if(buildMode()) renderBuildGhost(view, proj);
@@ -4249,6 +4632,9 @@ void GameClient::renderHud(){
     // ---- Выброшенные предметы: подписи над кубами и кнопка «поднять».
     renderDropLabels();
 
+    // ---- Мешок погибшего под рукой.
+    renderBagLabels();
+
     // ---- Последнее событие
     if(player_->messageAge() < 4.0f){
         float alpha = clampf(1.0f - (player_->messageAge() - 3.0f), 0.0f, 1.0f);
@@ -4409,6 +4795,7 @@ void GameClient::renderOverlay(){
     if(overlay_ == Overlay::Furnace){ renderFurnace(); return; }
     if(overlay_ == Overlay::Box){ renderBox(); return; }
     if(overlay_ == Overlay::Cupboard){ renderCupboard(); return; }
+    if(overlay_ == Overlay::Bag){ renderBag(); return; }
     if(overlay_ == Overlay::Settings){ renderSettings(); return; }
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
 
@@ -4543,6 +4930,15 @@ void GameClient::renderCraft(){
     if(shopSelected_ >= kShopCount) shopSelected_ = kShopCount - 1;
     if(shopSelected_ < 0) shopSelected_ = 0;
 
+    // Плитки режутся окном 3x3: то, что уехало прокруткой, не должно вылезать поверх
+    // заголовка и панели описания.
+    {
+        float vx, vy, vw, vh;
+        craftViewport(vx, vy, vw, vh);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor((GLint)vx, (GLint)((float)SCR_H - (vy + vh)), (GLsizei)vw, (GLsizei)vh);
+    }
+
     char buf[192];
     if(shopMode_){
         // ---- Магазин: те же квадратные плитки, но с ценой в монетах.
@@ -4578,6 +4974,7 @@ void GameClient::renderCraft(){
                 uiThinFrame(tx, ty, tile, tile, UIColor{1.0f, 1.0f, 1.0f}, 0.30f);
             }
         }
+        glDisable(GL_SCISSOR_TEST);
 
         // Панель справа: что покупаем, за сколько и кнопка.
         const Good& g = kShop[shopSelected_];
@@ -4663,6 +5060,7 @@ void GameClient::renderCraft(){
             uiThinFrame(tx, ty, tile, tile, UIColor{1.0f, 1.0f, 1.0f}, 0.30f);
         }
     }
+    glDisable(GL_SCISSOR_TEST);
 
     // ---- Описание выбранного рецепта справа от сетки.
     const Recipe& r = kRecipes[craftSelected_];
@@ -5168,8 +5566,11 @@ void GameClient::authSubmit(bool registerNew){
 
     playerName_ = nick;
     adminMode_ = (nick == "AdminTester");
-    // Монеты на первый вход: тестеру есть на что купить сырьё, не гриндя его руками.
-    if(coins_ <= 0) coins_ = 500;
+    // Монеты начисляются только за найденное: подарка на первый вход больше нет, у
+    // всех по нулю. Бесконечны они лишь у AdminTester, и то не числом, а проверками.
+    if(coins_ < 0) coins_ = 0;
+    // Рюкзак набирается заново под этот ник: до входа мир строился со старым именем.
+    giveStartingKit();
     authNotice_.clear();
     saveProfile();
     saveServerList();
@@ -5404,9 +5805,9 @@ void GameClient::renderMainMenu(){
         // Старый сервер честно помечаем: на нём не работают ни урон, ни дроп, ни
         // упавшие деревья — он просто не знает про эти сообщения.
         std::string sub = r.map;
-        if(r.online && r.protocol > 0 && r.protocol < 2) sub += "   • старая версия сервера";
+        if(r.online && r.protocol > 0 && r.protocol < 3) sub += "   • старая версия сервера";
         drawText(x + 44.0f * s, y + 32.0f * s, 15.0f * s, sub, 1, 1, 1,
-                 (r.protocol > 0 && r.protocol < 2) ? 0.75f : 0.45f);
+                 (r.protocol > 0 && r.protocol < 3) ? 0.75f : 0.45f);
         // Звёздочка слева — как в образце; сейчас она просто метка строки.
         drawUIRect(x + 16.0f * s, y + h * 0.5f - 5.0f * s, 10.0f * s, 10.0f * s, 0,
                    1, 1, 1, sel ? 0.9f : 0.35f, false);
@@ -5649,6 +6050,7 @@ int GameClient::run(int argc, char** argv){
             else if(what == "cupboard") overlayOverride_ = Overlay::Cupboard;
             else if(what == "pause")    overlayOverride_ = Overlay::Pause;
             else if(what == "furnace")  overlayOverride_ = Overlay::Furnace;
+            else if(what == "bag")      overlayOverride_ = Overlay::Bag;
         } else if(a == "--dig" && i + 1 < argc){
             digDepth_ = atoi(argv[++i]);
         } else if(a == "--server" && i + 1 < argc){
@@ -5714,6 +6116,7 @@ int GameClient::run(int argc, char** argv){
     // Окна ящика и шкафа знают, ЧТО открыто: без выбранного объекта они пустые.
     if(overlay_ == Overlay::Box && !boxes_.empty()) openBox_ = 0;
     if(overlay_ == Overlay::Cupboard && !cupboards_.empty()) openCupboard_ = 0;
+    if(overlay_ == Overlay::Bag && !bags_.empty()) openBag_ = 0;
     // Снимок экрана снимается из игры, а не из меню: иначе проверять нечего.
     if((!screenshotPath_.empty() || startInGame_) && !stayInMenu_) state_ = GameState::Playing;
     audioApplySettings();
@@ -5903,8 +6306,8 @@ void GameClient::loadInterfaceTextures(){
         { ItemType::Cupboard,  "item_cupboard.png" },
         { ItemType::Grenade,   "item_grenade.png" },
         { ItemType::Hammer,    "item_hammer.png" },
-        { ItemType::Rifle,     "item_revolver.png" },
-        { ItemType::RifleAmmo, "item_ammo.png" },
+        { ItemType::Revolver,     "item_revolver.png" },
+        { ItemType::RevolverAmmo, "item_ammo.png" },
         { ItemType::Launcher,  "item_launcher.png" },
         { ItemType::Rocket,    "item_rocket.png" },
     };

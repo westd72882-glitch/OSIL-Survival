@@ -28,7 +28,7 @@
 #include <vector>
 
 // Какое окно открыто поверх игры.
-enum class Overlay { None, Inventory, Craft, Map, Settings, Pause, Furnace, Box, Cupboard };
+enum class Overlay { None, Inventory, Craft, Map, Settings, Pause, Furnace, Box, Cupboard, Bag };
 
 // Состояние клиента. Главное меню — не «окно поверх игры», а отдельный режим: мир в нём
 // уже построен и медленно вращается фоном, но игрок не управляется и время не идёт.
@@ -52,6 +52,8 @@ private:
     bool initPlatform();
     bool initGraphics();
     void initWorld();
+    // Стартовый набор рюкзака: зависит от ника, поэтому выдаётся ещё и после входа.
+    void giveStartingKit();
     void buildMinimapTexture();
     void loadInterfaceTextures();
     // Метки игрока на карте: касание ставит, касание по метке снимает.
@@ -169,7 +171,7 @@ private:
     void netPumpState();
     void netApplyEdits();
     void netApplyEvents();
-    void netSendEvent(net::EventType type, int id, int a, int b, Vec3 pos);
+    void netSendEvent(net::EventType type, int id, int a, int b, Vec3 pos, int c = 0);
     // Кого задел удар: возвращает id игрока перед лицом или 0.
     int  remotePlayerInFront(float reach) const;
     void onSwingImpact();
@@ -187,12 +189,14 @@ private:
         // Ракета летит прямо и рвётся о первое препятствие, граната — по дуге и по
         // запалу. Всё остальное у них общее, поэтому это один список, а не два.
         bool  rocket = false;
+        bool  onGround = false;   // легла на пол: дальше только докатывается и тухнет
+        bool  remote = false;     // чужой снаряд: у нас он только летит и рисуется
         int   buildDamage = 50;
     };
     std::vector<Grenade> grenades_;
     void throwGrenade();
     void fireRocket();
-    void fireRifle();
+    void fireRevolver();
     void updateGrenades(float dt);
     void renderGrenades(const Mat4& view, const Mat4& proj);
     // Взрыв в точке: урон постройкам, игрокам и себе. remote — взрыв пришёл по сети,
@@ -207,6 +211,9 @@ private:
         float yaw = 0, pitch = 0, targetYaw = 0, targetPitch = 0;
         float speed = 0, smoothSpeed = 0, swing = 0, phase = 0;
         int   held = 0, pose = 0, health = 100;
+        // Сколько секунд назад этот игрок выстрелил: по этому рисуются вспышка у
+        // дульного среза и след пули. Без них чужой выстрел был вообще не виден.
+        float shotAge = 99.0f;
         float screenX = 0, screenY = 0;
         bool  onScreen = false;
     };
@@ -263,6 +270,8 @@ private:
     int   craftSelected_ = 0;    // какой рецепт открыт в описании справа
     void  craftGridGeometry(float& x, float& y, float& tile, float& gap) const;
     void  craftTilePos(int i, float& tx, float& ty) const;
+    // Видимое окно сетки крафта: три ряда плиток, остальное прокруткой.
+    void  craftViewport(float& vx, float& vy, float& vw, float& vh) const;
     void  craftButtonRect(float& x, float& y, float& w, float& h) const;
     float craftPanelWidth() const;
     // Разметка панели описания: где начинается текст, где таблица стоимости и какой
@@ -366,6 +375,29 @@ private:
     std::vector<WorldBox> boxes_;
     std::vector<WorldCupboard> cupboards_;
     int openBox_ = -1, openCupboard_ = -1;
+    // ---- Мешок погибшего. Смерть в выживании должна что-то стоить: весь рюкзак
+    // выпадает на месте гибели одним мешком, и минуту его может обобрать кто угодно —
+    // и сам погибший, если успеет добежать.
+    static const int BAG_SLOTS = Inventory::SIZE;
+    struct LootBag {
+        int id = 0;
+        Vec3 pos{};
+        ItemStack slots[BAG_SLOTS];
+        float age = 0.0f;
+        bool mine = false;        // мешок наш: только его содержимое мы шлём в сеть
+    };
+    static constexpr float BAG_LIFETIME = 60.0f;
+    std::vector<LootBag> bags_;
+    int openBag_ = -1;
+    void dropLootBag();               // зовётся один раз в момент смерти
+    void updateBags(float dt);
+    void renderBags(const Mat4& view, const Mat4& proj);
+    void renderBagLabels();
+    void renderBag();
+    bool handleBagTouch(float x, float y);
+    void bagSlotPos(int i, float& x, float& y, float& slot) const;
+    int  bagNear(float reach) const;  // индекс мешка под рукой или -1
+    bool deathBagSpawned_ = false;    // чтобы не сыпать мешки каждый кадр смерти
     int lastUpkeepDay_ = 0;
     void updateUpkeep();
     void renderBox();
@@ -396,7 +428,7 @@ private:
     GLuint texBlood_ = 0;
     // Индикатор нанесённого урона: крупная цифра со значком в центре экрана.
     GLuint texDamage_ = 0;
-    // Вспышка выстрела: сколько секунд назад стреляли из винтовки.
+    // Вспышка выстрела: сколько секунд назад стреляли из револьвера.
     float  shotFlash_ = 99.0f;
     GLuint texMapMark_ = 0, texDeathMark_ = 0;
     Vec2  deathMark_{0,0};

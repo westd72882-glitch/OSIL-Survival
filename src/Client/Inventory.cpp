@@ -30,8 +30,8 @@ const ItemDef kItems[(int)ItemType::COUNT] = {
     { "box",         "Ящик",          Block::Box,           5,   0,  0,  0.66f,0.52f,0.30f },
     { "grenade",     "Граната",       Block::Air,          10,   0,  0,  0.35f,0.42f,0.30f },
     { "hammer",      "Киянка",        Block::Air,           1,   0,  0,  0.72f,0.60f,0.38f },
-    { "rifle",       "Винтовка",      Block::Air,           1,   0,  0,  0.55f,0.48f,0.40f },
-    { "rifle_ammo",  "Патроны",       Block::Air,         100,   0,  0,  0.86f,0.72f,0.32f },
+    { "revolver",    "Револьвер",     Block::Air,           1,   0,  0,  0.55f,0.48f,0.40f },
+    { "revolver_ammo","Патроны .44",  Block::Air,         100,   0,  0,  0.86f,0.72f,0.32f },
     { "launcher",    "Ракетница",     Block::Air,           1,   0,  0,  0.42f,0.46f,0.38f },
     { "rocket",      "Ракета",        Block::Air,          10,   0,  0,  0.70f,0.35f,0.25f },
 };

@@ -69,6 +69,11 @@ private:
     // они разовые, и повторять их новичку незачем (да и вредно).
     std::unordered_map<int, net::Event> liveDrops_;
     std::vector<net::Event> felledTrees_;
+    // Мешки погибших: ключ — мешок и номер ячейки в нём, значение — само событие.
+    // Мешок живёт минуту, поэтому рядом лежит его возраст: старые не отдаём вошедшим.
+    std::unordered_map<long long, net::Event> liveBags_;
+    std::unordered_map<int, float> bagAge_;
+    static constexpr float BAG_LIFETIME = 60.0f;
     static const size_t FELLED_LIMIT = 3000;
     long long headSeq_ = 0;
     long long eventSeq_ = 0;

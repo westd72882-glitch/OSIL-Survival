@@ -128,6 +128,19 @@ void NetServer::update(float dt, float timeOfDay){
             it = players_.erase(it);
         } else ++it;
     }
+    // Мешки погибших живут минуту. Клиенты гасят их у себя сами по таймеру, здесь мы
+    // лишь перестаём отдавать протухшие тем, кто вошёл позже.
+    for(auto it = bagAge_.begin(); it != bagAge_.end(); ){
+        it->second += dt;
+        if(it->second > BAG_LIFETIME){
+            int bag = it->first;
+            for(auto b = liveBags_.begin(); b != liveBags_.end(); ){
+                if((int)(b->first >> 8) == bag) b = liveBags_.erase(b);
+                else ++b;
+            }
+            it = bagAge_.erase(it);
+        } else ++it;
+    }
 }
 
 std::string NetServer::statusJson() const {
@@ -139,7 +152,7 @@ std::string NetServer::statusJson() const {
     s += ",\"max\":" + std::to_string(cfg_.maxPlayers);
     s += ",\"seed\":" + std::to_string(cfg_.seed);
     s += ",\"time\":" + std::to_string((int)timeOfDay_);
-    s += ",\"protocol\":2";
+    s += ",\"protocol\":3";
     s += "}";
     return s;
 }
@@ -186,8 +199,9 @@ std::string NetServer::handle(const std::string& method, const std::string& path
         // Без этого он видел бы лес, которого давно нет, и пустую поляну вместо чужого
         // выброшенного ящика.
         std::vector<net::Event> replay;
-        replay.reserve(liveDrops_.size() + felledTrees_.size());
+        replay.reserve(liveDrops_.size() + felledTrees_.size() + liveBags_.size());
         for(const auto& kv : liveDrops_) replay.push_back(kv.second);
+        for(const auto& kv : liveBags_) replay.push_back(kv.second);
         for(net::Event e : felledTrees_){
             e.a = 1;                 // «тихо»: дерево уже упало, анимацию показывать не надо
             replay.push_back(e);
@@ -263,6 +277,11 @@ std::string NetServer::handle(const std::string& method, const std::string& path
                 liveDrops_.erase(e.id);
             } else if(e.type == (int)net::EventType::TreeFell){
                 if(felledTrees_.size() < FELLED_LIMIT) felledTrees_.push_back(e);
+            } else if(e.type == (int)net::EventType::BagDrop){
+                liveBags_[((long long)e.id << 8) | (long long)(e.c & 0xFF)] = e;
+                bagAge_[e.id] = 0.0f;
+            } else if(e.type == (int)net::EventType::BagTake){
+                liveBags_.erase(((long long)e.id << 8) | (long long)(e.c & 0xFF));
             }
         }
         if(eventJournal_.size() > EVENT_LIMIT)

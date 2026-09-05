@@ -101,6 +101,7 @@ std::string encodeEvents(const std::vector<Event>& events){
         s += "{\"t\":" + std::to_string(e.type) + ",\"i\":" + std::to_string(e.id) +
              ",\"o\":" + std::to_string(e.owner) +
              ",\"a\":" + std::to_string(e.a) + ",\"b\":" + std::to_string(e.b) +
+             ",\"c\":" + std::to_string(e.c) +
              ",\"x\":" + num(e.x) + ",\"y\":" + num(e.y) + ",\"z\":" + num(e.z);
         if(e.seq) s += ",\"s\":" + std::to_string(e.seq);
         s += "}";
@@ -119,6 +120,7 @@ void decodeEvents(const JsonValue& arr, std::vector<Event>& out){
         e.owner = v["o"].asInt();
         e.a = v["a"].asInt();
         e.b = v["b"].asInt();
+        e.c = v["c"].asInt();
         e.x = v["x"].asFloat();
         e.y = v["y"].asFloat();
         e.z = v["z"].asFloat();
