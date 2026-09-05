@@ -161,22 +161,28 @@ std::string NetServer::handle(const std::string& method, const std::string& path
             if(kv.first == me.id) continue;
             others.push_back(kv.second.state);
         }
+        // Отдаём порциями, чтобы телефон не захлебнулся. ВАЖНО: в ответе едет номер
+        // последней ОТПРАВЛЕННОЙ записи, а не общий конец журнала — иначе клиент
+        // считал бы, что получил всё, и хвост правок терялся молча.
         std::vector<net::Edit> fresh;
+        long long sentHead = headSeq_;
         for(const net::Edit& e : journal_){
             if(e.seq <= since) continue;
+            if(fresh.size() >= 400){ sentHead = fresh.back().seq; break; }
             fresh.push_back(e);
-            if(fresh.size() >= 400) break;    // порциями: телефон не должен захлебнуться
         }
         std::vector<net::Event> freshEvents;
+        long long sentEventHead = eventSeq_;
         for(const net::Event& e : eventJournal_){
             if(e.seq <= esince) continue;
+            if(freshEvents.size() >= 200){ sentEventHead = e.seq - 1; break; }
             // Свои же события обратно не возвращаем: отправитель их уже применил, и
-            // повторно взрывать его собственной гранатой было бы нечестно.
+            // повторно взрывать его собственной гранатой было бы нечестно. Номер при
+            // этом всё равно считается пройденным — событие мы видели.
             if(e.owner == me.id) continue;
             freshEvents.push_back(e);
-            if(freshEvents.size() >= 200) break;
         }
-        return net::encodeSyncResponse(others, fresh, freshEvents, headSeq_, eventSeq_, timeOfDay_);
+        return net::encodeSyncResponse(others, fresh, freshEvents, sentHead, sentEventHead, timeOfDay_);
     }
 
     status = 404;

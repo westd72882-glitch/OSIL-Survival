@@ -118,6 +118,7 @@ private:
     std::string joinOnStart_;      // ключ --server: войти сразу, минуя меню
     // Ключ --autoattack: бить раз в полторы секунды без нажатий. Нужен, чтобы
     // проверять бой между игроками безголовыми клиентами, где нажать некому.
+    float swingDebugPhase_ = 0.0f;   // ключ --swingphase: заморозить фазу удара
     bool  autoAttack_ = false;
     float autoAttackTimer_ = 0.0f;
     std::string menuNotice_;       // короткая строка о результате действия

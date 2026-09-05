@@ -659,25 +659,32 @@ int GameClient::remotePlayerInFront(float reach) const {
     Vec3 eye = player_->eyePosition();
     Vec3 dir = player_->lookDirection();
     int best = 0;
-    float bestT = reach;
+    float bestT = reach + 1.0f;
     for(const RemoteView& v : remote_){
         if(v.pose == (int)net::Pose::Dead) continue;
-        // Центр фигуры — примерно на метре над её ногами.
-        Vec3 c{ v.pos.x, v.pos.y + 1.0f, v.pos.z };
-        Vec3 rel{ c.x - eye.x, c.y - eye.y, c.z - eye.z };
-        float t = rel.x * dir.x + rel.y * dir.y + rel.z * dir.z;
-        if(t < 0.0f || t > reach) continue;
-        Vec3 close{ eye.x + dir.x * t - c.x, eye.y + dir.y * t - c.y, eye.z + dir.z * t - c.z };
-        float miss = sqrtf(close.x * close.x + close.y * close.y + close.z * close.z);
-        if(miss > 0.9f) continue;              // мимо: полметра шире фигуры
-        if(t < bestT){ bestT = t; best = v.id; }
+        // Фигура — это не точка: проверяем всё тело от щиколоток до макушки. С одной
+        // точкой в центре удар «мимо» получался, стоило целиться в голову или в ноги,
+        // и казалось, что урон вообще не проходит.
+        for(int i = 0; i <= 5; ++i){
+            float h = 0.25f + 0.32f * (float)i;      // 0.25 .. 1.85 м над ногами
+            Vec3 c{ v.pos.x, v.pos.y + h, v.pos.z };
+            Vec3 rel{ c.x - eye.x, c.y - eye.y, c.z - eye.z };
+            float t = rel.x * dir.x + rel.y * dir.y + rel.z * dir.z;
+            if(t < -0.4f || t > reach) continue;     // за спиной или слишком далеко
+            if(t < 0.0f) t = 0.0f;                   // упёрлись вплотную
+            Vec3 close{ eye.x + dir.x * t - c.x, eye.y + dir.y * t - c.y,
+                        eye.z + dir.z * t - c.z };
+            float miss = sqrtf(close.x * close.x + close.y * close.y + close.z * close.z);
+            if(miss > 0.85f) continue;               // мимо: фигура вдвое уже
+            if(t < bestT){ bestT = t; best = v.id; }
+        }
     }
     return best;
 }
 
 void GameClient::onSwingImpact(){
     if(!net_.connected()) return;
-    int target = remotePlayerInFront(3.2f);
+    int target = remotePlayerInFront(3.8f);
     if(target == 0){
         if(debugKit_) SDL_Log("удар: цели нет (чужих игроков видно %d)", (int)remote_.size());
         return;
@@ -1529,6 +1536,9 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     // проход вперёд-вниз и мягкий возврат. Один синус давал одинаково вялое движение
     // туда и обратно и читался как дрожь, а не как удар.
     float phase = player_->swingPhase();
+    // Ключ --swingphase замораживает фазу удара: так удар снимается на скриншот, где
+    // нажать кнопку некому.
+    if(debugKit_ && swingDebugPhase_ > 0.0f) phase = swingDebugPhase_;
     float windup = smoothstepf(0.0f, 0.28f, phase);      // отвод назад
     float strike = smoothstepf(0.26f, 0.52f, phase);     // проход по цели
     float back   = smoothstepf(0.58f, 1.0f, phase);      // возврат в стойку
@@ -1538,10 +1548,10 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
 
     Vec3 right0 = v3norm(v3cross(forward, Vec3{0,1,0}));
     Vec3 up = v3cross(right0, forward);
-    // Разворот инструмента вокруг вертикали ровно на 180 градусов: лезвие топора и
-    // пламя факела теперь смотрят в другую сторону, а сам инструмент виден в профиль —
-    // его форму видно целиком, а не с торца.
-    const float TOOL_YAW = 3.14159265f;
+    // Инструмент держат ПРЯМО ПЕРЕД СОБОЙ: лезвие топора смотрит от игрока, вперёд по
+    // взгляду, и лишь чуть повёрнуто, чтобы голову топора было видно объёмом, а не
+    // торцом. Профиль (лезвие вбок) выглядел так, будто игрок несёт топор мимо цели.
+    const float TOOL_YAW = 5.50f;
     float cy2 = cosf(TOOL_YAW), sy2 = sinf(TOOL_YAW);
     Vec3 right{ right0.x * cy2 + forward.x * sy2,
                 right0.y * cy2 + forward.y * sy2,
@@ -1579,16 +1589,18 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     // теряется в пейзаже.
     // В покое инструмент держат ПРЯМО, рукоятью вниз: наклон оставлен только удару —
     // на нём топор и факел клюют вперёд, отсюда и ощущение веса.
-    float angle = -swing * 1.45f;
+    // В покое инструмент держат прямо, рукоятью вниз. Удар идёт ВПЕРЁД, по центру
+    // взгляда: инструмент клюёт от игрока, а не уводится в сторону.
+    float angle = swing * 1.45f;
     float ca = cosf(angle), sa = sinf(angle);
     // Прямой инструмент занимает больше места по высоте, поэтому он отодвинут правее
     // и ниже: иначе рукоять с кистью уходила за нижний край, а голова топора лезла в
     // середину экрана.
-    // На проходе удара swing отрицателен, поэтому знаки такие: инструмент уходит
-    // вправо (куда смотрит лезвие), вниз и вперёд от лица.
-    float offX = 0.205f - swing * 0.085f;
-    float offZ = 0.52f - swing * 0.17f;
-    float offY = (axe ? -0.205f : -0.185f) + bob + swing * 0.24f;
+    // На проходе удара swing отрицателен. В сторону инструмент больше не уводится
+    // совсем: удар идёт вперёд и вниз, по центру взгляда.
+    float offX = 0.190f;
+    float offZ = 0.52f - swing * 0.22f;
+    float offY = (axe ? -0.205f : -0.185f) + bob + swing * 0.26f;
 
     std::vector<VoxelVertex> verts;
     verts.reserve(6 * 36);
@@ -4701,6 +4713,8 @@ int GameClient::run(int argc, char** argv){
         } else if(a == "--server" && i + 1 < argc){
             // Отладка и проверка сети: сразу войти на сервер, минуя меню.
             joinOnStart_ = argv[++i];
+        } else if(a == "--swingphase" && i + 1 < argc){
+            swingDebugPhase_ = (float)atof(argv[++i]);
         } else if(a == "--autoattack"){
             autoAttack_ = true;
         } else if(a == "--name" && i + 1 < argc){
