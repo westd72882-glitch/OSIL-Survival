@@ -168,6 +168,13 @@ std::string NetServer::handle(const std::string& method, const std::string& path
             status = 503;
             return "{\"error\":\"сервер полон\"}";
         }
+        // Один ник — один игрок в мире. Дубликаты отсекает именно сервер: клиенту тут
+        // верить нельзя, а два «Tester5» в списке ломают и удары, и чужие метки.
+        for(const auto& kv : players_){
+            if(kv.second.state.name != name) continue;
+            status = 409;
+            return "{\"error\":\"этот ник уже в игре\"}";
+        }
         int id = nextId_++;
         Slot slot;
         slot.state.id = id;
@@ -238,17 +245,18 @@ std::string NetServer::handle(const std::string& method, const std::string& path
         // События (дропы, упавшие деревья, взрывы, удары) идут своим журналом: они
         // короткоживущие, и держать их вместе с постройками незачем.
         for(net::Event e : incomingEvents){
-            e.seq = ++eventSeq_;
-            e.owner = me.id;          // подписываем событие отправителем
-            eventJournal_.push_back(e);
-            // Заодно ведём состояние мира: что лежит на земле и что уже срублено.
+            // Удар по игроку в журнал НЕ кладём: он копится жертве и уезжает ей полем
+            // ответа. Пока он попадал ещё и в журнал, жертва получала урон дважды —
+            // цифра над головой показывала 5, а снимало 10.
             if(e.type == (int)net::EventType::Hit){
-                // Удар по игроку сервер не пересылает как событие, а КОПИТ жертве:
-                // событие могло не влезть в порцию и потеряться, а урон терять нельзя.
                 auto victim = players_.find(e.id);
                 if(victim != players_.end()) victim->second.pendingDamage += e.b;
                 continue;
             }
+            e.seq = ++eventSeq_;
+            e.owner = me.id;          // подписываем событие отправителем
+            eventJournal_.push_back(e);
+            // Заодно ведём состояние мира: что лежит на земле и что уже срублено.
             if(e.type == (int)net::EventType::Drop){
                 liveDrops_[e.id] = e;
             } else if(e.type == (int)net::EventType::Pickup){

@@ -34,6 +34,20 @@ const BlockInfo kBlocks[(int)Block::COUNT] = {
     { "build_door_z","Дверь",      0.58f,0.44f,0.27f,    0.52f,0.39f,0.24f,    true,  true,  4.0f, Block::Air,       0 },
     { "cupboard",   "Шкаф",        0.60f,0.46f,0.28f,    0.53f,0.40f,0.25f,    true,  false, 3.0f, Block::Air,       0 },
     { "box",        "Ящик",        0.66f,0.52f,0.30f,    0.58f,0.45f,0.26f,    true,  false, 2.0f, Block::Air,       0 },
+    // Каменный уровень построек.
+    { "foundation_s","Фундамент (камень)",0.60f,0.60f,0.58f, 0.54f,0.54f,0.52f,  true,  false, 9.0f, Block::Air,       0 },
+    { "wall_s",     "Стена (камень)",0.60f,0.60f,0.58f,    0.54f,0.54f,0.52f,    true,  true,  9.0f, Block::Air,       0 },
+    { "wall_z_s",   "Стена (камень)",0.60f,0.60f,0.58f,    0.54f,0.54f,0.52f,    true,  true,  9.0f, Block::Air,       0 },
+    { "floor_s",    "Потолок (камень)",0.60f,0.60f,0.58f,  0.54f,0.54f,0.52f,    true,  true,  9.0f, Block::Air,       0 },
+    { "door_s",     "Дверь (камень)",0.58f,0.58f,0.56f,    0.52f,0.52f,0.50f,    true,  true,  8.0f, Block::Air,       0 },
+    { "door_z_s",   "Дверь (камень)",0.58f,0.58f,0.56f,    0.52f,0.52f,0.50f,    true,  true,  8.0f, Block::Air,       0 },
+    // Металлический уровень: самый прочный.
+    { "foundation_i","Фундамент (металл)",0.70f,0.72f,0.76f,0.62f,0.64f,0.68f,   true,  false, 16.0f, Block::Air,      0 },
+    { "wall_i",     "Стена (металл)",0.70f,0.72f,0.76f,    0.62f,0.64f,0.68f,    true,  true,  16.0f, Block::Air,      0 },
+    { "wall_z_i",   "Стена (металл)",0.70f,0.72f,0.76f,    0.62f,0.64f,0.68f,    true,  true,  16.0f, Block::Air,      0 },
+    { "floor_i",    "Потолок (металл)",0.70f,0.72f,0.76f,  0.62f,0.64f,0.68f,    true,  true,  16.0f, Block::Air,      0 },
+    { "door_i",     "Дверь (металл)",0.68f,0.70f,0.74f,    0.60f,0.62f,0.66f,    true,  true,  15.0f, Block::Air,      0 },
+    { "door_z_i",   "Дверь (металл)",0.68f,0.70f,0.74f,    0.60f,0.62f,0.66f,    true,  true,  15.0f, Block::Air,      0 },
 };
 } // namespace
 
@@ -60,31 +74,58 @@ bool isHarvestable(Block b){
 
 int thinAxisOf(Block b){
     switch(b){
-        case Block::BuildWall:
-        case Block::BuildDoor:  return 1;   // пластина поперёк X
-        case Block::BuildWallZ:
-        case Block::BuildDoorZ: return 3;   // пластина поперёк Z
-        case Block::BuildFloor: return 2;   // крыша — пластина поперёк Y
-        default:                return 0;
+        case Block::BuildWall:      case Block::BuildWallStone:  case Block::BuildWallIron:
+        case Block::BuildDoor:      case Block::BuildDoorStone:  case Block::BuildDoorIron:
+            return 1;   // пластина поперёк X
+        case Block::BuildWallZ:     case Block::BuildWallZStone: case Block::BuildWallZIron:
+        case Block::BuildDoorZ:     case Block::BuildDoorZStone: case Block::BuildDoorZIron:
+            return 3;   // пластина поперёк Z
+        case Block::BuildFloor:     case Block::BuildFloorStone: case Block::BuildFloorIron:
+            return 2;   // крыша — пластина поперёк Y
+        default:
+            return 0;
     }
 }
 
+int buildTierOf(Block b){
+    int i = (int)b;
+    if(i >= (int)Block::FoundationIron && i <= (int)Block::BuildDoorZIron) return 2;
+    if(i >= (int)Block::FoundationStone && i <= (int)Block::BuildDoorZStone) return 1;
+    return 0;
+}
+
+Block buildBlockForTier(Block b, int tier){
+    // Внутри уровня детали идут в одном порядке, поэтому достаточно сдвинуть номер на
+    // начало нужного набора.
+    int i = (int)b;
+    int base;
+    if(i >= (int)Block::FoundationIron && i <= (int)Block::BuildDoorZIron)
+        base = i - (int)Block::FoundationIron;
+    else if(i >= (int)Block::FoundationStone && i <= (int)Block::BuildDoorZStone)
+        base = i - (int)Block::FoundationStone;
+    else if(i >= (int)Block::Foundation && i <= (int)Block::BuildDoorZ)
+        base = i - (int)Block::Foundation;
+    else
+        return b;                       // это не деталь дома
+    if(tier <= 0) return (Block)((int)Block::Foundation + base);
+    if(tier == 1) return (Block)((int)Block::FoundationStone + base);
+    return (Block)((int)Block::FoundationIron + base);
+}
+
 bool isBuildBlock(Block b){
+    int i = (int)b;
+    if(i >= (int)Block::Foundation && i <= (int)Block::BuildDoorZ) return true;
+    if(i >= (int)Block::FoundationStone && i <= (int)Block::BuildDoorZIron) return true;
+    return b == Block::Cupboard || b == Block::Box;
+}
+
+bool isDoorBlock(Block b){
     switch(b){
-        case Block::Foundation:
-        case Block::BuildWall:
-        case Block::BuildWallZ:
-        case Block::BuildFloor:
-        case Block::BuildDoor:
-        case Block::BuildDoorZ:
-        case Block::Cupboard:
-        case Block::Box:
+        case Block::BuildDoor:      case Block::BuildDoorZ:
+        case Block::BuildDoorStone: case Block::BuildDoorZStone:
+        case Block::BuildDoorIron:  case Block::BuildDoorZIron:
             return true;
         default:
             return false;
     }
-}
-
-bool isDoorBlock(Block b){
-    return b == Block::BuildDoor || b == Block::BuildDoorZ;
 }

@@ -24,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Какое окно открыто поверх игры.
@@ -117,6 +118,7 @@ private:
     int  authField_ = 0;          // 0 — ник, 1 — пароль
     bool authBusy_ = false;
     bool forceAuthScreen_ = false;   // ключ --auth: показать экран входа на снимке
+    bool demoHouse_ = false;         // ключ --demohouse: стенд построек всех трёх уровней
     bool adminMode_ = false;      // ник AdminTester: ресурсы бесконечны
     float adminRefillTimer_ = 0.0f;
     void renderAuth();
@@ -124,7 +126,6 @@ private:
     void authFieldRect(int i, float& x, float& y, float& w, float& h) const;
     void authButtonRect(int i, float& x, float& y, float& w, float& h) const;
     void authSubmit(bool registerNew);
-    void authPlayOffline();
     static bool nickAllowed(const std::string& nick);
     void loadProfile();
     void saveProfile();
@@ -183,14 +184,20 @@ private:
         Vec3 pos{}, vel{};
         float fuse = 3.0f;
         float spin = 0.0f;
+        // Ракета летит прямо и рвётся о первое препятствие, граната — по дуге и по
+        // запалу. Всё остальное у них общее, поэтому это один список, а не два.
+        bool  rocket = false;
+        int   buildDamage = 50;
     };
     std::vector<Grenade> grenades_;
     void throwGrenade();
+    void fireRocket();
+    void fireRifle();
     void updateGrenades(float dt);
     void renderGrenades(const Mat4& view, const Mat4& proj);
     // Взрыв в точке: урон постройкам, игрокам и себе. remote — взрыв пришёл по сети,
     // тогда постройки уже посчитал тот, кто бросал.
-    void explode(Vec3 at, int maxDamage, bool remote);
+    void explode(Vec3 at, int maxDamage, bool remote, int buildDamage = 50);
     struct RemoteView {
         int id = 0;
         std::string name;
@@ -312,13 +319,38 @@ private:
         int sx = 1, sy = 1, sz = 1;   // размеры в блоках
         int health = 100;
         bool open = false;            // только для двери
+        // Хозяин детали. Дверь открывает только он: иначе в чужой дом заходят как к
+        // себе, и весь смысл рейда пропадает.
+        std::string owner;
     };
     std::vector<BuildPiece> pieces_;
     static const int PIECE_MAX_HEALTH = 100;
+    // Прочность по уровню: дерево 100, камень 200, железо 400.
+    static int pieceMaxHealth(int tier){ return tier <= 0 ? 100 : (tier == 1 ? 200 : 400); }
+    // Улучшение киянкой: цена одного шага и ресурс, которым платят.
+    static const int UPGRADE_COST = 40;
+    // Улучшить деталь под прицелом на уровень вверх. Возвращает текст для игрока.
+    bool upgradePieceAimed();
+    // Снести киянкой свою деталь под прицелом (шкаф для этого не нужен).
+    bool demolishPieceAimed();
+    // Короткая подсказка в центре экрана: чем ответила киянка, шкаф или дверь.
+    std::string buildNotice_;
+    float buildNoticeAge_ = 99.0f;
+    void notice(const std::string& text){ buildNotice_ = text; buildNoticeAge_ = 0.0f; }
     void pieceFootprint(BuildPart part, Block block, int& sx, int& sy, int& sz) const;
     int  pieceIndexAt(int x, int y, int z) const;
     void fillPieceCells(const BuildPiece& p, bool put);
     void hitBuildPiece(Block block, int x, int y, int z);
+    // ---- Чужие постройки. Их строил другой клиент, и в нашем реестре деталей их нет:
+    // по сети едут только блоки. Чтобы рейд вообще работал, урон по чужой детали
+    // копится по её СВЯЗНОЙ группе клеток — так ракета разбирает чужую стену целиком,
+    // а не выгрызает по кубику, и прочность уровня при этом честно учитывается.
+    std::unordered_map<long long, int> foreignDamage_;
+    // Собирает связную группу одинаковых блоков постройки вокруг клетки (не больше 64).
+    // Возвращает false, если клетка принадлежит нашей детали или это не постройка.
+    bool foreignGroup(int x, int y, int z, std::vector<long long>& cells, Block& block) const;
+    // Урон по чужим постройкам в радиусе. Возвращает, сколько групп задело.
+    int  damageForeignBuild(Vec3 at, float radius, int damage);
     // Дверь открывается и закрывается кнопкой «рука». Открытая дверь исчезает из мира,
     // поэтому закрывают её по близости, а не по прицелу — целиться уже не во что.
     bool toggleDoorNear();
@@ -327,7 +359,10 @@ private:
     // ---- Шкаф и ящики. Шкаф держит оплату за дом, ящик — просто хранилище.
     static const int BOX_SLOTS = 12;
     struct WorldBox { int x = 0, y = 0, z = 0; ItemStack slots[BOX_SLOTS]; };
-    struct WorldCupboard { int x = 0, y = 0, z = 0; int wood = 0; };
+    // В шкафу теперь три ресурса: деревянные детали дома съедают дерево, каменные —
+    // камень, железные — металл. Иначе улучшенный дом стоил бы столько же, сколько
+    // сарай из досок.
+    struct WorldCupboard { int x = 0, y = 0, z = 0; int wood = 0, stone = 0, metal = 0; };
     std::vector<WorldBox> boxes_;
     std::vector<WorldCupboard> cupboards_;
     int openBox_ = -1, openCupboard_ = -1;
@@ -339,11 +374,15 @@ private:
     void renderCupboard();
     bool handleCupboardTouch(float x, float y);
     void cupboardButtonRect(int i, float& x, float& y, float& w, float& h) const;
+    // Аренда: по 10 единиц за деталь, но каждому уровню — свой ресурс.
+    void upkeepPerDay(int& wood, int& stone, int& metal) const;
     int  upkeepPerDay() const { return (int)pieces_.size() * 10; }
     void  renderBuildGhost(const Mat4& view, const Mat4& proj);
     void  placeBuildPart();
     bool  handleFurnaceTouch(float x, float y);
     void  furnaceButtonRect(int i, float& x, float& y, float& w, float& h) const;
+    void  furnaceGeometry(float& px, float& py, float& pw, float& ph) const;
+    void  furnaceBagSlotPos(int i, float& x, float& y, float& slot) const;
     bool handleItemMenuTouch(float x, float y);
     float inventoryBeltGap() const;
     void inventorySlotPos(int i, float& sx, float& sy) const;
@@ -355,6 +394,10 @@ private:
     GLuint texCraft_ = 0, texMap_ = 0, texSettings_ = 0, texClose_ = 0;
     GLuint texJump_ = 0, texRun_ = 0, texCrouch_ = 0;
     GLuint texBlood_ = 0;
+    // Индикатор нанесённого урона: крупная цифра со значком в центре экрана.
+    GLuint texDamage_ = 0;
+    // Вспышка выстрела: сколько секунд назад стреляли из винтовки.
+    float  shotFlash_ = 99.0f;
     GLuint texMapMark_ = 0, texDeathMark_ = 0;
     Vec2  deathMark_{0,0};
     bool  deathMarkValid_ = false;
@@ -362,6 +405,8 @@ private:
     GLuint texCatFoundation_ = 0, texCatFloor_ = 0, texCatDoor_ = 0, texCatWall_ = 0;
     // Метка попадания, значок «открыть» у двери, огонь в печи и значок радиации.
     GLuint texHitMark_ = 0, texOpen_ = 0, texFire_ = 0, texRadiation_ = 0;
+    // Маркеры пинга: жёлтый после 200 мс, красный после 300.
+    GLuint texPingMid_ = 0, texPingHigh_ = 0;
     float  hitMarkAge_ = 99.0f;   // сколько секунд назад удар попал в цель
     // Значок на каждый вид предмета: индекс — ItemType. Чему картинки нет, тот
     // рисуется цветом.

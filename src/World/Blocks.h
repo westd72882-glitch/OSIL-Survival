@@ -36,6 +36,11 @@ enum class Block : uint8_t {
     BuildDoorZ, // та же дверь, но тонкая поперёк Z
     Cupboard,   // шкаф: в него платят за дом, иначе дом гниёт
     Box,        // ящик: в нём хранят ресурсы
+    // Улучшенные детали построек. Те же формы, что и деревянные, но прочнее:
+    // камень 200 хп, металл 400. Порядок внутри уровня повторяет деревянный —
+    // на этом держится пересчёт buildBlockForTier.
+    FoundationStone, BuildWallStone, BuildWallZStone, BuildFloorStone, BuildDoorStone, BuildDoorZStone,
+    FoundationIron,  BuildWallIron,  BuildWallZIron,  BuildFloorIron,  BuildDoorIron,  BuildDoorZIron,
     COUNT
 };
 
@@ -65,6 +70,11 @@ int thinAxisOf(Block b);
 bool isBuildBlock(Block b);
 // Дверь — единственная часть, которую открывают и закрывают.
 bool isDoorBlock(Block b);
+// Уровень постройки: 0 — дерево, 1 — камень, 2 — металл. У них разная прочность и
+// разная цена улучшения.
+int  buildTierOf(Block b);
+// Тот же тип детали, но нужного уровня: дерево -> камень -> металл.
+Block buildBlockForTier(Block b, int tier);
 inline bool blockIsSolid(Block b){ return blockInfo(b).solid; }
 inline bool blockIsTransparent(Block b){ return blockInfo(b).transparent; }
 inline bool blockIsAir(Block b){ return b == Block::Air; }

@@ -310,3 +310,31 @@ TEST(выбитая_жила_восстанавливается_а_постро�
     vox.updateRespawn(2000.0f);
     CHECK(vox.blockAt(fx + 40, py, fz + 40) == Block::Planks);
 }
+
+// ---- Уровни построек: дерево -> камень -> железо. Таблица блоков и пересчёт уровня
+// связаны только порядком строк в enum, поэтому ошибку здесь на глаз не увидеть: она
+// проявится тем, что улучшенная стена вдруг станет дверью.
+TEST(уровни_построек_пересчитываются_туда_и_обратно){
+    const Block wood[6] = { Block::Foundation, Block::BuildWall, Block::BuildWallZ,
+                            Block::BuildFloor, Block::BuildDoor, Block::BuildDoorZ };
+    for(Block b : wood){
+        CHECK(buildTierOf(b) == 0);
+        Block stone = buildBlockForTier(b, 1);
+        Block iron  = buildBlockForTier(b, 2);
+        CHECK(buildTierOf(stone) == 1);
+        CHECK(buildTierOf(iron) == 2);
+        // Форма детали от уровня не зависит: тонкая пластина остаётся тонкой по той же оси.
+        CHECK(thinAxisOf(stone) == thinAxisOf(b));
+        CHECK(thinAxisOf(iron) == thinAxisOf(b));
+        CHECK(isBuildBlock(stone) && isBuildBlock(iron));
+        CHECK(isDoorBlock(stone) == isDoorBlock(b));
+        CHECK(isDoorBlock(iron) == isDoorBlock(b));
+        // И обратно: с любого уровня возвращаемся к исходному дереву.
+        CHECK(buildBlockForTier(iron, 0) == b);
+        CHECK(buildBlockForTier(stone, 0) == b);
+        CHECK(buildBlockForTier(iron, 1) == stone);
+    }
+    // Не деталь дома улучшению не поддаётся.
+    CHECK(buildBlockForTier(Block::Stone, 2) == Block::Stone);
+    CHECK(buildTierOf(Block::Box) == 0);
+}

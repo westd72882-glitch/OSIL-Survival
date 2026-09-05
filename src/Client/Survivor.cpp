@@ -108,7 +108,11 @@ void Survivor::update(const SurvivorInput& in, float dt){
     // каждому источнику: источников много (падение, холод, утопление, голод), а
     // мигнуть экраном надо одинаково.
     damageAge_ += dt;
-    if(health_ < lastHealth_ - 0.01f) damageAge_ = 0.0f;
+    if(health_ < lastHealth_ - 0.01f){
+        damageAge_ = 0.0f;
+        damageTaken_ = (int)lroundf(lastHealth_ - health_);
+        if(damageTaken_ < 1) damageTaken_ = 1;
+    }
     lastHealth_ = health_;
     if(isDead()){
         if(respawnLeft_ <= 0.0f) respawnLeft_ = 5.0f;

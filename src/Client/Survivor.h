@@ -64,6 +64,8 @@ public:
     bool isDead() const { return dead_; }
     // Сколько секунд назад игрок получил урон — по этому HUD рисует индикатор.
     float damageAge() const { return damageAge_; }
+    // Сколько здоровья сняло последним ударом — это число показывает индикатор урона.
+    int   damageTaken() const { return damageTaken_; }
     // Сколько секунд осталось до автоматического возрождения.
     float respawnLeft() const { return respawnLeft_; }
     void setAmbientRadiation(float radPerSec){ ambientRadiation_ = radPerSec; }
@@ -160,6 +162,7 @@ private:
     // Регенерация не непрерывная: +1 HP за каждые 60 секунд без единого урона.
     float regenTimer_ = 0.0f;
     float damageAge_ = 99.0f;      // время с последнего урона
+    int   damageTaken_ = 0;        // размер последнего урона, для индикатора
     float respawnLeft_ = 0.0f;     // отсчёт до возрождения после смерти
     float lastHealth_ = 100.0f;
 

@@ -31,6 +31,7 @@ enum Layer {
     LAYER_WATER,
     LAYER_CUPBOARD,
     LAYER_BOX,
+    LAYER_IRON,
     LAYER_COUNT
 };
 
@@ -52,6 +53,7 @@ const char* kLayerFiles[LAYER_COUNT] = {
     "block_water.png",
     "block_cupboard.png",
     "block_box.png",
+    "block_iron.png",
 };
 
 GLuint g_array = 0;
@@ -228,11 +230,28 @@ int blockTextureLayer(Block b){
         case Block::BuildDoor:  return LAYER_BUILD;
         case Block::Cupboard:   return LAYER_CUPBOARD;
         case Block::Box:        return LAYER_BOX;
+        // Каменный уровень построек берёт каменную текстуру, металлический — свой лист
+        // железа.
+        case Block::FoundationStone: case Block::BuildWallStone: case Block::BuildWallZStone:
+        case Block::BuildFloorStone: case Block::BuildDoorStone: case Block::BuildDoorZStone:
+            return LAYER_STONE;
+        case Block::FoundationIron: case Block::BuildWallIron: case Block::BuildWallZIron:
+        case Block::BuildFloorIron: case Block::BuildDoorIron: case Block::BuildDoorZIron:
+            return LAYER_IRON;
         default:                return LAYER_GROUND;   // песок, снег, трава, земля, жижа
     }
 }
 
 void blockTextureTint(Block b, float& r, float& g, float& bl){
+    // Металлическим постройкам холодный фильтр больше не нужен: у них своя текстура
+    // листа железа. Оставляем лёгкий синеватый отлив, чтобы металл не выглядел рыжим.
+    {
+        int i = (int)b;
+        if(i >= (int)Block::FoundationIron && i <= (int)Block::BuildDoorZIron){
+            r = 0.92f; g = 0.96f; bl = 1.04f;
+            return;
+        }
+    }
     // Фильтр поверх текстуры. Грунт один на четыре блока: пустыня — как есть, зима —
     // осветлённый в белый, равнина — светло-салатовый, земля — коричневатый.
     switch(b){

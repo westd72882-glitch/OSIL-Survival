@@ -148,6 +148,17 @@ JOBS = {
     # Новый набор из репозитория: шкаф, ящик, значок стены для ленты стройки, метка
     # попадания, кнопка «открыть» у двери, огонь и радиация.
     'item_grenade.png':  ('grenade.f1.png', 128),
+    # Оружие закрытого теста и маркеры пинга.
+    'item_revolver.png': ('Revolver_0.png', 128),
+    'item_ammo.png':     ('Magnum .44 Bullet.png', 128),
+    'item_launcher.png': ('Rocket Launcher.png', 128),
+    'item_rocket.png':   ('Rocket.png', 128),
+    'ui_ping_mid.png':   ('ping-medium.png', 96),
+    'ui_ping_high.png':  ('ping-high.png', 96),
+    # Лист железа для улучшенных построек собирается отдельной функцией (см. ниже):
+    # выложенный фрагмент металла нужно положить на стальной лист, иначе прозрачный
+    # фон картинки превращается в чёрные дыры на стене.
+
     'item_cupboard.png': ('Cupboard.png', 128),
     'item_box.png':      ('Crate.png', 128),
     'block_cupboard.png':('Cupboard.png', 256),
@@ -160,8 +171,48 @@ JOBS = {
     'menu_bg.png':       ('menu-bg-update.png', 0),            # 0 — оставить как есть
 }
 
+def make_iron_sheet(size=256):
+    # Стальной лист для железных построек: ровный прокат с лёгкой шумной зернистостью,
+    # швами по четвертям и заклёпками по углам панелей. Металлический фрагмент из
+    # набора художника кладём поверх как клеймо — целиком он не тайлится, у него
+    # прозрачный фон.
+    px = bytearray(size * size * 4)
+    for y in range(size):
+        for x in range(size):
+            # База: холодная сталь с продольным прокатом.
+            v = 118 + ((x * 73856093) ^ (y * 19349663)) % 13
+            v += int(6 * ((y % 8) - 4) / 4)
+            # Швы панелей: две полосы по горизонтали и вертикали.
+            if x % 128 < 3 or y % 128 < 3: v -= 34
+            # Заклёпки в углах панелей.
+            dx, dy = x % 128, y % 128
+            for cx, cy in ((12, 12), (116, 12), (12, 116), (116, 116)):
+                if (dx - cx) ** 2 + (dy - cy) ** 2 < 22:
+                    v += 46 if (dx - cx) + (dy - cy) < 0 else -22
+            v = max(0, min(255, v))
+            o = (y * size + x) * 4
+            px[o], px[o+1], px[o+2], px[o+3] = v, v + 2, v + 9, 255
+    # Клеймо из фрагмента: полупрозрачно, чтобы не превращаться в наклейку.
+    if os.path.exists('Metal Fragment.png'):
+        W, H, src = read_png('Metal Fragment.png')
+        stamp = resize(W, H, src, 96, 96)
+        for y in range(96):
+            for x in range(96):
+                so = (y * 96 + x) * 4
+                a = stamp[so+3] / 255.0 * 0.35
+                if a <= 0.01: continue
+                o = ((y + 80) * size + (x + 80)) * 4
+                for c in range(3):
+                    px[o+c] = int(px[o+c] * (1 - a) + stamp[so+c] * a)
+    return size, size, px
+
+
 def main():
     os.makedirs('assets', exist_ok=True)
+    W, H, px = make_iron_sheet()
+    write_png('assets/block_iron.png', W, H, px)
+    print(f'сгенерировано -> assets/block_iron.png  {W}x{H}  '
+          f'{os.path.getsize("assets/block_iron.png")//1024} КБ')
     for dst, (src, size) in JOBS.items():
         if not os.path.exists(src):
             print('нет исходника:', src); continue

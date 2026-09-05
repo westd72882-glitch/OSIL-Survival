@@ -57,6 +57,19 @@ const Recipe kRecipes[] = {
     { ItemType::Cupboard, 1, ItemType::Wood, 100, ItemType::None, 0,
       "Шкаф дома. В него кладут дерево на аренду: 10 дерева в сутки за каждую деталь "
       "постройки. Не заплатил — дом начинает гнить." },
+    { ItemType::Hammer, 1, ItemType::Wood, 30, ItemType::Stone, 15,
+      "Киянка. Удар по своей детали дома сносит её без всякого шкафа, а кнопка «рука» "
+      "улучшает деталь: дерево -> камень (40 камня, 200 прочности) -> железо "
+      "(40 металла, 400 прочности)." },
+    { ItemType::Rifle, 1, ItemType::MetalFrag, 80, ItemType::Wood, 40,
+      "Винтовка. Бьёт далеко и точно: 35 здоровья за попадание. Патроны отдельно." },
+    { ItemType::RifleAmmo, 10, ItemType::Gunpowder, 10, ItemType::MetalFrag, 5,
+      "Винтовочные патроны, десять штук за раз." },
+    { ItemType::Launcher, 1, ItemType::MetalFrag, 150, ItemType::Wood, 50,
+      "Ракетница. Оружие рейда: ракета из неё сносит 100 прочности постройке." },
+    { ItemType::Rocket, 1, ItemType::Gunpowder, 60, ItemType::MetalFrag, 40,
+      "Ракета. Летит прямо, взрывается о первое препятствие: 100 прочности дому и до "
+      "150 здоровья тем, кто рядом." },
 };
 const int kRecipeCount = (int)(sizeof(kRecipes)/sizeof(kRecipes[0]));
 
@@ -339,42 +352,72 @@ void GameClient::renderBuildTargetInfo(){
     int idx = pieceIndexAt(t.x, t.y, t.z);
     if(idx < 0) return;
     const BuildPiece& p = pieces_[(size_t)idx];
-    if(p.health >= 95) return;      // целая деталь молчит
+    int maxHp = pieceMaxHealth(buildTierOf(p.block));
+    // Целая своя деталь молчит. С киянкой в руках — наоборот, показываем всегда: по
+    // этой строке и выбирают, что улучшать.
+    bool withHammer = !inventory_.selectedStack().empty() &&
+                      inventory_.selectedStack().type == ItemType::Hammer;
+    if(p.health >= maxHp - 5 && !withHammer) return;
 
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     float cx = (float)SCR_W * 0.5f, cy = (float)SCR_H * 0.5f;
     float w = 190.0f * s, h = 14.0f * s;
     float y = cy + 54.0f * s;
     drawUIRect(cx - w * 0.5f, y, w, h, 0, 0.06f, 0.06f, 0.07f, 0.60f, false);
-    float k = clampf((float)p.health / (float)PIECE_MAX_HEALTH, 0.0f, 1.0f);
+    float k = clampf((float)p.health / (float)maxHp, 0.0f, 1.0f);
     drawUIRect(cx - w * 0.5f, y, w * k, h, 0,
                k > 0.5f ? 0.55f : 0.80f, k > 0.5f ? 0.72f : 0.42f, 0.32f, 0.85f, false);
     char buf[96];
-    snprintf(buf, sizeof(buf), "%s  %d/%d", blockName(p.block), p.health, PIECE_MAX_HEALTH);
+    snprintf(buf, sizeof(buf), "%s  %d/%d", blockName(p.block), p.health, maxHp);
     drawTextCentered(cx, y + h + 3.0f * s, 16.0f * s, buf, 1, 1, 1, 0.92f);
+    if(withHammer){
+        int tier = buildTierOf(p.block);
+        if(!p.owner.empty() && p.owner != playerName_)
+            snprintf(buf, sizeof(buf), "Чужая постройка: %s", p.owner.c_str());
+        else if(tier >= 2)
+            snprintf(buf, sizeof(buf), "Железо — предел прочности");
+        else
+            snprintf(buf, sizeof(buf), "«Рука» — улучшить: %d %s      удар — снести",
+                     UPGRADE_COST, tier == 0 ? "камня" : "металла");
+        drawTextCentered(cx, y + h + 22.0f * s, 15.0f * s, buf, 1, 1, 1, 0.72f);
+    }
 }
 
 // ---- Аренда дома. Раз в игровые сутки за каждую деталь дома со шкафа списывается
-// 10 дерева. Не заплатил — дом начинает гнить: прочность деталей падает, и в конце
+// 10 единиц ЕЁ материала: деревянная берёт дерево, каменная — камень, железная —
+// металл. Не заплатил — дом начинает гнить: прочность деталей падает, и в конце
 // концов постройка разваливается сама.
+void GameClient::upkeepPerDay(int& wood, int& stone, int& metal) const {
+    wood = stone = metal = 0;
+    for(const BuildPiece& p : pieces_){
+        switch(buildTierOf(p.block)){
+            case 2:  metal += 10; break;
+            case 1:  stone += 10; break;
+            default: wood  += 10; break;
+        }
+    }
+}
+
 void GameClient::updateUpkeep(){
     int day = env_->dayNumber();
     if(day == lastUpkeepDay_) return;
     lastUpkeepDay_ = day;
     if(pieces_.empty()) return;
 
-    int need = upkeepPerDay();
+    int needW, needS, needM;
+    upkeepPerDay(needW, needS, needM);
+    int need = needW + needS + needM;
     int paid = 0;
     for(WorldCupboard& c : cupboards_){
-        if(paid >= need) break;
-        int take = need - paid;
-        if(take > c.wood) take = c.wood;
-        c.wood -= take;
-        paid += take;
+        int takeW = (needW < c.wood)  ? needW : c.wood;   c.wood  -= takeW; needW -= takeW;
+        int takeS = (needS < c.stone) ? needS : c.stone;  c.stone -= takeS; needS -= takeS;
+        int takeM = (needM < c.metal) ? needM : c.metal;  c.metal -= takeM; needM -= takeM;
+        paid += takeW + takeS + takeM;
+        if(needW + needS + needM <= 0) break;
     }
     char buf[128];
     if(paid >= need){
-        snprintf(buf, sizeof(buf), "Аренда дома оплачена: -%d дерева", need);
+        snprintf(buf, sizeof(buf), "Аренда дома оплачена: -%d материалов", need);
         SDL_Log("%s", buf);
         return;
     }
@@ -389,7 +432,7 @@ void GameClient::updateUpkeep(){
             pieces_.erase(pieces_.begin() + (long)i);
         } else ++i;
     }
-    snprintf(buf, sizeof(buf), "Дом гниёт: не хватило %d дерева в шкафу", shortfall);
+    snprintf(buf, sizeof(buf), "Дом гниёт: не хватило %d материалов в шкафу", shortfall);
     SDL_Log("%s", buf);
 }
 
@@ -522,15 +565,17 @@ bool GameClient::handleBoxTouch(float x, float y){
 }
 
 // ---- Окно шкафа: сколько в нём дерева, сколько стоит дом в сутки и кнопки оплаты.
+// Кнопок теперь четыре: дерево, камень, металл и «закрыть». Кладут сразу всё, что
+// есть в рюкзаке, — на телефоне докладывать по десятке было мучением.
 void GameClient::cupboardButtonRect(int i, float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     float pw = clampf((float)SCR_W * 0.42f, 380.0f, 620.0f);
     float px = ((float)SCR_W - pw) * 0.5f;
-    float py = (float)SCR_H * 0.26f;
+    float py = (float)SCR_H * 0.20f;
     w = pw - 40.0f * s;
     h = 50.0f * s;
     x = px + 20.0f * s;
-    y = py + 150.0f * s + (float)i * (h + 10.0f * s);
+    y = py + 196.0f * s + (float)i * (h + 10.0f * s);
 }
 
 void GameClient::renderCupboard(){
@@ -538,29 +583,40 @@ void GameClient::renderCupboard(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     const WorldCupboard& c = cupboards_[(size_t)openCupboard_];
     float pw = clampf((float)SCR_W * 0.42f, 380.0f, 620.0f);
-    float ph = 380.0f * s;
-    float px = ((float)SCR_W - pw) * 0.5f, py = (float)SCR_H * 0.26f;
+    float ph = 470.0f * s;
+    float px = ((float)SCR_W - pw) * 0.5f, py = (float)SCR_H * 0.20f;
 
     drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.05f, 0.05f, 0.06f, 0.30f, false);
     drawUIRect(px, py, pw, ph, 0, 0.22f, 0.23f, 0.25f, 0.72f, false);
     uiThinFrame(px, py, pw, ph, UI_LINE, 0.5f);
     drawTextCentered(px + pw * 0.5f, py + 16.0f * s, 27.0f * s, "ШКАФ", 1, 1, 1, 0.96f);
 
+    int needW, needS, needM;
+    upkeepPerDay(needW, needS, needM);
     char buf[160];
-    snprintf(buf, sizeof(buf), "В шкафу дерева: %d", c.wood);
-    drawText(px + 20.0f * s, py + 62.0f * s, 20.0f * s, buf, 1, 1, 1, 0.92f);
     snprintf(buf, sizeof(buf), "Деталей дома: %d", (int)pieces_.size());
-    drawText(px + 20.0f * s, py + 90.0f * s, 20.0f * s, buf, 1, 1, 1, 0.92f);
-    snprintf(buf, sizeof(buf), "Аренда: %d дерева в сутки", upkeepPerDay());
-    bool enough = c.wood >= upkeepPerDay();
-    drawText(px + 20.0f * s, py + 118.0f * s, 20.0f * s, buf,
-             enough ? 0.60f : 0.90f, enough ? 0.85f : 0.40f, 0.40f, 0.95f);
+    drawText(px + 20.0f * s, py + 54.0f * s, 20.0f * s, buf, 1, 1, 1, 0.92f);
 
-    const char* labels[3] = { "ПОЛОЖИТЬ 10 ДЕРЕВА", "ПОЛОЖИТЬ 100 ДЕРЕВА", "ЗАКРЫТЬ" };
+    // Три строки «есть / надо в сутки»: сразу видно, какого материала не хватит к утру.
+    const char* names[3] = { "Дерево", "Камень", "Металл" };
+    int have[3] = { c.wood, c.stone, c.metal };
+    int need[3] = { needW, needS, needM };
     for(int i = 0; i < 3; ++i){
+        bool enough = have[i] >= need[i];
+        snprintf(buf, sizeof(buf), "%s: %d      аренда %d в сутки", names[i], have[i], need[i]);
+        drawText(px + 20.0f * s, py + (86.0f + 28.0f * (float)i) * s, 20.0f * s, buf,
+                 enough ? 0.60f : 0.90f, enough ? 0.85f : 0.40f, 0.40f, 0.95f);
+    }
+    drawText(px + 20.0f * s, py + 172.0f * s, 16.0f * s,
+             "Дереву — дерево, камню — камень, железу — металл.", 1, 1, 1, 0.55f);
+
+    const char* labels[4] = { "ЗАСЫПАТЬ ВСЁ ДЕРЕВО", "ЗАСЫПАТЬ ВЕСЬ КАМЕНЬ",
+                              "ЗАСЫПАТЬ ВЕСЬ МЕТАЛЛ", "ЗАКРЫТЬ" };
+    ItemType pay[3] = { ItemType::Wood, ItemType::Stone, ItemType::MetalFrag };
+    for(int i = 0; i < 4; ++i){
         float bx, by, bw, bh;
         cupboardButtonRect(i, bx, by, bw, bh);
-        bool can = (i == 2) || inventory_.countOf(ItemType::Wood) >= (i == 0 ? 10 : 100);
+        bool can = (i == 3) || inventory_.countOf(pay[i]) > 0;
         drawUIRect(bx, by, bw, bh, 0, 0.88f, 0.87f, 0.83f, can ? 0.22f : 0.10f, false);
         uiThinFrame(bx, by, bw, bh, can ? UI_ACCENT : UI_LINE, can ? 0.8f : 0.35f);
         drawTextCentered(bx + bw * 0.5f, by + bh * 0.28f, 20.0f * s, labels[i],
@@ -571,17 +627,17 @@ void GameClient::renderCupboard(){
 bool GameClient::handleCupboardTouch(float x, float y){
     if(openCupboard_ < 0 || openCupboard_ >= (int)cupboards_.size()){ overlay_ = Overlay::None; return true; }
     WorldCupboard& c = cupboards_[(size_t)openCupboard_];
-    for(int i = 0; i < 3; ++i){
+    ItemType pay[3] = { ItemType::Wood, ItemType::Stone, ItemType::MetalFrag };
+    int* store[3] = { &c.wood, &c.stone, &c.metal };
+    for(int i = 0; i < 4; ++i){
         float bx, by, bw, bh;
         cupboardButtonRect(i, bx, by, bw, bh);
         if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
-        if(i == 2){ overlay_ = Overlay::None; openCupboard_ = -1; return true; }
-        int want = (i == 0) ? 10 : 100;
-        int have = inventory_.countOf(ItemType::Wood);
-        if(have < want) want = have;
-        if(want > 0){
-            inventory_.remove(ItemType::Wood, want);
-            c.wood += want;
+        if(i == 3){ overlay_ = Overlay::None; openCupboard_ = -1; return true; }
+        int have = inventory_.countOf(pay[i]);
+        if(have > 0){
+            inventory_.remove(pay[i], have);
+            *store[i] += have;
         }
         return true;
     }
@@ -741,30 +797,98 @@ void GameClient::throwGrenade(){
     inventory_.consumeSelected();
 }
 
+// ---- Ракетница. Оружие рейда: ракета летит прямо и рвёт постройку на 100 прочности,
+// то есть деревянная стена уходит с одной ракеты, а железная держит четыре.
+void GameClient::fireRocket(){
+    if(inventory_.countOf(ItemType::Rocket) < 1){
+        notice("Нет ракет");
+        return;
+    }
+    if(!adminMode_) inventory_.remove(ItemType::Rocket, 1);
+    Grenade g;
+    Vec3 eye = player_->eyePosition();
+    Vec3 dir = player_->lookDirection();
+    g.pos = Vec3{ eye.x + dir.x * 0.8f, eye.y + dir.y * 0.8f, eye.z + dir.z * 0.8f };
+    g.vel = Vec3{ dir.x * 34.0f, dir.y * 34.0f, dir.z * 34.0f };
+    g.fuse = 6.0f;          // не долетела ни до чего — сгорает сама
+    g.rocket = true;
+    g.buildDamage = 100;
+    grenades_.push_back(g);
+}
+
+// ---- Винтовка. Луч, а не снаряд: на дистанции боя разница незаметна, зато попадание
+// считается тем же кодом, что и удар в упор.
+void GameClient::fireRifle(){
+    if(inventory_.countOf(ItemType::RifleAmmo) < 1){
+        notice("Нет патронов");
+        return;
+    }
+    if(!adminMode_) inventory_.remove(ItemType::RifleAmmo, 1);
+    shotFlash_ = 0.0f;
+    // Отдача: ствол подбрасывает вверх, и это же движение видно в руке.
+    pitch_ = clampf(pitch_ + 0.9f, -89.0f, 89.0f);
+    int target = remotePlayerInFront(90.0f);
+    if(target == 0) return;
+    const int damage = 35;
+    netSendEvent(net::EventType::Hit, target, net_.playerId(), damage, player_->position());
+    hitMarkAge_ = 0.0f;
+    DamageMark mark;
+    mark.target = target;
+    mark.damage = damage;
+    damageMarks_.push_back(mark);
+}
+
 void GameClient::updateGrenades(float dt){
     for(size_t i = 0; i < grenades_.size(); ){
         Grenade& g = grenades_[i];
         g.fuse -= dt;
         g.spin += dt * 6.0f;
-        g.vel.y -= 20.0f * dt;
+        // Ракету держит собственный двигатель — она почти не проседает; гранату тянет
+        // вниз как брошенный камень.
+        g.vel.y -= (g.rocket ? 1.5f : 20.0f) * dt;
         Vec3 next{ g.pos.x + g.vel.x * dt, g.pos.y + g.vel.y * dt, g.pos.z + g.vel.z * dt };
+        bool wall = voxels_->isSolidAt((int)floorf(next.x), (int)floorf(next.y), (int)floorf(next.z));
+        if(wall && g.rocket){
+            // Ракета взрывается на месте попадания — за этим её и берут на рейд.
+            Vec3 at = g.pos;
+            int dmg = g.buildDamage;
+            grenades_.erase(grenades_.begin() + (long)i);
+            explode(at, 150, false, dmg);
+            continue;
+        }
         // Отскок от твёрдого: граната не проваливается сквозь стены и пол.
-        if(voxels_->isSolidAt((int)floorf(next.x), (int)floorf(next.y), (int)floorf(next.z))){
+        if(wall){
             g.vel = Vec3{ g.vel.x * -0.35f, g.vel.y * -0.35f, g.vel.z * -0.35f };
             next = g.pos;
         }
         g.pos = next;
+        // Ракета летит и по чужой фигуре: попал в игрока — рвётся о него.
+        if(g.rocket){
+            bool hitBody = false;
+            for(const RemoteView& v : remote_){
+                float dx = v.pos.x - g.pos.x, dy = v.pos.y + 0.9f - g.pos.y, dz = v.pos.z - g.pos.z;
+                if(dx * dx + dy * dy + dz * dz < 0.9f * 0.9f){ hitBody = true; break; }
+            }
+            if(hitBody){
+                Vec3 at = g.pos;
+                int dmg = g.buildDamage;
+                grenades_.erase(grenades_.begin() + (long)i);
+                explode(at, 150, false, dmg);
+                continue;
+            }
+        }
         if(g.fuse <= 0.0f || g.pos.y < -8.0f){
             Vec3 at = g.pos;
+            int dmg = g.buildDamage;
             grenades_.erase(grenades_.begin() + (long)i);
-            explode(at, 150, false);
+            explode(at, 150, false, dmg);
             continue;
         }
         ++i;
     }
 }
 
-void GameClient::explode(Vec3 at, int maxDamage, bool remote){
+void GameClient::explode(Vec3 at, int maxDamage, bool remote, int buildDamage){
     // Осколки и вспышка: взрыв должен быть виден и слышен всем, кто рядом.
     for(int i = 0; i < 40; ++i){
         Particle p;
@@ -780,8 +904,8 @@ void GameClient::explode(Vec3 at, int maxDamage, bool remote){
     }
     hitMarkAge_ = 0.0f;
 
-    // Постройки: минус 50 прочности всему, что в радиусе. Считает тот, кто бросил, —
-    // у остальных это приедет обычными правками блоков.
+    // Постройки: минус прочность всему, что в радиусе (граната 50, ракета 100).
+    // Считает тот, кто бросил, — у остальных это приедет обычными правками блоков.
     if(!remote){
         const float BUILD_RADIUS = 4.5f;
         for(size_t i = 0; i < pieces_.size(); ){
@@ -790,12 +914,15 @@ void GameClient::explode(Vec3 at, int maxDamage, bool remote){
                   cz = (float)p.z + p.sz * 0.5f;
             float dx = cx - at.x, dy = cy - at.y, dz = cz - at.z;
             if(sqrtf(dx * dx + dy * dy + dz * dz) > BUILD_RADIUS){ ++i; continue; }
-            pieces_[i].health -= 50;
+            pieces_[i].health -= buildDamage;
             if(pieces_[i].health <= 0){
                 fillPieceCells(pieces_[i], false);
                 pieces_.erase(pieces_.begin() + (long)i);
             } else ++i;
         }
+        // И по чужим домам — иначе ракетницей нельзя было бы рейдить: чужие детали в
+        // нашем реестре не лежат, они приехали по сети обычными блоками.
+        damageForeignBuild(at, BUILD_RADIUS, buildDamage);
         netSendEvent(net::EventType::Explosion, 0, 0, maxDamage, at);
     }
 
@@ -826,6 +953,7 @@ void GameClient::renderGrenades(const Mat4& view, const Mat4& proj){
     glUniformMatrix4fv(voxelProjLoc, 1, GL_FALSE, proj.m);
     glUniform1f(voxelAlphaLoc, 1.0f);
     bindBlockTextures();
+    glDisable(GL_CULL_FACE);
     glBindVertexArray(partVao_);
     glBindBuffer(GL_ARRAY_BUFFER, partVbo_);
     size_t maxVerts = 64 * 36;
@@ -833,6 +961,7 @@ void GameClient::renderGrenades(const Mat4& view, const Mat4& proj){
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(verts.size() * sizeof(VoxelVertex)), verts.data());
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
     glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
 }
 
 // ==================== ДРУГИЕ ИГРОКИ ====================
@@ -1551,7 +1680,10 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     bool axe = !sel.empty() && sel.type == ItemType::Axe;
     bool torch = !sel.empty() && sel.type == ItemType::Torch;
     bool grenade = !sel.empty() && sel.type == ItemType::Grenade;
-    if(!axe && !torch && !grenade) return;
+    bool hammer = !sel.empty() && sel.type == ItemType::Hammer;
+    bool rifle = !sel.empty() && sel.type == ItemType::Rifle;
+    bool launcher = !sel.empty() && sel.type == ItemType::Launcher;
+    if(!axe && !torch && !grenade && !hammer && !rifle && !launcher) return;
 
     heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
     float bob = (player_->speed() > 0.4f && player_->onGround())
@@ -1583,37 +1715,75 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
                  forward.z * ct - up.z * st };
 
     // Бруски инструмента в своей плоской системе: x поперёк рукояти, y вдоль неё.
-    struct Part { float cx, cy, hx, hy, hz; Block block; };
+    // yaw — поворот отдельной детали вокруг рукояти: так каменная голова топора
+    // разворачивается лезвием вбок, а не плашмя к игроку.
+    // cz — вынос детали ВПЕРЁД от кисти. Он нужен стволам: винтовка и ракетница лежат
+    // вдоль взгляда, а не поперёк, и без выноса вся труба сидела бы в кулаке.
+    struct Part { float cx, cy, cz, hx, hy, hz; Block block; float yaw; };
     // Пропорции сняты с картинок предметов. Топор: длинное топорище и широкая каменная
     // голова, насаженная СЛЕВА, чтобы её было видно. Факел: палка с горящим навершием.
     // Кисть — квадратный брусок у нижнего конца рукояти.
+    // Каменная голова и лезвие развёрнуты вокруг рукояти на 80 градусов вправо.
+    const float HEAD_YAW = 1.396f;   // 80 градусов
     const Part axeParts[] = {
-        { 0.000f, -0.150f, 0.0400f, 0.045f, 0.0400f, Block::Sand },   // кисть
-        { 0.000f, -0.070f, 0.0135f, 0.115f, 0.0135f, Block::Wood },   // топорище, низ
-        { 0.000f,  0.075f, 0.0125f, 0.075f, 0.0125f, Block::Wood },   // топорище, верх
-        { -0.008f, 0.152f, 0.0195f, 0.024f, 0.0175f, Block::Wood },   // перевязка у обуха
-        { -0.052f, 0.160f, 0.0470f, 0.039f, 0.0180f, Block::Stone },  // каменная голова
-        { -0.108f, 0.162f, 0.0180f, 0.029f, 0.0135f, Block::Stone },  // скошенное лезвие
+        { 0.000f, -0.150f, 0.000f, 0.0400f, 0.045f, 0.0400f, Block::Sand,  0.0f },      // кисть
+        { 0.000f, -0.070f, 0.000f, 0.0135f, 0.115f, 0.0135f, Block::Wood,  0.0f },      // топорище, низ
+        { 0.000f,  0.075f, 0.000f, 0.0125f, 0.075f, 0.0125f, Block::Wood,  0.0f },      // топорище, верх
+        { -0.008f, 0.152f, 0.000f, 0.0195f, 0.024f, 0.0175f, Block::Wood,  HEAD_YAW },  // перевязка у обуха
+        { -0.052f, 0.160f, 0.000f, 0.0470f, 0.039f, 0.0180f, Block::Stone, HEAD_YAW },  // каменная голова
+        { -0.108f, 0.162f, 0.000f, 0.0180f, 0.029f, 0.0135f, Block::Stone, HEAD_YAW },  // скошенное лезвие
     };
     const Part torchParts[] = {
-        { 0.000f, -0.150f, 0.0400f, 0.045f, 0.0400f, Block::Sand },   // кисть
-        { 0.000f, -0.060f, 0.0130f, 0.115f, 0.0130f, Block::Wood },   // палка, низ
-        { 0.000f,  0.070f, 0.0125f, 0.042f, 0.0125f, Block::Wood },   // палка, верх
-        { 0.000f,  0.122f, 0.0180f, 0.020f, 0.0180f, Block::Wood },   // обмотка
-        { 0.000f,  0.156f, 0.0160f, 0.023f, 0.0160f, Block::Sand },   // пламя, ядро
-        { 0.000f,  0.192f, 0.0095f, 0.018f, 0.0095f, Block::Sand },   // пламя, язык
+        { 0.000f, -0.150f, 0.000f, 0.0400f, 0.045f, 0.0400f, Block::Sand, 0.0f },   // кисть
+        { 0.000f, -0.060f, 0.000f, 0.0130f, 0.115f, 0.0130f, Block::Wood, 0.0f },   // палка, низ
+        { 0.000f,  0.070f, 0.000f, 0.0125f, 0.042f, 0.0125f, Block::Wood, 0.0f },   // палка, верх
+        { 0.000f,  0.122f, 0.000f, 0.0180f, 0.020f, 0.0180f, Block::Wood, 0.0f },   // обмотка
+        { 0.000f,  0.156f, 0.000f, 0.0160f, 0.023f, 0.0160f, Block::Sand, 0.0f },   // пламя, ядро
+        { 0.000f,  0.192f, 0.000f, 0.0095f, 0.018f, 0.0095f, Block::Sand, 0.0f },   // пламя, язык
     };
     // Граната: зелёная кубическая болванка с рычагом и кольцом. Её видно в руке ДО
     // броска — иначе непонятно, что сейчас полетит.
     const Part grenadeParts[] = {
-        { 0.000f, -0.150f, 0.0400f, 0.045f, 0.0400f, Block::Sand },   // кисть
-        { 0.000f, -0.055f, 0.0520f, 0.052f, 0.0520f, Block::Snow },   // корпус
-        { 0.000f,  0.005f, 0.0230f, 0.018f, 0.0230f, Block::Snow },   // горловина
-        { 0.030f,  0.010f, 0.0090f, 0.032f, 0.0090f, Block::Snow },   // рычаг
-        { 0.052f,  0.030f, 0.0150f, 0.008f, 0.0060f, Block::Snow },   // кольцо
-        { 0.000f, -0.055f, 0.0530f, 0.012f, 0.0530f, Block::Snow },   // поясок
+        { 0.000f, -0.150f, 0.000f, 0.0400f, 0.045f, 0.0400f, Block::Sand, 0.0f },   // кисть
+        { 0.000f, -0.055f, 0.000f, 0.0520f, 0.052f, 0.0520f, Block::Snow, 0.0f },   // корпус
+        { 0.000f,  0.005f, 0.000f, 0.0230f, 0.018f, 0.0230f, Block::Snow, 0.0f },   // горловина
+        { 0.030f,  0.010f, 0.000f, 0.0090f, 0.032f, 0.0090f, Block::Snow, 0.0f },   // рычаг
+        { 0.052f,  0.030f, 0.000f, 0.0150f, 0.008f, 0.0060f, Block::Snow, 0.0f },   // кольцо
+        { 0.000f, -0.055f, 0.000f, 0.0530f, 0.012f, 0.0530f, Block::Snow, 0.0f },   // поясок
     };
-    const Part* parts = axe ? axeParts : (torch ? torchParts : grenadeParts);
+    // Киянка: тяжёлая деревянная колотушка строителя. Ею не рубят, ею разбирают, и
+    // выглядеть она должна именно так — короткая рукоять и толстая голова.
+    const Part hammerParts[] = {
+        { 0.000f, -0.150f, 0.000f, 0.0400f, 0.045f, 0.0400f, Block::Sand,  0.0f },  // кисть
+        { 0.000f, -0.065f, 0.000f, 0.0140f, 0.110f, 0.0140f, Block::Wood,  0.0f },  // рукоять, низ
+        { 0.000f,  0.070f, 0.000f, 0.0130f, 0.070f, 0.0130f, Block::Wood,  0.0f },  // рукоять, верх
+        { 0.000f,  0.146f, 0.000f, 0.0210f, 0.022f, 0.0190f, Block::Wood,  0.0f },  // перевязка
+        { 0.000f,  0.170f, 0.000f, 0.0560f, 0.040f, 0.0330f, Block::Wood,  0.0f },  // голова
+        { -0.062f, 0.170f, 0.000f, 0.0180f, 0.032f, 0.0270f, Block::Stone, 0.0f },  // стальной боёк
+    };
+    // Винтовка и ракетница лежат вдоль взгляда: приклад у плеча, ствол уходит вперёд.
+    const float GUN_YAW = 0.21f;   // 12 градусов внутрь, к центру экрана
+    const Part rifleParts[] = {
+        { 0.000f, -0.120f, -0.020f, 0.0300f, 0.038f, 0.0300f, Block::Sand,  GUN_YAW }, // кисть
+        { 0.000f, -0.090f, -0.150f, 0.0220f, 0.045f, 0.0950f, Block::Wood,  GUN_YAW }, // приклад
+        { 0.000f, -0.050f,  0.010f, 0.0250f, 0.034f, 0.1100f, Block::Wood,  GUN_YAW }, // цевьё
+        { 0.000f, -0.028f,  0.230f, 0.0110f, 0.011f, 0.1400f, Block::Stone, GUN_YAW }, // ствол
+        { 0.000f,  0.008f,  0.030f, 0.0090f, 0.016f, 0.0700f, Block::Stone, GUN_YAW }, // прицельная планка
+        { 0.000f, -0.100f,  0.000f, 0.0130f, 0.034f, 0.0200f, Block::Stone, GUN_YAW }, // магазин
+    };
+    const Part launcherParts[] = {
+        { 0.000f, -0.120f, -0.030f, 0.0300f, 0.038f, 0.0300f, Block::Sand,  GUN_YAW }, // кисть
+        { 0.000f, -0.060f,  0.090f, 0.0440f, 0.044f, 0.2600f, Block::Stone, GUN_YAW }, // труба
+        { 0.000f, -0.060f, -0.190f, 0.0560f, 0.056f, 0.0400f, Block::Stone, GUN_YAW }, // раструб
+        { 0.000f, -0.115f, -0.030f, 0.0180f, 0.042f, 0.0220f, Block::Wood,  GUN_YAW }, // рукоять
+        { 0.000f,  0.000f,  0.070f, 0.0090f, 0.030f, 0.0120f, Block::Stone, GUN_YAW }, // прицел
+        { 0.000f, -0.060f,  0.370f, 0.0290f, 0.029f, 0.0500f, Block::Stone, GUN_YAW }, // головка ракеты
+    };
+    const Part* parts = axe ? axeParts
+                     : (torch ? torchParts
+                     : (grenade ? grenadeParts
+                     : (hammer ? hammerParts
+                     : (rifle ? rifleParts : launcherParts))));
     const int partCount = 6;
     const float S = 0.80f;
 
@@ -1621,7 +1791,18 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     // наклоном это и читается как замах.
     float offX = 0.190f;
     float offZ = 0.52f - swing * 0.10f;
-    float offY = (axe ? -0.205f : (grenade ? -0.165f : -0.185f)) + bob + swing * 0.12f;
+    // Оружие держат ближе к центру экрана и ниже: приклад у плеча, а не сбоку.
+    // Оружие держим дальше от глаза: вплотную труба закрывала пол-экрана, а ствол
+    // упирался в камеру и не читался.
+    if(rifle || launcher){ offX = 0.300f; offZ += 0.16f; }
+    float offY = (axe ? -0.205f : (grenade ? -0.165f : ((rifle || launcher) ? -0.170f : -0.185f)))
+                 + bob + swing * 0.12f;
+    // Отдача винтовки: ствол дёргается назад и вверх на первые кадры после выстрела.
+    if((rifle || launcher) && shotFlash_ < 0.16f){
+        float k = 1.0f - clampf(shotFlash_ / 0.16f, 0.0f, 1.0f);
+        offZ -= 0.10f * k;
+        offY += 0.03f * k;
+    }
     Vec3 hand{ eye.x + right.x * offX + up.x * offY + forward.x * offZ,
                eye.y + right.y * offX + up.y * offY + forward.y * offZ,
                eye.z + right.z * offX + up.z * offY + forward.z * offZ };
@@ -1641,6 +1822,23 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
             float flick = 0.85f + 0.15f * sinf(heldBobPhase_ * 11.0f + (float)pi);
             tr = 1.9f * flick; tg = (pi == 4 ? 1.15f : 1.45f) * flick; tb = 0.35f * flick;
         }
+        // Киянка: голова светлее рукояти, боёк стальной.
+        if(hammer && pi >= 4){
+            bool steel = (pi == 5);
+            tr = steel ? 0.62f : 0.86f;
+            tg = steel ? 0.64f : 0.70f;
+            tb = steel ? 0.70f : 0.46f;
+        }
+        // Оружие — вороненая сталь; дерево приклада оставляем как есть.
+        if((rifle || launcher) && pi >= 1){
+            bool wood = (part.block == Block::Wood);
+            tr = wood ? 0.66f : 0.42f;
+            tg = wood ? 0.50f : 0.44f;
+            tb = wood ? 0.34f : 0.46f;
+            if(launcher && pi == 5){ tr = 1.05f; tg = 0.40f; tb = 0.28f; }   // боеголовка
+            // Вспышка выстрела: ствол на пару кадров раскаляется добела.
+            if(rifle && pi == 3 && shotFlash_ < 0.07f){ tr = 2.4f; tg = 1.9f; tb = 0.9f; }
+        }
         // Граната — армейская зелень; кольцо посветлее, чтобы читалось.
         if(grenade && pi >= 1){
             bool ring = (pi == 4);
@@ -1651,11 +1849,18 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
 
         // Место бруска: от кисти вдоль осей инструмента. Ось «вверх» наклонена вперёд
         // на величину удара, поэтому весь инструмент клюёт вперёд одним куском.
-        float lx = part.cx * S, ly = part.cy * S;
-        Vec3 centre{ hand.x + right.x * lx + upT.x * ly,
-                     hand.y + right.y * lx + upT.y * ly,
-                     hand.z + right.z * lx + upT.z * ly };
-        Vec3 ax = right, ay = upT, az = depthT;
+        float lx = part.cx * S, ly = part.cy * S, lz = part.cz * S;
+        // Поворот детали вокруг рукояти: и смещение, и оси бруска крутятся вместе,
+        // иначе голова топора уезжала бы от топорища.
+        float pc = cosf(part.yaw), ps = sinf(part.yaw);
+        Vec3 ax{ right.x * pc + depthT.x * ps, right.y * pc + depthT.y * ps,
+                 right.z * pc + depthT.z * ps };
+        Vec3 az{ depthT.x * pc - right.x * ps, depthT.y * pc - right.y * ps,
+                 depthT.z * pc - right.z * ps };
+        Vec3 ay = upT;
+        Vec3 centre{ hand.x + ax.x * lx + upT.x * ly + az.x * lz,
+                     hand.y + ax.y * lx + upT.y * ly + az.y * lz,
+                     hand.z + ax.z * lx + upT.z * ly + az.z * lz };
         float hx = part.hx * S, hy = part.hy * S, hz = part.hz * S;
         static const int SX[6] = { 0, 0, 1, -1, 0, 0 };
         static const int SY[6] = { 1, -1, 0, 0, 0, 0 };
@@ -1809,7 +2014,8 @@ void GameClient::initWorld(){
             ItemType::Wood, ItemType::Stone, ItemType::OreMetal, ItemType::OreSulfur,
             ItemType::MetalFrag, ItemType::Sulfur, ItemType::Gunpowder, ItemType::Cloth,
             ItemType::Scrap, ItemType::Grenade, ItemType::BuildPlan, ItemType::Furnace,
-            ItemType::Box, ItemType::Cupboard, ItemType::Torch,
+            ItemType::Box, ItemType::Cupboard, ItemType::Torch, ItemType::Hammer,
+            ItemType::Rifle, ItemType::RifleAmmo, ItemType::Launcher, ItemType::Rocket,
         };
         for(ItemType t : kAdminKit) inventory_.add(t, itemDef(t).maxStack);
     }
@@ -1818,8 +2024,15 @@ void GameClient::initWorld(){
         // включался ключом --slot 2 и его было видно на снимке.
         inventory_.slot(2) = ItemStack{ ItemType::BuildPlan, 1 };
         inventory_.slot(3) = ItemStack{ ItemType::Grenade, 5 };
+        // Киянка и оружие тоже в поясе: их вид в руке проверяется снимком по --slot.
+        inventory_.slot(4) = ItemStack{ ItemType::Hammer, 1 };
+        inventory_.slot(5) = ItemStack{ ItemType::Rifle, 1 };
         inventory_.add(ItemType::Wood, 300);
         inventory_.add(ItemType::Stone, 100);
+        inventory_.add(ItemType::MetalFrag, 200);
+        inventory_.add(ItemType::RifleAmmo, 60);
+        inventory_.add(ItemType::Launcher, 1);
+        inventory_.add(ItemType::Rocket, 8);
         // Ящик и шкаф рядом со спавном: их окна надо чем-то открывать при проверке
         // интерфейса снимком.
         Vec3 pp = player_->position();
@@ -1833,8 +2046,28 @@ void GameClient::initWorld(){
         int cx2 = ox, cz2 = oz + 2;
         int cy2 = voxels_->surfaceY(cx2, cz2) + 1;
         voxels_->setBlock(cx2, cy2, cz2, Block::Cupboard);
-        WorldCupboard nc; nc.x = cx2; nc.y = cy2; nc.z = cz2; nc.wood = 40;
+        WorldCupboard nc; nc.x = cx2; nc.y = cy2; nc.z = cz2; nc.wood = 40; nc.stone = 20;
         cupboards_.push_back(nc);
+    }
+    if(demoHouse_){
+        // Стенд для проверки: три стены и три двери, по одной на уровень. Так на снимке
+        // сразу видно и текстуры камня с железом, и что дверь стала 2 на 2.
+        Vec3 pp = player_->position();
+        int bx = (int)floorf(pp.x) - 9, bz = (int)floorf(pp.z) + 14;
+        const Block walls[3] = { Block::BuildWallZ, Block::BuildWallZStone, Block::BuildWallZIron };
+        const Block doors[3] = { Block::BuildDoorZ, Block::BuildDoorZStone, Block::BuildDoorZIron };
+        for(int t = 0; t < 3; ++t){
+            int wx = bx + t * 6;
+            int wy = voxels_->surfaceY(wx, bz) + 1;
+            BuildPiece w;
+            w.block = walls[t]; w.x = wx; w.y = wy; w.z = bz; w.sx = 2; w.sy = 2; w.sz = 1;
+            w.health = pieceMaxHealth(t); w.owner = playerName_;
+            fillPieceCells(w, true); pieces_.push_back(w);
+            BuildPiece d;
+            d.block = doors[t]; d.x = wx + 2; d.y = wy; d.z = bz; d.sx = 2; d.sy = 2; d.sz = 1;
+            d.health = pieceMaxHealth(t); d.owner = playerName_;
+            fillPieceCells(d, true); pieces_.push_back(d);
+        }
     }
     if(startSlot_ >= 0) inventory_.select(startSlot_);
 
@@ -2578,10 +2811,16 @@ void GameClient::pieceFootprint(BuildPart part, Block block, int& sx, int& sy, i
         case BuildPart::Floor:      sx = 4; sy = 1; sz = 4; break;
         case BuildPart::Wall:
             // Пластина поперёк X растёт по Z, и наоборот.
-            if(block == Block::BuildWall){ sx = 1; sy = 2; sz = 2; }
-            else                         { sx = 2; sy = 2; sz = 1; }
+            if(thinAxisOf(block) == 1){ sx = 1; sy = 2; sz = 2; }
+            else                      { sx = 2; sy = 2; sz = 1; }
             break;
-        case BuildPart::Door:       sx = 1; sy = 2; sz = 1; break;
+        case BuildPart::Door:
+            // Дверь такая же широкая, как проём в стене: 2 в ширину, 2 в высоту,
+            // толщиной в одну пластину. Раньше она была в один блок, и рядом с ней
+            // оставалась щель, через которую в дом заходили мимо двери.
+            if(thinAxisOf(block) == 1){ sx = 1; sy = 2; sz = 2; }
+            else                      { sx = 2; sy = 2; sz = 1; }
+            break;
         default:                    sx = sy = sz = 1; break;
     }
 }
@@ -2604,26 +2843,164 @@ void GameClient::fillPieceCells(const BuildPiece& p, bool put){
                 voxels_->setBlock(p.x + dx, p.y + dy, p.z + dz, put ? p.block : Block::Air);
 }
 
+// Ключ клетки в карте урона по чужим постройкам. Мир не бесконечный, координаты
+// влезают в 21 бит на ось с запасом.
+namespace {
+long long cellKey(int x, int y, int z){
+    return ((long long)(x + (1 << 20)) << 42) | ((long long)(y + (1 << 20)) << 21) |
+           (long long)(z + (1 << 20));
+}
+} // namespace
+
+bool GameClient::foreignGroup(int x, int y, int z, std::vector<long long>& cells,
+                              Block& block) const {
+    cells.clear();
+    Block b = voxels_->blockAt(x, y, z);
+    if(!isBuildBlock(b)) return false;
+    if(pieceIndexAt(x, y, z) >= 0) return false;      // это наша деталь, у неё свой учёт
+    block = b;
+
+    // Обход в ширину по шести соседям. Потолок в 64 клетки — это ровно фундамент 4x4
+    // в четыре слоя: больше одной детали группа набрать не успеет.
+    std::vector<int> queue;
+    queue.push_back(x); queue.push_back(y); queue.push_back(z);
+    cells.push_back(cellKey(x, y, z));
+    for(size_t head = 0; head < queue.size() && cells.size() < 64; head += 3){
+        int cx = queue[head], cy = queue[head + 1], cz = queue[head + 2];
+        static const int DX[6] = { 1, -1, 0, 0, 0, 0 };
+        static const int DY[6] = { 0, 0, 1, -1, 0, 0 };
+        static const int DZ[6] = { 0, 0, 0, 0, 1, -1 };
+        for(int d = 0; d < 6 && cells.size() < 64; ++d){
+            int nx = cx + DX[d], ny = cy + DY[d], nz = cz + DZ[d];
+            if(voxels_->blockAt(nx, ny, nz) != b) continue;
+            if(pieceIndexAt(nx, ny, nz) >= 0) continue;
+            long long key = cellKey(nx, ny, nz);
+            bool seen = false;
+            for(long long k : cells) if(k == key){ seen = true; break; }
+            if(seen) continue;
+            cells.push_back(key);
+            queue.push_back(nx); queue.push_back(ny); queue.push_back(nz);
+        }
+    }
+    return true;
+}
+
+int GameClient::damageForeignBuild(Vec3 at, float radius, int damage){
+    int hitGroups = 0;
+    int r = (int)ceilf(radius);
+    // Клетки уже разобранных групп: без этого один взрыв гонял поиск по одной и той же
+    // стене столько раз, сколько в ней кубов.
+    std::unordered_map<long long, char> handledCells;
+    std::vector<long long> cells;
+    Block block = Block::Air;
+    for(int dx = -r; dx <= r; ++dx)
+    for(int dy = -r; dy <= r; ++dy)
+    for(int dz = -r; dz <= r; ++dz){
+        int cx = (int)floorf(at.x) + dx, cy = (int)floorf(at.y) + dy, cz = (int)floorf(at.z) + dz;
+        float fx = (float)cx + 0.5f - at.x, fy = (float)cy + 0.5f - at.y, fz = (float)cz + 0.5f - at.z;
+        if(fx * fx + fy * fy + fz * fz > radius * radius) continue;
+        if(handledCells.count(cellKey(cx, cy, cz))) continue;
+        if(!foreignGroup(cx, cy, cz, cells, block)) continue;
+        // Группу опознаём по младшей клетке: она одна и та же, с какой стороны ни зайди.
+        long long key = cells[0];
+        for(long long k : cells){
+            if(k < key) key = k;
+            handledCells[k] = 1;
+        }
+        ++hitGroups;
+
+        int& acc = foreignDamage_[key];
+        acc += damage;
+        if(acc < pieceMaxHealth(buildTierOf(block))) continue;
+        foreignDamage_.erase(key);
+        // Разбираем всю группу: половина чужой стены в воздухе выглядит поломкой игры.
+        for(long long k : cells){
+            int kz = (int)(k & ((1LL << 21) - 1)) - (1 << 20);
+            int ky = (int)((k >> 21) & ((1LL << 21) - 1)) - (1 << 20);
+            int kx = (int)((k >> 42) & ((1LL << 21) - 1)) - (1 << 20);
+            voxels_->setBlock(kx, ky, kz, Block::Air);
+        }
+    }
+    return hitGroups;
+}
+
 // Удар топором по дому: минус единица прочности всей детали. Разбирается деталь
 // целиком — половина стены в воздухе выглядела бы поломкой игры, а не постройкой.
 void GameClient::hitBuildPiece(Block block, int x, int y, int z){
     int idx = pieceIndexAt(x, y, z);
     if(idx < 0){
-        // Деталь поставили до появления реестра (или это шкаф с ящиком) — просто
-        // убираем блок, чтобы построенное не оказалось вечным.
         if(block == Block::Cupboard || block == Block::Box) return;
-        voxels_->setBlock(x, y, z, Block::Air);
+        // Чужая деталь: копим по ней урон группой. Раньше блок исчезал с одного удара,
+        // и чужой дом разбирался топором быстрее, чем своим же ставился.
+        damageForeignBuild(Vec3{ (float)x + 0.5f, (float)y + 0.5f, (float)z + 0.5f }, 0.4f, 1);
         return;
     }
     BuildPiece& p = pieces_[(size_t)idx];
     p.health -= 1;
     char buf[96];
-    snprintf(buf, sizeof(buf), "%s: прочность %d/%d", blockName(p.block), p.health, PIECE_MAX_HEALTH);
+    snprintf(buf, sizeof(buf), "%s: прочность %d/%d", blockName(p.block), p.health,
+             pieceMaxHealth(buildTierOf(p.block)));
     SDL_Log("%s", buf);
     if(p.health <= 0){
         fillPieceCells(p, false);
         pieces_.erase(pieces_.begin() + idx);
     }
+}
+
+// ---- Киянка. Инструмент строителя, а не оружие: своей деталью дома она распоряжается
+// напрямую, безо всякого шкафа. Удар — снести (материал не возвращается: разбирают
+// начисто, как в Rust), «рука» — улучшить на уровень вверх за 40 камня или 40 металла.
+namespace {
+// Деталь под прицелом киянки. Радиус короткий: киянкой машут вплотную.
+const float HAMMER_REACH = 4.0f;
+} // namespace
+
+bool GameClient::demolishPieceAimed(){
+    RayHit hit = voxels_->raycast(player_->eyePosition(), player_->lookDirection(), HAMMER_REACH);
+    if(!hit.hit || !isBuildBlock(hit.block)) return false;
+    int idx = pieceIndexAt(hit.x, hit.y, hit.z);
+    if(idx < 0) return false;
+    BuildPiece& p = pieces_[(size_t)idx];
+    if(!p.owner.empty() && p.owner != playerName_){
+        notice("Это не ваша постройка: хозяин " + p.owner);
+        return true;
+    }
+    notice(std::string(blockName(p.block)) + ": снесено");
+    fillPieceCells(p, false);
+    pieces_.erase(pieces_.begin() + idx);
+    return true;
+}
+
+bool GameClient::upgradePieceAimed(){
+    RayHit hit = voxels_->raycast(player_->eyePosition(), player_->lookDirection(), HAMMER_REACH);
+    if(!hit.hit || !isBuildBlock(hit.block)) return false;
+    int idx = pieceIndexAt(hit.x, hit.y, hit.z);
+    if(idx < 0) return false;
+    BuildPiece& p = pieces_[(size_t)idx];
+    if(!p.owner.empty() && p.owner != playerName_){
+        notice("Это не ваша постройка: хозяин " + p.owner);
+        return true;
+    }
+    int tier = buildTierOf(p.block);
+    if(tier >= 2){ notice("Железо — предел: крепче уже не сделать"); return true; }
+    ItemType pay = (tier == 0) ? ItemType::Stone : ItemType::MetalFrag;
+    const char* payName = (tier == 0) ? "камня" : "металла";
+    if(!adminMode_ && inventory_.countOf(pay) < UPGRADE_COST){
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Нужно %d %s", UPGRADE_COST, payName);
+        notice(buf);
+        return true;
+    }
+    if(!adminMode_) inventory_.remove(pay, UPGRADE_COST);
+
+    // Клетки перекладываем заново: сама форма не меняется, меняется только блок,
+    // поэтому старые убирать не нужно — новые их перезапишут.
+    Block next = buildBlockForTier(p.block, tier + 1);
+    p.block = next;
+    p.health = pieceMaxHealth(tier + 1);
+    if(!p.open) fillPieceCells(p, true);
+    notice(std::string(blockName(next)) + ": прочность " + std::to_string(p.health));
+    return true;
 }
 
 // Дверь: по кнопке «рука» она уходит из мира (открыта) и возвращается (закрыта).
@@ -2634,10 +3011,19 @@ bool GameClient::toggleDoorNear(){
         int idx = pieceIndexAt(hit.x, hit.y, hit.z);
         if(idx >= 0){
             BuildPiece& p = pieces_[(size_t)idx];
+            // Замок: чужую дверь не открыть руками — только сломать или взорвать.
+            if(!p.owner.empty() && p.owner != playerName_){
+                notice("Дверь заперта: хозяин " + p.owner);
+                return true;
+            }
             fillPieceCells(p, false);
             p.open = true;
             return true;
         }
+        // Двери в нашем реестре нет — значит, её ставил другой игрок: она приехала к
+        // нам обычными блоками. Такая дверь заперта наглухо, её только ломать.
+        notice("Дверь заперта: чужой дом");
+        return true;
     }
     // Ничего не нашли лучом — ищем открытую дверь рядом и закрываем её.
     Vec3 pos = player_->position();
@@ -2646,14 +3032,17 @@ bool GameClient::toggleDoorNear(){
     for(size_t i = 0; i < pieces_.size(); ++i){
         const BuildPiece& p = pieces_[i];
         if(!p.open || !isDoorBlock(p.block)) continue;
-        float dx = (float)p.x + 0.5f - pos.x, dz = (float)p.z + 0.5f - pos.z;
+        if(!p.owner.empty() && p.owner != playerName_) continue;
+        // Дверь теперь 2 в ширину: расстояние считаем до её середины, а не до угла.
+        float dx = (float)p.x + p.sx * 0.5f - pos.x, dz = (float)p.z + p.sz * 0.5f - pos.z;
         float d = sqrtf(dx * dx + dz * dz);
         if(d < bestDist){ bestDist = d; best = (int)i; }
     }
     if(best < 0) return false;
     BuildPiece& p = pieces_[(size_t)best];
-    // Не захлопываем дверь на самом игроке.
-    if(fabsf((float)p.x + 0.5f - pos.x) < 0.75f && fabsf((float)p.z + 0.5f - pos.z) < 0.75f)
+    // Не захлопываем дверь на самом игроке: проверяем весь проём, а не одну клетку.
+    if(pos.x > (float)p.x - 0.4f && pos.x < (float)(p.x + p.sx) + 0.4f &&
+       pos.z > (float)p.z - 0.4f && pos.z < (float)(p.z + p.sz) + 0.4f)
         return false;
     fillPieceCells(p, true);
     p.open = false;
@@ -2677,7 +3066,8 @@ void GameClient::placeBuildPart(){
     p.block = block;
     p.x = bx; p.y = by; p.z = bz;
     pieceFootprint(buildPart_, block, p.sx, p.sy, p.sz);
-    p.health = PIECE_MAX_HEALTH;
+    p.health = pieceMaxHealth(buildTierOf(block));
+    p.owner = playerName_;
 
     // Крупная деталь встаёт от прицела, но если под неё не хватает воздуха — часть
     // клеток просто перезапишется; строить в скале и так незачем.
@@ -2741,15 +3131,42 @@ bool GameClient::handleBuildTouch(float x, float y){
 
 // ---- Окно печи. Плавка идёт по нажатию: кладём руду и дрова из инвентаря, получаем
 // слиток. Очереди и таймеров пока нет — они появятся вместе с верстаками.
+// Окно печи: слева плавка, справа рюкзак сеткой — как в ящике, чтобы руду можно было
+// закинуть прямо из инвентаря, не закрывая печь. Раньше окно было узким, и в него не
+// влезали ни кнопки, ни рюкзак.
+void GameClient::furnaceGeometry(float& px, float& py, float& pw, float& ph) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    pw = clampf((float)SCR_W * 0.78f, 560.0f, 1180.0f);
+    ph = clampf((float)SCR_H * 0.76f, 360.0f, 700.0f * s);
+    if(ph > (float)SCR_H - 120.0f * s) ph = (float)SCR_H - 120.0f * s;   // не залезать на пояс
+    px = ((float)SCR_W - pw) * 0.5f;
+    py = ((float)SCR_H - ph) * 0.42f;
+}
+
 void GameClient::furnaceButtonRect(int i, float& x, float& y, float& w, float& h) const {
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float pw = clampf((float)SCR_W * 0.46f, 400.0f, 680.0f);
-    float ph = 330.0f * s;
-    float px = ((float)SCR_W - pw) * 0.5f, py = ((float)SCR_H - ph) * 0.5f;
-    w = pw - 40.0f * s;
+    float px, py, pw, ph;
+    furnaceGeometry(px, py, pw, ph);
+    // Кнопки — левая колонка окна: правую занимает рюкзак.
+    w = pw * 0.46f - 30.0f * s;
     h = 46.0f * s;
-    x = px + 20.0f * s;
-    y = py + ph - (h + 14.0f * s) * (float)(4 - i);
+    x = px + 22.0f * s;
+    y = py + ph - 22.0f * s - (h + 12.0f * s) * (float)(4 - i);
+}
+
+// Ячейка рюкзака в окне печи. i < 0 — служебный вызов за левым верхним углом сетки.
+void GameClient::furnaceBagSlotPos(int i, float& x, float& y, float& slot) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float px, py, pw, ph;
+    furnaceGeometry(px, py, pw, ph);
+    float gap = 8.0f * s;
+    float area = pw * 0.5f - 40.0f * s;
+    slot = (area - gap * (Inventory::COLS - 1)) / (float)Inventory::COLS;
+    float gx = px + pw * 0.52f;
+    float gy = py + 76.0f * s;
+    if(i < 0){ x = gx; y = gy; return; }
+    x = gx + (float)(i % Inventory::COLS) * (slot + gap);
+    y = gy + (float)(i / Inventory::COLS) * (slot + gap);
 }
 
 // Плавка идёт сама, пока в печи есть руда: пять секунд на штуку.
@@ -2764,23 +3181,37 @@ void GameClient::updateFurnace(float dt){
 
 void GameClient::renderFurnace(){
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
-    float pw = clampf((float)SCR_W * 0.46f, 400.0f, 680.0f);
-    float ph = 330.0f * s;
-    float px = ((float)SCR_W - pw) * 0.5f, py = ((float)SCR_H - ph) * 0.5f;
+    float px, py, pw, ph;
+    furnaceGeometry(px, py, pw, ph);
 
     drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.04f, 0.04f, 0.05f, 0.45f, false);
     drawUIRect(px, py, pw, ph, 0, 0.10f, 0.10f, 0.11f, 0.92f, false);
     uiThinFrame(px, py, pw, ph, UIColor{1.0f, 1.0f, 1.0f}, 0.35f);
-    drawText(px + 20.0f * s, py + 14.0f * s, 26.0f * s, "ПЕЧЬ", 1, 1, 1, 0.97f);
+    drawText(px + 22.0f * s, py + 16.0f * s, 26.0f * s, "ПЕЧЬ", 1, 1, 1, 0.97f);
 
-    // Слот руды, полоса плавки и слот готового — слева направо, как в печи Rust.
+    // ---- Правая половина: рюкзак сеткой. Касание по руде отправляет её прямо в печь.
+    drawText(px + pw * 0.52f, py + 44.0f * s, 22.0f * s, "РЮКЗАК", 1, 1, 1, 0.9f);
+    float bagSlot, bagX, bagY;
+    furnaceBagSlotPos(-1, bagX, bagY, bagSlot);
+    for(int i = 0; i < Inventory::SIZE; ++i){
+        float sx2, sy2, sl2;
+        furnaceBagSlotPos(i, sx2, sy2, sl2);
+        drawSlot(sx2, sy2, sl2, inventory_.slot(i), false);
+    }
+    furnaceBagSlotPos(Inventory::SIZE - 1, bagX, bagY, bagSlot);
+    drawText(px + pw * 0.52f, bagY + bagSlot + 10.0f * s, 16.0f * s,
+             "Нажмите на руду в рюкзаке — она уйдёт в печь", 1, 1, 1, 0.6f);
+
+    // ---- Левая половина: слот руды, полоса плавки и слот готового, как в печи Rust.
     float slot = 74.0f * s;
-    float sy = py + 56.0f * s;
+    float sy = py + 76.0f * s;
     float sx = px + 24.0f * s;
     ItemStack inStack{ furnace_.ore, furnace_.oreCount };
     drawSlot(sx, sy, slot, furnace_.oreCount > 0 ? inStack : ItemStack{}, false);
 
-    float barX = sx + slot + 18.0f * s, barW = pw - slot * 2.0f - 84.0f * s;
+    float colW = pw * 0.46f;
+    float barX = sx + slot + 18.0f * s, barW = colW - slot * 2.0f - 60.0f * s;
+    if(barW < 40.0f * s) barW = 40.0f * s;
     drawUIRect(barX, sy + slot * 0.42f, barW, 14.0f * s, 0, 0.18f, 0.18f, 0.19f, 0.9f, false);
     drawUIRect(barX, sy + slot * 0.42f, barW * clampf(furnace_.progress, 0.0f, 1.0f), 14.0f * s,
                0, 0.95f, 0.55f, 0.18f, 0.95f, false);
@@ -2801,6 +3232,12 @@ void GameClient::renderFurnace(){
     snprintf(buf, sizeof(buf), "Дрова: %d      В печи: %d      Готово: %d",
              inventory_.countOf(ItemType::Wood), furnace_.oreCount, furnace_.done);
     drawText(px + 24.0f * s, sy + slot + 14.0f * s, 18.0f * s, buf, 1, 1, 1, 0.8f);
+    drawText(px + 24.0f * s, sy + slot + 44.0f * s, 16.0f * s,
+             "Слева — что плавится, справа — что уже готово.", 1, 1, 1, 0.55f);
+    drawText(px + 24.0f * s, sy + slot + 66.0f * s, 16.0f * s,
+             "Пять секунд на штуку, два дерева на каждую руду.", 1, 1, 1, 0.55f);
+    drawText(px + 24.0f * s, sy + slot + 88.0f * s, 16.0f * s,
+             "Железная руда даёт металл, серная — серу.", 1, 1, 1, 0.55f);
 
     const char* labels[4] = { "ЗАГРУЗИТЬ СЕРНУЮ РУДУ  (1 руда + 2 дерева)",
                               "ЗАГРУЗИТЬ ЖЕЛЕЗНУЮ РУДУ  (1 руда + 2 дерева)",
@@ -2826,6 +3263,28 @@ void GameClient::renderFurnace(){
 }
 
 bool GameClient::handleFurnaceTouch(float x, float y){
+    // Сначала рюкзак: нажали на руду — она поехала в печь вместе с дровами.
+    for(int i = 0; i < Inventory::SIZE; ++i){
+        float sx, sy, sl;
+        furnaceBagSlotPos(i, sx, sy, sl);
+        if(x < sx || x > sx + sl || y < sy || y > sy + sl) continue;
+        // Копию берём сразу: ссылка на ячейку станет недействительной после списания.
+        ItemStack st = inventory_.slot(i);
+        if(st.empty()) return true;
+        if(st.type != ItemType::OreMetal && st.type != ItemType::OreSulfur) return true;
+        if(furnace_.oreCount > 0 && furnace_.ore != st.type) return true;
+        ItemType out = (st.type == ItemType::OreSulfur) ? ItemType::Sulfur : ItemType::MetalFrag;
+        // Кладём столько, на сколько хватит дров: два дерева на каждую руду.
+        int fuel = inventory_.countOf(ItemType::Wood) / 2;
+        int move = (st.count < fuel) ? st.count : fuel;
+        if(move <= 0) return true;
+        inventory_.remove(st.type, move);
+        inventory_.remove(ItemType::Wood, move * 2);
+        furnace_.ore = st.type;
+        furnace_.result = out;
+        furnace_.oreCount += move;
+        return true;
+    }
     for(int i = 0; i < 4; ++i){
         float bx, by, bw, bh;
         furnaceButtonRect(i, bx, by, bw, bh);
@@ -3277,17 +3736,32 @@ void GameClient::update(float dt){
             autoAttackTimer_ += dt;
             if(autoAttackTimer_ >= 1.5f){ autoAttackTimer_ = 0.0f; attack = true; }
         }
-        // С гранатой в руке та же кнопка не машет, а бросает — и ровно один раз.
+        // Оружие и киянка перехватывают кнопку удара: махать ими по блокам нечего.
         const ItemStack& held = inventory_.selectedStack();
-        if(!held.empty() && held.type == ItemType::Grenade){
+        ItemType heldType = held.empty() ? ItemType::None : held.type;
+        bool hammer = (heldType == ItemType::Hammer);
+        if(heldType == ItemType::Grenade){
             if(controls_.attackPressed()) throwGrenade();
+            attack = false;
+        } else if(heldType == ItemType::Launcher){
+            if(controls_.attackPressed()) fireRocket();
+            attack = false;
+        } else if(heldType == ItemType::Rifle){
+            // Полуавтомат: одно нажатие — один выстрел, зажатая кнопка не поливает.
+            if(controls_.attackPressed()) fireRifle();
+            attack = false;
+        } else if(hammer){
+            // Киянкой сносят СВОЮ деталь дома целиком и сразу — шкаф для этого не нужен.
+            if(controls_.attackPressed()) demolishPieceAimed();
             attack = false;
         }
         in.attack = attack;
         in.place = controls_.placePressed();
         // «Рука» сначала пробует открыть или закрыть дверь: сама дверь — часть дома,
         // и мир о ней ничего не знает, её состояние держит реестр построек.
+        // С киянкой та же кнопка улучшает деталь: дерево -> камень -> железо.
         bool wantAction = controls_.actionPressed();
+        if(wantAction && hammer && upgradePieceAimed()) wantAction = false;
         if(wantAction && toggleDoorNear()) wantAction = false;
         in.action = wantAction;
     }
@@ -3686,6 +4160,14 @@ void GameClient::renderHud(){
     }
     // Полосы добычи больше нет: удар стал дискретным, копить прогресс нечему.
 
+    // ---- Короткий ответ киянки, шкафа или запертой двери: пара секунд под прицелом.
+    buildNoticeAge_ += 1.0f / 60.0f;
+    shotFlash_ += 1.0f / 60.0f;
+    if(overlay_ == Overlay::None && buildNoticeAge_ < 2.2f && !buildNotice_.empty()){
+        float alpha = clampf(2.2f - buildNoticeAge_, 0.0f, 1.0f);
+        drawTextCentered(cx, cy + 104.0f * s, 19.0f * s, buildNotice_, 1, 0.92f, 0.72f, alpha);
+    }
+
     // ---- Метка попадания: живёт треть секунды и за это время расходится и гаснет.
     hitMarkAge_ += 1.0f / 60.0f;
     if(overlay_ == Overlay::None && hitMarkAge_ < 0.35f && texHitMark_){
@@ -3704,7 +4186,8 @@ void GameClient::renderHud(){
             Vec3 pp = player_->position();
             for(const BuildPiece& p : pieces_){
                 if(!p.open || !isDoorBlock(p.block)) continue;
-                float dx = (float)p.x + 0.5f - pp.x, dz = (float)p.z + 0.5f - pp.z;
+                if(!p.owner.empty() && p.owner != playerName_) continue;
+                float dx = (float)p.x + p.sx * 0.5f - pp.x, dz = (float)p.z + p.sz * 0.5f - pp.z;
                 if(dx * dx + dz * dz < 12.0f){ nearOpen = true; break; }
             }
         }
@@ -3724,6 +4207,25 @@ void GameClient::renderHud(){
         if(texRadiation_) drawUIRect(ix, iy, isz, isz, texRadiation_, 1, 1, 1, 0.95f, true);
         snprintf(buf, sizeof(buf), "%.0f", (double)player_->radiation());
         drawText(ix + isz + 6.0f * s, iy + isz * 0.2f, 20.0f * s, buf, 0.85f, 0.95f, 0.45f, 0.95f);
+    }
+
+    // ---- Связь: пока пинг в порядке, ничего не показываем. После 200 мс — жёлтый
+    // маркер, после 300 — красный: игрок должен понимать, что промахи и рывки чужих
+    // фигурок сейчас от сети, а не от игры.
+    if(net_.connected()){
+        int ping = net_.pingMs();
+        if(ping > 200){
+            bool high = ping > 300;
+            GLuint icon = high ? texPingHigh_ : texPingMid_;
+            float isz = 34.0f * s;
+            float ix = (float)SCR_W * 0.5f - isz * 0.5f, iy = 42.0f * s;
+            if(icon) drawUIRect(ix, iy, isz, isz, icon, 1, 1, 1, 0.95f, true);
+            else     drawUIRect(ix, iy, isz, isz, 0, high ? 0.85f : 0.90f,
+                                high ? 0.25f : 0.80f, 0.20f, 0.9f, false);
+            snprintf(buf, sizeof(buf), "%d мс", ping);
+            drawTextCentered((float)SCR_W * 0.5f, iy + isz + 2.0f * s, 16.0f * s, buf,
+                             high ? 0.95f : 0.95f, high ? 0.35f : 0.85f, 0.30f, 0.95f);
+        }
     }
 
     // ---- Прочность детали дома под прицелом (только у побитой).
@@ -3748,6 +4250,21 @@ void GameClient::renderHud(){
         float a = clampf(1.0f - dmgAge / 1.5f, 0.0f, 1.0f) * 0.75f;
         if(texBlood_) drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, texBlood_, 1, 1, 1, a, true);
         else          drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.55f, 0.03f, 0.03f, a * 0.5f, false);
+    }
+    // Сколько именно сняли: значок и цифра всплывают над прицелом. Без числа было
+    // непонятно, царапина это или полздоровья, и бой читался только по полоске.
+    if(dmgAge < 1.2f && player_->damageTaken() > 0 && overlay_ == Overlay::None &&
+       !player_->isDead()){
+        float k = clampf(dmgAge / 1.2f, 0.0f, 1.0f);
+        float alpha = 1.0f - k * k;
+        float rise = 34.0f * s * k;
+        char dbuf[32];
+        snprintf(dbuf, sizeof(dbuf), "-%d", player_->damageTaken());
+        float isz = 40.0f * s;
+        float iy = cy - 96.0f * s - rise;
+        if(texDamage_)
+            drawUIRect(cx - isz - 6.0f * s, iy, isz, isz, texDamage_, 1, 1, 1, alpha, true);
+        drawText(cx + 4.0f * s, iy + isz * 0.12f, 32.0f * s, dbuf, 0.95f, 0.28f, 0.24f, alpha);
     }
 
     // ---- Экран смерти: та же кровь во всю силу и отсчёт до возрождения.
@@ -4574,8 +5091,9 @@ void GameClient::renderAuth(){
         drawText(x + 12.0f * s, y + 24.0f * s, 24.0f * s, shown, 1, 1, 1, 0.97f);
     }
 
-    const char* buttons[3] = { "ВОЙТИ", "СОЗДАТЬ АККАУНТ", "ИГРАТЬ ОФФЛАЙН" };
-    for(int i = 0; i < 3; ++i){
+    // Оффлайн-входа нет: закрытый тест — значит, вход только через сервер аккаунтов.
+    const char* buttons[2] = { "ВОЙТИ", "СОЗДАТЬ АККАУНТ" };
+    for(int i = 0; i < 2; ++i){
         float x, y, w, h;
         authButtonRect(i, x, y, w, h);
         bool primary = (i == 0);
@@ -4589,7 +5107,7 @@ void GameClient::renderAuth(){
 
     if(!authNotice_.empty()){
         float bx, by, bw, bh;
-        authButtonRect(2, bx, by, bw, bh);
+        authButtonRect(0, bx, by, bw, bh);
         drawTextCentered(cx, by + bh + 14.0f * s, 18.0f * s, authNotice_,
                          0.95f, 0.75f, 0.45f, 0.95f);
     }
@@ -4647,24 +5165,6 @@ void GameClient::authSubmit(bool registerNew){
     SDL_StopTextInput();
 }
 
-// Оффлайн: одиночная игра без сети. Ник всё равно должен быть из списка теста и уже
-// входившим на этом устройстве — иначе оффлайн стал бы дырой в закрытом тесте.
-void GameClient::authPlayOffline(){
-    std::string nick = authNick_;
-    while(!nick.empty() && nick.back() == ' ') nick.pop_back();
-    if(!nickAllowed(nick)){
-        authNotice_ = "этот ник не в списке закрытого теста";
-        return;
-    }
-    playerName_ = nick;
-    adminMode_ = (nick == "AdminTester");
-    if(coins_ <= 0) coins_ = 500;
-    authNotice_.clear();
-    saveProfile();
-    state_ = GameState::MainMenu;
-    SDL_StopTextInput();
-}
-
 bool GameClient::handleAuthTouch(float x, float y){
     for(int i = 0; i < 2; ++i){
         float bx, by, bw, bh;
@@ -4675,13 +5175,11 @@ bool GameClient::handleAuthTouch(float x, float y){
             return true;
         }
     }
-    for(int i = 0; i < 3; ++i){
+    for(int i = 0; i < 2; ++i){
         float bx, by, bw, bh;
         authButtonRect(i, bx, by, bw, bh);
         if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
-        if(i == 0) authSubmit(false);
-        else if(i == 1) authSubmit(true);
-        else authPlayOffline();
+        authSubmit(i == 1);
         return true;
     }
     return true;
@@ -5056,13 +5554,8 @@ bool GameClient::handleMenuTouch(float x, float y){
         return true;
     }
 
-    // Карточка игрока справа — по ней меняют имя.
-    if(x > (float)SCR_W * 0.90f && y < (float)SCR_H * 0.25f){
-        menuEditName_ = true;
-        menuInput_ = playerName_;
-        SDL_StartTextInput();
-        return true;
-    }
+    // Карточка игрока справа только показывает ник: менять его нельзя, он привязан к
+    // аккаунту закрытого теста.
 
     // Строки списка: первое касание выбирает, второе по той же строке — запускает.
     for(size_t i = 0; i < servers_.size(); ++i){
@@ -5143,6 +5636,7 @@ int GameClient::run(int argc, char** argv){
             else if(what == "box")      overlayOverride_ = Overlay::Box;
             else if(what == "cupboard") overlayOverride_ = Overlay::Cupboard;
             else if(what == "pause")    overlayOverride_ = Overlay::Pause;
+            else if(what == "furnace")  overlayOverride_ = Overlay::Furnace;
         } else if(a == "--dig" && i + 1 < argc){
             digDepth_ = atoi(argv[++i]);
         } else if(a == "--server" && i + 1 < argc){
@@ -5150,6 +5644,8 @@ int GameClient::run(int argc, char** argv){
             joinOnStart_ = argv[++i];
         } else if(a == "--swingphase" && i + 1 < argc){
             swingDebugPhase_ = (float)atof(argv[++i]);
+        } else if(a == "--demohouse"){
+            demoHouse_ = true;   // отладка: стенд из стен и дверей всех трёх уровней
         } else if(a == "--autoattack"){
             autoAttack_ = true;
         } else if(a == "--name" && i + 1 < argc){
@@ -5346,6 +5842,7 @@ void GameClient::loadInterfaceTextures(){
         { "ui_player_marker.png",  &texPlayerMarker_ },
         { "menu_bg.png",           &texMenuBg_ },
         { "ui_blood.png",          &texBlood_ },
+        { "ui_damage.png",         &texDamage_ },
         { "ui_build.png",          &texBuild_ },
         { "ui_build_accept.png",   &texBuildAccept_ },
         { "ui_cat_foundation.png", &texCatFoundation_ },
@@ -5356,6 +5853,8 @@ void GameClient::loadInterfaceTextures(){
         { "ui_open.png",           &texOpen_ },
         { "ui_fire.png",           &texFire_ },
         { "ui_radiation.png",      &texRadiation_ },
+        { "ui_ping_mid.png",       &texPingMid_ },
+        { "ui_ping_high.png",      &texPingHigh_ },
         { "ui_map_mark.png",       &texMapMark_ },
         { "ui_death_mark.png",     &texDeathMark_ },
     };
@@ -5391,6 +5890,11 @@ void GameClient::loadInterfaceTextures(){
         { ItemType::Box,       "item_box.png" },
         { ItemType::Cupboard,  "item_cupboard.png" },
         { ItemType::Grenade,   "item_grenade.png" },
+        { ItemType::Hammer,    "item_hammer.png" },
+        { ItemType::Rifle,     "item_revolver.png" },
+        { ItemType::RifleAmmo, "item_ammo.png" },
+        { ItemType::Launcher,  "item_launcher.png" },
+        { ItemType::Rocket,    "item_rocket.png" },
     };
     int itemsLoaded = 0;
     for(const auto& it : itemIcons){
