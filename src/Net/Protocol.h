@@ -63,6 +63,7 @@ enum class EventType : int {
 struct Event {
     int   type = 0;
     int   id = 0;             // дроп или игрок — смотря по типу
+    int   owner = 0;          // кто отправил: своё событие себе применять не надо
     int   a = 0, b = 0;       // предмет/количество или урон
     float x = 0, y = 0, z = 0;
     long long seq = 0;        // номер в журнале сервера

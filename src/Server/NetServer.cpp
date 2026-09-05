@@ -139,6 +139,7 @@ std::string NetServer::handle(const std::string& method, const std::string& path
         // короткоживущие, и держать их вместе с постройками незачем.
         for(net::Event e : incomingEvents){
             e.seq = ++eventSeq_;
+            e.owner = me.id;          // подписываем событие отправителем
             eventJournal_.push_back(e);
             // Заодно ведём состояние мира: что лежит на земле и что уже срублено.
             if(e.type == (int)net::EventType::Drop){
@@ -169,8 +170,9 @@ std::string NetServer::handle(const std::string& method, const std::string& path
         std::vector<net::Event> freshEvents;
         for(const net::Event& e : eventJournal_){
             if(e.seq <= esince) continue;
-            // Свои же события обратно не возвращаем: их отправитель уже применил.
-            if(e.type == (int)net::EventType::Hit && e.id != me.id && e.a == me.id) continue;
+            // Свои же события обратно не возвращаем: отправитель их уже применил, и
+            // повторно взрывать его собственной гранатой было бы нечестно.
+            if(e.owner == me.id) continue;
             freshEvents.push_back(e);
             if(freshEvents.size() >= 200) break;
         }

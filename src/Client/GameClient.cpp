@@ -607,7 +607,11 @@ void GameClient::spawnRemoteDrop(int netId, ItemType type, int count, Vec3 pos){
 void GameClient::netApplyEvents(){
     if(!net_.connected()) return;
     std::vector<net::Event> events = net_.takeEvents();
+    int me = net_.playerId();
     for(const net::Event& e : events){
+        // Своё событие, вернувшееся с сервера, применять второй раз нельзя: собственная
+        // граната иначе била бы дважды, а свой же дроп появлялся бы дубликатом.
+        if(e.owner != 0 && e.owner == me) continue;
         switch((net::EventType)e.type){
             case net::EventType::Drop:
                 if(e.a > 0 && e.a < (int)ItemType::COUNT && e.b > 0)
@@ -639,8 +643,10 @@ void GameClient::netApplyEvents(){
                 break;
             case net::EventType::Hit:
                 // Урон применяет тот, по кому попали: своё здоровье считает только он.
-                if(net_.playerId() != 0 && e.id == net_.playerId() && !player_->isDead())
+                if(net_.playerId() != 0 && e.id == net_.playerId() && !player_->isDead()){
                     player_->hurt((float)e.b, "Вас убили");
+                    if(debugKit_) SDL_Log("получено %d урона от игрока %d", e.b, e.owner);
+                }
                 break;
         }
     }
@@ -672,14 +678,22 @@ int GameClient::remotePlayerInFront(float reach) const {
 void GameClient::onSwingImpact(){
     if(!net_.connected()) return;
     int target = remotePlayerInFront(3.2f);
-    if(target == 0) return;
+    if(target == 0){
+        if(debugKit_) SDL_Log("удар: цели нет (чужих игроков видно %d)", (int)remote_.size());
+        return;
+    }
     // Урон по игроку: топором больнее, факелом слабее, кулаком совсем чуть-чуть.
     const ItemStack& sel = inventory_.selectedStack();
     int damage = 5;
     if(!sel.empty() && sel.type == ItemType::Axe)   damage = 20;
     if(!sel.empty() && sel.type == ItemType::Torch) damage = 10;
     netSendEvent(net::EventType::Hit, target, net_.playerId(), damage, player_->position());
+    if(debugKit_) SDL_Log("удар по игроку %d на %d урона", target, damage);
     hitMarkAge_ = 0.0f;
+    DamageMark mark;
+    mark.target = target;
+    mark.damage = damage;
+    damageMarks_.push_back(mark);
 }
 
 // ---- Гранаты
@@ -847,13 +861,15 @@ void GameClient::updateRemotePlayers(float dt){
             RemoteView v;
             v.id = p.id;
             v.pos = Vec3{ p.x, p.y, p.z };
+            v.yaw = p.yaw;
+            v.pitch = p.pitch;
             remote_.push_back(v);
             view = &remote_.back();
         }
         view->name = p.name;
         view->target = Vec3{ p.x, p.y, p.z };
-        view->yaw = p.yaw;
-        view->pitch = p.pitch;
+        view->targetYaw = p.yaw;
+        view->targetPitch = p.pitch;
         view->speed = p.speed;
         view->swing = p.swing;
         view->held = p.held;
@@ -870,13 +886,34 @@ void GameClient::updateRemotePlayers(float dt){
 
     for(RemoteView& v : remote_){
         // Позиция догоняет присланную: обмен идёт десять раз в секунду, и без
-        // сглаживания чужой игрок дёргался бы рывками.
-        float k = clampf(dt * 12.0f, 0.0f, 1.0f);
-        v.pos.x += (v.target.x - v.pos.x) * k;
-        v.pos.y += (v.target.y - v.pos.y) * k;
-        v.pos.z += (v.target.z - v.pos.z) * k;
+        // сглаживания чужой игрок дёргался бы рывками. Скорость подтягивания зависит от
+        // того, насколько он далеко убежал: маленькое расхождение доводится мягко,
+        // большое (телепорт после лага) — сразу, чтобы фигурка не «уплывала».
+        float dx = v.target.x - v.pos.x, dy = v.target.y - v.pos.y, dz = v.target.z - v.pos.z;
+        float gap = sqrtf(dx * dx + dy * dy + dz * dz);
+        float rate = (gap > 6.0f) ? 1.0f : clampf(dt * (6.0f + gap * 4.0f), 0.0f, 1.0f);
+        v.pos.x += dx * rate;
+        v.pos.y += dy * rate;
+        v.pos.z += dz * rate;
+
+        // Углы догоняются по кратчайшей дуге: без этого поворот через «границу» углов
+        // разворачивал фигурку через всю окружность.
+        auto smoothAngle = [&](float& current, float target, float speed){
+            float delta = target - current;
+            while(delta > 3.14159265f) delta -= 6.28318531f;
+            while(delta < -3.14159265f) delta += 6.28318531f;
+            current += delta * clampf(dt * speed, 0.0f, 1.0f);
+            while(current > 3.14159265f) current -= 6.28318531f;
+            while(current < -3.14159265f) current += 6.28318531f;
+        };
+        smoothAngle(v.yaw, v.targetYaw, 12.0f);
+        smoothAngle(v.pitch, v.targetPitch, 10.0f);
+
+        // Скорость тоже сглаживаем: по ней шагают ноги, и рывки в ней читались как
+        // припадок, а не как ходьба.
+        v.smoothSpeed += (v.speed - v.smoothSpeed) * clampf(dt * 8.0f, 0.0f, 1.0f);
         // Фаза шага крутится от скорости — по ней ходят ноги и руки.
-        v.phase += dt * (1.6f + v.speed * 1.5f);
+        v.phase += dt * (1.6f + v.smoothSpeed * 1.5f);
         if(v.phase > 6.28318f) v.phase -= 6.28318f;
     }
 }
@@ -900,7 +937,7 @@ void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
         bool crouch = (v.pose == (int)net::Pose::Crouch);
         float scale = crouch ? 0.82f : 1.0f;
         // Ход: чем быстрее идёт, тем шире шаг. Стоящий игрок не машет конечностями.
-        float gait = clampf(v.speed / 4.5f, 0.0f, 1.4f);
+        float gait = clampf(v.smoothSpeed / 4.5f, 0.0f, 1.4f);
         float legA = sinf(v.phase) * 0.7f * gait;
         float armA = -legA;
         // Замах перебивает походку у правой руки: удар важнее шага.
@@ -950,15 +987,28 @@ void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
 
         Vec3 head = bodyPoint(1.72f, 0.0f, 0.0f);
         // Голова доворачивается по наклону взгляда: так видно, куда смотрит игрок.
-        float hp = clampf(v.pitch, -0.9f, 0.9f);
+        // Знак минус: положительный наклон — это взгляд ВВЕРХ, значит и голова должна
+        // задираться, а не клевать носом.
+        float hp = clampf(-v.pitch, -0.9f, 0.9f);
         Vec3 headUp{ up.x * cosf(hp) + fwd.x * sinf(hp),
                      up.y * cosf(hp) + fwd.y * sinf(hp),
                      up.z * cosf(hp) + fwd.z * sinf(hp) };
         Vec3 headFwd{ fwd.x * cosf(hp) - up.x * sinf(hp),
                       fwd.y * cosf(hp) - up.y * sinf(hp),
                       fwd.z * cosf(hp) - up.z * sinf(hp) };
-        pushBox(verts, head, right, headUp, headFwd, 0.19f, 0.19f, 0.19f,
+        const float HEAD = 0.19f;
+        pushBox(verts, head, right, headUp, headFwd, HEAD, HEAD, HEAD,
                 0.88f, 0.70f, 0.55f, layer);
+
+        // Единственный глаз на лице — и он же указывает, куда игрок смотрит. Без него
+        // кубическая голова одинакова со всех сторон, и понять, стоит человек к тебе
+        // лицом или спиной, было невозможно. Рта нарочно нет: одна тёмная точка
+        // читается издалека, а рот на таком размере превращается в грязь.
+        Vec3 eye{ head.x + headFwd.x * (HEAD + 0.012f) + headUp.x * 0.045f,
+                  head.y + headFwd.y * (HEAD + 0.012f) + headUp.y * 0.045f,
+                  head.z + headFwd.z * (HEAD + 0.012f) + headUp.z * 0.045f };
+        pushBox(verts, eye, right, headUp, headFwd, 0.062f, 0.062f, 0.012f,
+                0.05f, 0.05f, 0.06f, layer);
 
         Vec3 shoulderL = bodyPoint(1.50f, -0.30f, 0.0f);
         Vec3 shoulderR = bodyPoint(1.50f,  0.30f, 0.0f);
@@ -1032,6 +1082,13 @@ void GameClient::renderRemotePlayers(const Mat4& view, const Mat4& proj){
 
 // Имя над головой и полоска здоровья: без них в сетевой игре не отличить своих.
 void GameClient::renderRemoteLabels(){
+    // Цифры урона живут секунду и всплывают вверх — даже если сам игрок уже убежал
+    // из виду, попадание должно быть видно.
+    for(size_t i = 0; i < damageMarks_.size(); ){
+        damageMarks_[i].age += 1.0f / 60.0f;
+        if(damageMarks_[i].age > 1.0f) damageMarks_.erase(damageMarks_.begin() + (long)i);
+        else ++i;
+    }
     if(remote_.empty() || overlay_ != Overlay::None) return;
     float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
     Vec3 eye = player_->eyePosition();
@@ -1051,6 +1108,16 @@ void GameClient::renderRemoteLabels(){
         drawUIRect(v.screenX - bw * 0.5f, by, bw, bh, 0, 0.1f, 0.1f, 0.1f, 0.6f, false);
         drawUIRect(v.screenX - bw * 0.5f, by, bw * clampf(v.health / 100.0f, 0.0f, 1.0f), bh,
                    0, 0.75f, 0.25f, 0.22f, 0.9f, false);
+
+        // Свежий урон по этому игроку — цифрой над головой.
+        for(const DamageMark& m : damageMarks_){
+            if(m.target != v.id) continue;
+            char dbuf[16];
+            snprintf(dbuf, sizeof(dbuf), "-%d", m.damage);
+            float a = clampf(1.0f - m.age, 0.0f, 1.0f);
+            drawTextCentered(v.screenX + 26.0f * s, v.screenY - 26.0f * s - m.age * 34.0f * s,
+                             22.0f * s, dbuf, 0.95f, 0.35f, 0.30f, a);
+        }
     }
 }
 
@@ -3098,6 +3165,10 @@ void GameClient::update(float dt){
         // сам ритм ударов задаёт Survivor, а не частота кадров. Отдельно читаем
         // «нажали»: короткий тап короче кадра иначе потерялся бы.
         bool attack = controls_.attackHeld() || controls_.attackPressed();
+        if(autoAttack_){
+            autoAttackTimer_ += dt;
+            if(autoAttackTimer_ >= 1.5f){ autoAttackTimer_ = 0.0f; attack = true; }
+        }
         // С гранатой в руке та же кнопка не машет, а бросает — и ровно один раз.
         const ItemStack& held = inventory_.selectedStack();
         if(!held.empty() && held.type == ItemType::Grenade){
@@ -4630,6 +4701,8 @@ int GameClient::run(int argc, char** argv){
         } else if(a == "--server" && i + 1 < argc){
             // Отладка и проверка сети: сразу войти на сервер, минуя меню.
             joinOnStart_ = argv[++i];
+        } else if(a == "--autoattack"){
+            autoAttack_ = true;
         } else if(a == "--name" && i + 1 < argc){
             playerName_ = argv[++i];
         } else if(a == "--menu"){

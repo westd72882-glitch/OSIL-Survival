@@ -116,6 +116,10 @@ private:
     std::string menuInput_;
     std::string playerName_ = "выживший";
     std::string joinOnStart_;      // ключ --server: войти сразу, минуя меню
+    // Ключ --autoattack: бить раз в полторы секунды без нажатий. Нужен, чтобы
+    // проверять бой между игроками безголовыми клиентами, где нажать некому.
+    bool  autoAttack_ = false;
+    float autoAttackTimer_ = 0.0f;
     std::string menuNotice_;       // короткая строка о результате действия
     float menuNoticeAge_ = 99.0f;
     void loadServerList();
@@ -141,6 +145,10 @@ private:
     // Кого задел удар: возвращает id игрока перед лицом или 0.
     int  remotePlayerInFront(float reach) const;
     void onSwingImpact();
+    // Цифра урона над тем, кого мы задели: без неё попадание было видно только по
+    // чужой полоске здоровья, и казалось, что удар не проходит.
+    struct DamageMark { int target = 0; int damage = 0; float age = 0.0f; };
+    std::vector<DamageMark> damageMarks_;
 
     // ---- Гранаты. Летит, тикает три секунды, взрывается: постройке минус 50 прочности,
     // живым — до 150 здоровья, чем ближе, тем больше.
@@ -160,7 +168,10 @@ private:
         int id = 0;
         std::string name;
         Vec3 pos{}, target{};
-        float yaw = 0, pitch = 0, speed = 0, swing = 0, phase = 0;
+        // Углы тоже сглаживаются: обмен идёт десять раз в секунду, и без этого чужой
+        // игрок «щёлкал» головой на каждом пакете.
+        float yaw = 0, pitch = 0, targetYaw = 0, targetPitch = 0;
+        float speed = 0, smoothSpeed = 0, swing = 0, phase = 0;
         int   held = 0, pose = 0, health = 100;
         float screenX = 0, screenY = 0;
         bool  onScreen = false;
