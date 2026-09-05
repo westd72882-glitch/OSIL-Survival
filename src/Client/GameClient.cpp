@@ -827,8 +827,20 @@ void GameClient::fireRifle(){
     shotFlash_ = 0.0f;
     // Отдача: ствол подбрасывает вверх, и это же движение видно в руке.
     pitch_ = clampf(pitch_ + 0.9f, -89.0f, 89.0f);
+    // Пуля не проходит сквозь стену: сначала смотрим, что первым встретит луч —
+    // фигура или блок. Без этого через дом стреляли бы как через воздух.
     int target = remotePlayerInFront(90.0f);
     if(target == 0) return;
+    Vec3 eye = player_->eyePosition();
+    float bodyDist = 90.0f;
+    for(const RemoteView& v : remote_){
+        if(v.id != target) continue;
+        float dx = v.pos.x - eye.x, dy = v.pos.y + 0.9f - eye.y, dz = v.pos.z - eye.z;
+        bodyDist = sqrtf(dx * dx + dy * dy + dz * dz);
+        break;
+    }
+    RayHit wall = voxels_->raycast(eye, player_->lookDirection(), bodyDist);
+    if(wall.hit) return;                 // пуля ушла в стену
     const int damage = 35;
     netSendEvent(net::EventType::Hit, target, net_.playerId(), damage, player_->position());
     hitMarkAge_ = 0.0f;
