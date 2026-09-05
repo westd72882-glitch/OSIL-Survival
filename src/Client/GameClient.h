@@ -31,7 +31,7 @@ enum class Overlay { None, Inventory, Craft, Map, Settings, Pause, Furnace, Box,
 
 // Состояние клиента. Главное меню — не «окно поверх игры», а отдельный режим: мир в нём
 // уже построен и медленно вращается фоном, но игрок не управляется и время не идёт.
-enum class GameState { MainMenu, Playing };
+enum class GameState { Auth, MainMenu, Playing };
 
 // Рецепт крафта. Полноценная система с верстаками и очередью — 3-й этап; здесь
 // минимум, который делает добытое сырьё полезным уже сейчас.
@@ -104,12 +104,38 @@ private:
         std::string name;
         std::string map = "Survival Island";
         int  players = 0, max = 100, ping = 0;
+        int  protocol = 0;          // версия протокола сервера
         bool online = false;
         bool local = false;
     };
     std::vector<ServerRow> servers_;
     int  menuTab_ = 0;             // Сервера / Друзья / Любимые / История
     int  menuSelected_ = 0;
+    // ---- Вход в игру. Закрытый бета-тест: ников ровно четыре, они прошиты и в
+    // клиенте (чтобы отказ был мгновенным), и на сервере (чтобы его нельзя было обойти).
+    std::string authNick_, authPassword_, authNotice_;
+    int  authField_ = 0;          // 0 — ник, 1 — пароль
+    bool authBusy_ = false;
+    bool forceAuthScreen_ = false;   // ключ --auth: показать экран входа на снимке
+    bool adminMode_ = false;      // ник AdminTester: ресурсы бесконечны
+    float adminRefillTimer_ = 0.0f;
+    void renderAuth();
+    bool handleAuthTouch(float x, float y);
+    void authFieldRect(int i, float& x, float& y, float& w, float& h) const;
+    void authButtonRect(int i, float& x, float& y, float& w, float& h) const;
+    void authSubmit(bool registerNew);
+    void authPlayOffline();
+    static bool nickAllowed(const std::string& nick);
+    void loadProfile();
+    void saveProfile();
+
+    // ---- Монеты и магазин. Валюта закрытого теста: за неё в окне крафта покупают
+    // сырьё, чтобы не гриндить одно и то же ради проверки механик.
+    int  coins_ = 0;
+    bool shopMode_ = false;       // в окне крафта открыт магазин, а не рецепты
+    int  shopSelected_ = 0;
+    void buySelected();
+
     bool menuRefreshed_ = false;   // список уже опрашивали в этом запуске
     bool menuAddOpen_ = false;     // открыт ввод адреса
     bool menuEditName_ = false;    // вводится имя игрока

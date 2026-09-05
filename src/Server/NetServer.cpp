@@ -1,11 +1,107 @@
 #include "NetServer.h"
 #include "../Core/Json.h"
 #include "../Core/Log.h"
+#include "../Core/Sha256.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+
+namespace {
+// Закрытый бета-тест: играть можно только под этими никами. Список нарочно в коде —
+// заводить панель администратора ради четырёх тестеров незачем.
+const char* const ALLOWED_NICKS[] = { "Tester0", "Tester5", "Tester6", "AdminTester" };
+
+std::string randomSalt(){
+    static bool seeded = false;
+    if(!seeded){ srand((unsigned)time(nullptr) ^ (unsigned)clock()); seeded = true; }
+    char buf[17];
+    const char* hex = "0123456789abcdef";
+    for(int i = 0; i < 16; ++i) buf[i] = hex[rand() % 16];
+    buf[16] = '\0';
+    return std::string(buf);
+}
+} // namespace
+
+bool NetServer::nickAllowed(const std::string& nick) const {
+    for(const char* n : ALLOWED_NICKS) if(nick == n) return true;
+    return false;
+}
+
+void NetServer::loadAccounts(){
+    accounts_.clear();
+    FILE* f = fopen(accountsPath_.c_str(), "rb");
+    if(!f) return;
+    char nick[64], salt[64], hash[128];
+    while(fscanf(f, "%63s %63s %127s", nick, salt, hash) == 3){
+        Account a;
+        a.nick = nick; a.salt = salt; a.hash = hash;
+        accounts_[a.nick] = a;
+    }
+    fclose(f);
+    LOG_INFO("аккаунты: загружено %d", (int)accounts_.size());
+}
+
+void NetServer::saveAccounts() const {
+    FILE* f = fopen(accountsPath_.c_str(), "wb");
+    if(!f){ LOG_ERROR("аккаунты: не удалось записать %s", accountsPath_.c_str()); return; }
+    for(const auto& kv : accounts_)
+        fprintf(f, "%s %s %s\n", kv.second.nick.c_str(), kv.second.salt.c_str(),
+                kv.second.hash.c_str());
+    fclose(f);
+}
+
+// Вход и регистрация. Пароль в файле не лежит: хранится соль и SHA-256 от «соль+пароль».
+std::string NetServer::handleAuth(const std::string& route, const std::string& body,
+                                  int& status){
+    JsonValue root;
+    std::string nick, password;
+    if(jsonParse(body.c_str(), body.size(), root)){
+        nick = root["nick"].asString("");
+        password = root["password"].asString("");
+    }
+    if(nick.empty() || password.size() < 3){
+        status = 400;
+        return "{\"error\":\"нужны ник и пароль от трёх символов\"}";
+    }
+    if(!nickAllowed(nick)){
+        status = 403;
+        return "{\"error\":\"закрытый тест: этот ник не в списке\"}";
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = accounts_.find(nick);
+    if(route == "/auth/register"){
+        if(it != accounts_.end()){
+            status = 409;
+            return "{\"error\":\"аккаунт уже создан, входите по паролю\"}";
+        }
+        Account a;
+        a.nick = nick;
+        a.salt = randomSalt();
+        a.hash = sha256Hex(a.salt + password);
+        accounts_[nick] = a;
+        saveAccounts();
+        LOG_INFO("аккаунты: зарегистрирован %s", nick.c_str());
+        return "{\"ok\":1,\"nick\":\"" + net::jsonEscape(nick) + "\"}";
+    }
+
+    // Вход.
+    if(it == accounts_.end()){
+        status = 404;
+        return "{\"error\":\"аккаунта нет — создайте его\"}";
+    }
+    if(sha256Hex(it->second.salt + password) != it->second.hash){
+        status = 401;
+        return "{\"error\":\"неверный пароль\"}";
+    }
+    return "{\"ok\":1,\"nick\":\"" + net::jsonEscape(nick) + "\"}";
+}
 
 bool NetServer::start(const Config& cfg){
     cfg_ = cfg;
+    loadAccounts();
     bool ok = http_.start(cfg.port, [this](const std::string& m, const std::string& p,
                                            const std::string& b, int& st){
         return handle(m, p, b, st);
@@ -43,7 +139,7 @@ std::string NetServer::statusJson() const {
     s += ",\"max\":" + std::to_string(cfg_.maxPlayers);
     s += ",\"seed\":" + std::to_string(cfg_.seed);
     s += ",\"time\":" + std::to_string((int)timeOfDay_);
-    s += ",\"protocol\":1";
+    s += ",\"protocol\":2";
     s += "}";
     return s;
 }
@@ -56,6 +152,10 @@ std::string NetServer::handle(const std::string& method, const std::string& path
 
     // Проверка живости хостинга и карточка сервера для списка в меню.
     if(route == "/" || route == "/status") return statusJson();
+
+    // Аккаунты закрытого теста.
+    if((route == "/auth/login" || route == "/auth/register") && method == "POST")
+        return handleAuth(route, body, status);
 
     if(route == "/join" && method == "POST"){
         JsonValue root;
@@ -142,6 +242,13 @@ std::string NetServer::handle(const std::string& method, const std::string& path
             e.owner = me.id;          // подписываем событие отправителем
             eventJournal_.push_back(e);
             // Заодно ведём состояние мира: что лежит на земле и что уже срублено.
+            if(e.type == (int)net::EventType::Hit){
+                // Удар по игроку сервер не пересылает как событие, а КОПИТ жертве:
+                // событие могло не влезть в порцию и потеряться, а урон терять нельзя.
+                auto victim = players_.find(e.id);
+                if(victim != players_.end()) victim->second.pendingDamage += e.b;
+                continue;
+            }
             if(e.type == (int)net::EventType::Drop){
                 liveDrops_[e.id] = e;
             } else if(e.type == (int)net::EventType::Pickup){
@@ -182,7 +289,10 @@ std::string NetServer::handle(const std::string& method, const std::string& path
             if(e.owner == me.id) continue;
             freshEvents.push_back(e);
         }
-        return net::encodeSyncResponse(others, fresh, freshEvents, sentHead, sentEventHead, timeOfDay_);
+        int damage = it->second.pendingDamage;
+        it->second.pendingDamage = 0;
+        return net::encodeSyncResponse(others, fresh, freshEvents, sentHead, sentEventHead,
+                                       timeOfDay_, damage);
     }
 
     status = 404;

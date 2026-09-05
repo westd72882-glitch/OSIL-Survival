@@ -490,6 +490,11 @@ void Survivor::lootCrate(int x, int y, int z){
         snprintf(buf, sizeof(buf), "+%d %s", count, itemDef(d.type).nameRu);
         say(buf);
     }
+    // Монеты в ящике: небольшая, но приятная находка.
+    int coins = 5 + (int)((h >> 40) % 11ULL);
+    if(onCoins) onCoins(coins);
+    snprintf(buf, sizeof(buf), "+%d монет", coins);
+    say(buf);
     voxels_.setBlock(x, y, z, Block::Air);
 }
 

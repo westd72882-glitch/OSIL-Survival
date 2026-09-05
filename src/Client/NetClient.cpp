@@ -32,6 +32,7 @@ bool askStatus(const net::Url& url, NetClient::Info& info){
     info.map = root["map"].asString("Survival Island");
     info.players = root["players"].asInt();
     info.max = root["max"].asInt(100);
+    info.protocol = root["protocol"].asInt(1);
     return true;
 }
 } // namespace
@@ -157,6 +158,8 @@ bool NetClient::join(const std::string& address, const std::string& playerName){
     }
     id_.store(root["id"].asInt());
     maxPlayers_.store(root["max"].asInt(info.max ? info.max : 100));
+    protocol_.store(info.protocol ? info.protocol : 1);
+    incomingDamage_.store(0);
     seed_ = (unsigned long long)root["seed"].asDouble(0.0);
     serverTime_.store(root["time"].asFloat(8.0f));
     connected_.store(true);
@@ -243,6 +246,10 @@ void NetClient::pushEvent(const net::Event& e){
     outEvents_.push_back(e);
 }
 
+int NetClient::takeDamage(){
+    return incomingDamage_.exchange(0);
+}
+
 std::vector<net::Event> NetClient::takeEvents(){
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<net::Event> out;
@@ -296,7 +303,9 @@ void NetClient::loop(){
             std::vector<net::Event> events;
             long long head = since, ehead = esince;
             float time = serverTime_.load();
-            if(net::decodeSyncResponse(reply, players, edits, events, head, ehead, time)){
+            int damage = 0;
+            if(net::decodeSyncResponse(reply, players, edits, events, head, ehead, time, damage)){
+                if(damage > 0) incomingDamage_.fetch_add(damage);
                 std::lock_guard<std::mutex> lock(mutex_);
                 others_ = players;
                 since_ = head;

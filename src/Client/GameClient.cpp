@@ -60,6 +60,22 @@ const Recipe kRecipes[] = {
 };
 const int kRecipeCount = (int)(sizeof(kRecipes)/sizeof(kRecipes[0]));
 
+// Товары магазина: сырьё за монеты. Валюта закрытого теста нужна, чтобы проверять
+// механики, не выбивая по часу одно и то же дерево.
+struct Good { ItemType item; int count; int price; const char* note; };
+const Good kShop[] = {
+    { ItemType::Wood,      100, 20, "Сотня досок сразу: на фундамент и стены." },
+    { ItemType::Stone,     100, 25, "Камень для печи и топоров." },
+    { ItemType::OreMetal,   50, 40, "Железная руда — в печь, оттуда металл." },
+    { ItemType::OreSulfur,  50, 40, "Серная руда — в печь, оттуда сера." },
+    { ItemType::MetalFrag,  50, 60, "Готовый металл, плавить не надо." },
+    { ItemType::Sulfur,     50, 60, "Готовая сера: сразу в порох." },
+    { ItemType::Gunpowder,  20, 80, "Порох. Двадцать штук — это две гранаты." },
+    { ItemType::Cloth,      50, 20, "Ткань." },
+    { ItemType::Scrap,      50, 30, "Скрап." },
+};
+const int kShopCount = (int)(sizeof(kShop)/sizeof(kShop[0]));
+
 TTF_Font* openAnyFont(int size){
     // Своего шрифта в репозитории нет (лицензии), берём системный: на Android это
     // Roboto, на настольной Linux — DejaVu. Нет ни одного — игра идёт без надписей.
@@ -98,6 +114,7 @@ bool GameClient::initPlatform(){
     // Список серверов и имя игрока лежат рядом с настройками: меню — это браузер
     // серверов, и без списка ему нечего показывать.
     loadServerList();
+    loadProfile();
     // https-транспорт поднимаем в главном потоке: на Android ссылку на Java-класс
     // можно получить только отсюда, из сетевого потока её уже не найти.
     net::initSecureTransport();
@@ -606,6 +623,13 @@ void GameClient::spawnRemoteDrop(int netId, ItemType type, int count, Vec3 pos){
 
 void GameClient::netApplyEvents(){
     if(!net_.connected()) return;
+    // Урон от чужих ударов приходит отдельным полем ответа — его нельзя потерять в
+    // журнале событий, поэтому сервер копит его нам и отдаёт при первом же обмене.
+    int hurt = net_.takeDamage();
+    if(hurt > 0 && !player_->isDead()){
+        player_->hurt((float)hurt, "Вас убили");
+        if(debugKit_) SDL_Log("получено %d урона", hurt);
+    }
     std::vector<net::Event> events = net_.takeEvents();
     int me = net_.playerId();
     for(const net::Event& e : events){
@@ -642,11 +666,10 @@ void GameClient::netApplyEvents(){
                 explode(Vec3{ e.x, e.y, e.z }, e.b, true);
                 break;
             case net::EventType::Hit:
-                // Урон применяет тот, по кому попали: своё здоровье считает только он.
-                if(net_.playerId() != 0 && e.id == net_.playerId() && !player_->isDead()){
+                // Сюда попадают только удары со старых серверов: новый сервер копит урон
+                // жертве и отдаёт его полем ответа, а событие не пересылает.
+                if(net_.playerId() != 0 && e.id == net_.playerId() && !player_->isDead())
                     player_->hurt((float)e.b, "Вас убили");
-                    if(debugKit_) SDL_Log("получено %d урона от игрока %d", e.b, e.owner);
-                }
                 break;
         }
     }
@@ -1527,14 +1550,15 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     const ItemStack& sel = inventory_.selectedStack();
     bool axe = !sel.empty() && sel.type == ItemType::Axe;
     bool torch = !sel.empty() && sel.type == ItemType::Torch;
-    if(!axe && !torch) return;
+    bool grenade = !sel.empty() && sel.type == ItemType::Grenade;
+    if(!axe && !torch && !grenade) return;
 
     heldBobPhase_ += dt * (2.0f + player_->speed() * 1.6f);
     float bob = (player_->speed() > 0.4f && player_->onGround())
                 ? sinf(heldBobPhase_ * 2.0f) * 0.012f : 0.0f;
-    // Замах в три доли, как настоящий удар топором: короткий отвод назад, резкий
-    // проход вперёд-вниз и мягкий возврат. Один синус давал одинаково вялое движение
-    // туда и обратно и читался как дрожь, а не как удар.
+
+    // Замах в три доли, как настоящий удар: короткий отвод назад, резкий проход по цели
+    // и мягкий возврат. Один синус давал одинаково вялое движение туда и обратно.
     float phase = player_->swingPhase();
     // Ключ --swingphase замораживает фазу удара: так удар снимается на скриншот, где
     // нажать кнопку некому.
@@ -1542,30 +1566,27 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
     float windup = smoothstepf(0.0f, 0.28f, phase);      // отвод назад
     float strike = smoothstepf(0.26f, 0.52f, phase);     // проход по цели
     float back   = smoothstepf(0.58f, 1.0f, phase);      // возврат в стойку
-    // Знак положительный: удар идёт в ТУ ЖЕ сторону, куда смотрит лезвие. Раньше топор
-    // лежал головой вправо, а замах уводил его влево — удар читался как промах мимо себя.
     float swing = (0.30f * windup - 1.30f * strike) * (1.0f - back);
 
-    Vec3 right0 = v3norm(v3cross(forward, Vec3{0,1,0}));
-    Vec3 up = v3cross(right0, forward);
-    // Инструмент держат ПРЯМО ПЕРЕД СОБОЙ: лезвие топора смотрит от игрока, вперёд по
-    // взгляду, и лишь чуть повёрнуто, чтобы голову топора было видно объёмом, а не
-    // торцом. Профиль (лезвие вбок) выглядел так, будто игрок несёт топор мимо цели.
-    const float TOOL_YAW = 5.50f;
-    float cy2 = cosf(TOOL_YAW), sy2 = sinf(TOOL_YAW);
-    Vec3 right{ right0.x * cy2 + forward.x * sy2,
-                right0.y * cy2 + forward.y * sy2,
-                right0.z * cy2 + forward.z * sy2 };
-    Vec3 depth{ forward.x * cy2 - right0.x * sy2,
-                forward.y * cy2 - right0.y * sy2,
-                forward.z * cy2 - right0.z * sy2 };
+    // Оси камеры. Инструмент стоит РОВНО по ним: рукоять вертикально, плоскость топора
+    // параллельна экрану, голова смотрит чуть влево — так её видно целиком. Никаких
+    // разворотов вокруг вертикали: от них инструмент казался повёрнутым мимо цели.
+    Vec3 right = v3norm(v3cross(forward, Vec3{0,1,0}));
+    Vec3 up = v3cross(right, forward);
 
-    // Бруски топорика в своей плоской системе: x поперёк рукояти, y вдоль неё.
+    // Удар — это НАКЛОН ВПЕРЁД вокруг кисти, а не поворот в плоскости экрана: топор
+    // клюёт от игрока в сторону взгляда и возвращается обратно.
+    float tilt = -swing * 1.30f;          // на проходе swing отрицателен -> наклон вперёд
+    float ct = cosf(tilt), st = sinf(tilt);
+    Vec3 upT{ up.x * ct + forward.x * st, up.y * ct + forward.y * st, up.z * ct + forward.z * st };
+    Vec3 depthT{ forward.x * ct - up.x * st, forward.y * ct - up.y * st,
+                 forward.z * ct - up.z * st };
+
+    // Бруски инструмента в своей плоской системе: x поперёк рукояти, y вдоль неё.
     struct Part { float cx, cy, hx, hy, hz; Block block; };
     // Пропорции сняты с картинок предметов. Топор: длинное топорище и широкая каменная
-    // голова, насаженная сбоку и перевязанная у обуха. Факел: палка с горящим навершием.
-    // Кисть — квадратный брусок у нижнего конца рукояти: без неё инструмент висел в
-    // воздухе сам по себе. Сам топор крупнее прежнего.
+    // голова, насаженная СЛЕВА, чтобы её было видно. Факел: палка с горящим навершием.
+    // Кисть — квадратный брусок у нижнего конца рукояти.
     const Part axeParts[] = {
         { 0.000f, -0.150f, 0.0400f, 0.045f, 0.0400f, Block::Sand },   // кисть
         { 0.000f, -0.070f, 0.0135f, 0.115f, 0.0135f, Block::Wood },   // топорище, низ
@@ -1582,25 +1603,28 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
         { 0.000f,  0.156f, 0.0160f, 0.023f, 0.0160f, Block::Sand },   // пламя, ядро
         { 0.000f,  0.192f, 0.0095f, 0.018f, 0.0095f, Block::Sand },   // пламя, язык
     };
-    const Part* parts = axe ? axeParts : torchParts;
+    // Граната: зелёная кубическая болванка с рычагом и кольцом. Её видно в руке ДО
+    // броска — иначе непонятно, что сейчас полетит.
+    const Part grenadeParts[] = {
+        { 0.000f, -0.150f, 0.0400f, 0.045f, 0.0400f, Block::Sand },   // кисть
+        { 0.000f, -0.055f, 0.0520f, 0.052f, 0.0520f, Block::Snow },   // корпус
+        { 0.000f,  0.005f, 0.0230f, 0.018f, 0.0230f, Block::Snow },   // горловина
+        { 0.030f,  0.010f, 0.0090f, 0.032f, 0.0090f, Block::Snow },   // рычаг
+        { 0.052f,  0.030f, 0.0150f, 0.008f, 0.0060f, Block::Snow },   // кольцо
+        { 0.000f, -0.055f, 0.0530f, 0.012f, 0.0530f, Block::Snow },   // поясок
+    };
+    const Part* parts = axe ? axeParts : (torch ? torchParts : grenadeParts);
     const int partCount = 6;
     const float S = 0.80f;
-    // Факел держат почти прямо: с наклоном топора пламя уезжает к центру экрана и
-    // теряется в пейзаже.
-    // В покое инструмент держат ПРЯМО, рукоятью вниз: наклон оставлен только удару —
-    // на нём топор и факел клюют вперёд, отсюда и ощущение веса.
-    // В покое инструмент держат прямо, рукоятью вниз. Удар идёт ВПЕРЁД, по центру
-    // взгляда: инструмент клюёт от игрока, а не уводится в сторону.
-    float angle = swing * 1.45f;
-    float ca = cosf(angle), sa = sinf(angle);
-    // Прямой инструмент занимает больше места по высоте, поэтому он отодвинут правее
-    // и ниже: иначе рукоять с кистью уходила за нижний край, а голова топора лезла в
-    // середину экрана.
-    // На проходе удара swing отрицателен. В сторону инструмент больше не уводится
-    // совсем: удар идёт вперёд и вниз, по центру взгляда.
+
+    // Кисть держится на одном месте; на ударе она уходит чуть вперёд и вниз — вместе с
+    // наклоном это и читается как замах.
     float offX = 0.190f;
-    float offZ = 0.52f - swing * 0.22f;
-    float offY = (axe ? -0.205f : -0.185f) + bob + swing * 0.26f;
+    float offZ = 0.52f - swing * 0.10f;
+    float offY = (axe ? -0.205f : (grenade ? -0.165f : -0.185f)) + bob + swing * 0.12f;
+    Vec3 hand{ eye.x + right.x * offX + up.x * offY + forward.x * offZ,
+               eye.y + right.y * offX + up.y * offY + forward.y * offZ,
+               eye.z + right.z * offX + up.z * offY + forward.z * offZ };
 
     std::vector<VoxelVertex> verts;
     verts.reserve(6 * 36);
@@ -1609,45 +1633,43 @@ void GameClient::renderHeldItem(const Mat4& view, const Mat4& proj, Vec3 eye, Ve
         float tr, tg, tb;
         blockTextureTint(part.block, tr, tg, tb);
         float layer = (float)blockTextureLayer(part.block);
-        // Пламя факела — два верхних бруска: красим их в огонь и чуть качаем яркостью,
-        // чтобы оно не выглядело жёлтым кубиком.
         // Кисть — телесного цвета, а не песочного.
         if(pi == 0){ tr = 0.86f; tg = 0.66f; tb = 0.50f; }
+        // Пламя факела — два верхних бруска: красим их в огонь и чуть качаем яркостью,
+        // чтобы оно не выглядело жёлтым кубиком.
         if(torch && pi >= 4){
             float flick = 0.85f + 0.15f * sinf(heldBobPhase_ * 11.0f + (float)pi);
             tr = 1.9f * flick; tg = (pi == 4 ? 1.15f : 1.45f) * flick; tb = 0.35f * flick;
         }
-        // Брусок собираем как «кубик» с разными полуразмерами: pushCube даёт куб, а
-        // тут нужен вытянутый, поэтому строим грани здесь же по тем же правилам.
-        // Место инструмента на экране считается в осях КАМЕРЫ (right0 — вправо по
-        // экрану), а сами бруски раскладываются в осях самого инструмента. Пока это
-        // было одно и то же, разворот инструмента уводил его и в другой угол экрана.
-        float lx = part.cx * S * ca - part.cy * S * sa;
-        float ly = part.cx * S * sa + part.cy * S * ca;
-        Vec3 centre{
-            eye.x + right.x * lx + up.x * (ly + offY) + right0.x * offX + forward.x * offZ,
-            eye.y + right.y * lx + up.y * (ly + offY) + right0.y * offX + forward.y * offZ,
-            eye.z + right.z * lx + up.z * (ly + offY) + right0.z * offX + forward.z * offZ
-        };
-        // Оси бруска в мировых координатах: рукоять повёрнута вместе с топором.
-        Vec3 ax{ right.x * ca + up.x * sa, right.y * ca + up.y * sa, right.z * ca + up.z * sa };
-        Vec3 ay{ -right.x * sa + up.x * ca, -right.y * sa + up.y * ca, -right.z * sa + up.z * ca };
+        // Граната — армейская зелень; кольцо посветлее, чтобы читалось.
+        if(grenade && pi >= 1){
+            bool ring = (pi == 4);
+            tr = ring ? 0.72f : 0.30f;
+            tg = ring ? 0.70f : 0.44f;
+            tb = ring ? 0.55f : 0.26f;
+        }
+
+        // Место бруска: от кисти вдоль осей инструмента. Ось «вверх» наклонена вперёд
+        // на величину удара, поэтому весь инструмент клюёт вперёд одним куском.
+        float lx = part.cx * S, ly = part.cy * S;
+        Vec3 centre{ hand.x + right.x * lx + upT.x * ly,
+                     hand.y + right.y * lx + upT.y * ly,
+                     hand.z + right.z * lx + upT.z * ly };
+        Vec3 ax = right, ay = upT, az = depthT;
         float hx = part.hx * S, hy = part.hy * S, hz = part.hz * S;
         static const int SX[6] = { 0, 0, 1, -1, 0, 0 };
         static const int SY[6] = { 1, -1, 0, 0, 0, 0 };
         static const int SZ[6] = { 0, 0, 0, 0, 1, -1 };
         for(int f = 0; f < 6; ++f){
-            Vec3 n{ ax.x * SX[f] + ay.x * SY[f] + depth.x * SZ[f],
-                    ax.y * SX[f] + ay.y * SY[f] + depth.y * SZ[f],
-                    ax.z * SX[f] + ay.z * SY[f] + depth.z * SZ[f] };
-            // Два касательных направления грани и их полуразмеры.
+            Vec3 n{ ax.x * SX[f] + ay.x * SY[f] + az.x * SZ[f],
+                    ax.y * SX[f] + ay.y * SY[f] + az.y * SZ[f],
+                    ax.z * SX[f] + ay.z * SY[f] + az.z * SZ[f] };
             Vec3 t1, t2; float h1, h2;
-            if(SY[f] != 0){ t1 = ax; h1 = hx; t2 = depth; h2 = hz; }
-            else if(SX[f] != 0){ t1 = ay; h1 = hy; t2 = depth; h2 = hz; }
+            if(SY[f] != 0){ t1 = ax; h1 = hx; t2 = az; h2 = hz; }
+            else if(SX[f] != 0){ t1 = ay; h1 = hy; t2 = az; h2 = hz; }
             else { t1 = ax; h1 = hx; t2 = ay; h2 = hy; }
-            Vec3 base{ centre.x + n.x * (SY[f] ? hy : SX[f] ? hx : hz),
-                       centre.y + n.y * (SY[f] ? hy : SX[f] ? hx : hz),
-                       centre.z + n.z * (SY[f] ? hy : SX[f] ? hx : hz) };
+            float off = SY[f] ? hy : (SX[f] ? hx : hz);
+            Vec3 base{ centre.x + n.x * off, centre.y + n.y * off, centre.z + n.z * off };
             float face = (SY[f] > 0) ? 1.0f : (SY[f] < 0 ? 0.55f : (SX[f] ? 0.78f : 0.9f));
             VoxelVertex q[4];
             for(int k = 0; k < 4; ++k){
@@ -1731,6 +1753,7 @@ void GameClient::initWorld(){
     player_->onOpenFurnace = [this](){ overlay_ = Overlay::Furnace; };
     // Удар по дому считает клиент: прочность детали живёт в его реестре построек.
     player_->onHitBuild = [this](Block b, int x, int y, int z){ hitBuildPiece(b, x, y, z); };
+    player_->onCoins = [this](int amount){ coins_ += amount; saveProfile(); };
     // Метка попадания: короткая вспышка у прицела, чтобы удар читался как удар.
     player_->onHitLanded = [this](Block, int, int, int){ hitMarkAge_ = 0.0f; };
     // Середина замаха: смотрим, не оказался ли на пути другой игрок.
@@ -1779,10 +1802,22 @@ void GameClient::initWorld(){
     // через общий add они бы тоже улетели туда, оставив пояс пустым.
     inventory_.slot(0) = ItemStack{ ItemType::Axe, 1 };
     inventory_.slot(1) = ItemStack{ ItemType::Torch, 1 };
+    if(adminMode_){
+        // AdminTester: ресурсы бесконечны. Проще всего это дать честными стаками —
+        // крафт и магазин ему и так ничего не стоят, а инвентарь всегда полон.
+        const ItemType kAdminKit[] = {
+            ItemType::Wood, ItemType::Stone, ItemType::OreMetal, ItemType::OreSulfur,
+            ItemType::MetalFrag, ItemType::Sulfur, ItemType::Gunpowder, ItemType::Cloth,
+            ItemType::Scrap, ItemType::Grenade, ItemType::BuildPlan, ItemType::Furnace,
+            ItemType::Box, ItemType::Cupboard, ItemType::Torch,
+        };
+        for(ItemType t : kAdminKit) inventory_.add(t, itemDef(t).maxStack);
+    }
     if(debugKit_){
         // Отладочный набор: план стройки кладём прямо в пояс, чтобы режим стройки
         // включался ключом --slot 2 и его было видно на снимке.
         inventory_.slot(2) = ItemStack{ ItemType::BuildPlan, 1 };
+        inventory_.slot(3) = ItemStack{ ItemType::Grenade, 5 };
         inventory_.add(ItemType::Wood, 300);
         inventory_.add(ItemType::Stone, 100);
         // Ящик и шкаф рядом со спавном: их окна надо чем-то открывать при проверке
@@ -2247,6 +2282,33 @@ bool GameClient::handleOverlayTouch(float x, float y){
             overlay_ = Overlay::None;
             return true;
         }
+
+        // Переключатель «крафт — магазин».
+        {
+            float bw = 150.0f * s, bh = 34.0f * s;
+            float bx = gx + 170.0f * s, by = gy - 46.0f * s;
+            if(x >= bx && x <= bx + bw && y >= by && y <= by + bh){
+                shopMode_ = !shopMode_;
+                return true;
+            }
+        }
+
+        // Магазин: плитка выбирает товар, кнопка покупает.
+        if(shopMode_){
+            for(int i = 0; i < kShopCount; ++i){
+                float tx, ty;
+                craftTilePos(i, tx, ty);
+                if(x >= tx && x <= tx + tile && y >= ty && y <= ty + tile){
+                    shopSelected_ = i;
+                    return true;
+                }
+            }
+            float bx, by, bw, bh;
+            craftButtonRect(bx, by, bw, bh);
+            if(x >= bx && x <= bx + bw && y >= by && y <= by + bh) buySelected();
+            craftDragging_ = true;   // список товаров тоже листается пальцем
+            return true;
+        }
         craftDragging_ = true;   // палец на экране крафта: возможно, список будут листать
         // Плитка рецепта — выбор, а не мгновенный крафт: сначала посмотреть, что нужно.
         for(int i = 0; i < kRecipeCount; ++i){
@@ -2263,11 +2325,15 @@ bool GameClient::handleOverlayTouch(float x, float y){
         if(x >= bx && x <= bx + bw && y >= by && y <= by + bh &&
            craftSelected_ >= 0 && craftSelected_ < kRecipeCount){
             const Recipe& r = kRecipes[craftSelected_];
-            bool okA = inventory_.countOf(r.costA) >= r.costACount;
-            bool okB = (r.costB == ItemType::None) || inventory_.countOf(r.costB) >= r.costBCount;
+            // Админу теста материалы не нужны: он проверяет механики, а не гринд.
+            bool okA = adminMode_ || inventory_.countOf(r.costA) >= r.costACount;
+            bool okB = adminMode_ || (r.costB == ItemType::None) ||
+                       inventory_.countOf(r.costB) >= r.costBCount;
             if(okA && okB){
-                inventory_.remove(r.costA, r.costACount);
-                if(r.costB != ItemType::None) inventory_.remove(r.costB, r.costBCount);
+                if(!adminMode_){
+                    inventory_.remove(r.costA, r.costACount);
+                    if(r.costB != ItemType::None) inventory_.remove(r.costB, r.costBCount);
+                }
                 inventory_.add(r.result, r.resultCount);
             }
         }
@@ -3028,6 +3094,30 @@ void GameClient::handleEvents(){
             menuTextInput(e.text.text);
             continue;
         }
+        // Экран входа: тот же текстовый ввод, но в свои два поля.
+        if(state_ == GameState::Auth){
+            if(e.type == SDL_TEXTINPUT){
+                std::string& field = (authField_ == 0) ? authNick_ : authPassword_;
+                if(field.size() < 24) field += e.text.text;
+                continue;
+            }
+            if(e.type == SDL_KEYDOWN){
+                std::string& field = (authField_ == 0) ? authNick_ : authPassword_;
+                if(e.key.keysym.sym == SDLK_BACKSPACE){
+                    if(!field.empty()){
+                        size_t n = field.size();
+                        do { --n; } while(n > 0 && ((unsigned char)field[n] & 0xC0) == 0x80);
+                        field.resize(n);
+                    }
+                    continue;
+                }
+                if(e.key.keysym.sym == SDLK_TAB){ authField_ = 1 - authField_; continue; }
+                if(e.key.keysym.sym == SDLK_RETURN || e.key.keysym.sym == SDLK_KP_ENTER){
+                    authSubmit(false);
+                    continue;
+                }
+            }
+        }
         if(e.type == SDL_KEYDOWN && state_ == GameState::MainMenu &&
            (menuAddOpen_ || menuEditName_)){
             if(e.key.keysym.sym == SDLK_BACKSPACE){ menuBackspace(); continue; }
@@ -3066,6 +3156,12 @@ void GameClient::handleEvents(){
             mdx = (float)e.motion.xrel; mdy = (float)e.motion.yrel; motion = true;
         } else if(e.type == SDL_MOUSEBUTTONUP && e.button.which != SDL_TOUCH_MOUSEID){
             up = true;
+        }
+
+        // ---- Экран входа забирает ввод целиком.
+        if(state_ == GameState::Auth){
+            if(down) handleAuthTouch(tx, ty);
+            continue;
         }
 
         // ---- Главное меню забирает ввод целиком: мир за ним живёт, но не управляется.
@@ -3218,6 +3314,19 @@ void GameClient::update(float dt){
     netApplyEvents();
     updateRemotePlayers(dt);
     updateGrenades(dt);
+    // Бесконечные ресурсы админа: раз в секунду добиваем стаки обратно до полного.
+    if(adminMode_){
+        adminRefillTimer_ += dt;
+        if(adminRefillTimer_ >= 1.0f){
+            adminRefillTimer_ = 0.0f;
+            for(int i = 0; i < Inventory::SIZE; ++i){
+                ItemStack& st = inventory_.slot(i);
+                if(st.empty()) continue;
+                int max = itemDef(st.type).maxStack;
+                if(st.count < max) st.count = max;
+            }
+        }
+    }
 
     static float stepPhase = 0.0f;
     if(player_->onGround() && player_->speed() > 0.5f){
@@ -3873,7 +3982,22 @@ void GameClient::renderCraft(){
     // в образце отсутствует.
     float gx, gy, tile, gap;
     craftGridGeometry(gx, gy, tile, gap);
-    drawText(gx, gy - 46.0f * s, 30.0f * s, "КРАФТ", 1, 1, 1, 0.96f);
+    drawText(gx, gy - 46.0f * s, 30.0f * s, shopMode_ ? "МАГАЗИН" : "КРАФТ", 1, 1, 1, 0.96f);
+
+    // Переключатель «крафт — магазин» и кошелёк рядом с заголовком: за монеты в
+    // закрытом тесте покупают сырьё, чтобы не гриндить одно и то же руками.
+    {
+        float bw = 150.0f * s, bh = 34.0f * s;
+        float bx = gx + 170.0f * s, by = gy - 46.0f * s;
+        drawUIRect(bx, by, bw, bh, 0, 0.88f, 0.87f, 0.83f, shopMode_ ? 0.10f : 0.24f, false);
+        uiThinFrame(bx, by, bw, bh, UI_ACCENT, 0.8f);
+        drawTextCentered(bx + bw * 0.5f, by + bh * 0.2f, 20.0f * s,
+                         shopMode_ ? "К РЕЦЕПТАМ" : "МАГАЗИН", 1, 1, 1, 0.95f);
+        char cbuf[64];
+        if(adminMode_) snprintf(cbuf, sizeof(cbuf), "Монеты: ∞ (админ)");
+        else           snprintf(cbuf, sizeof(cbuf), "Монеты: %d", coins_);
+        drawText(bx + bw + 18.0f * s, by + bh * 0.2f, 20.0f * s, cbuf, 1.0f, 0.88f, 0.45f, 0.95f);
+    }
 
     // Крестик — В САМОМ ВЕРХУ экрана справа, а не у сетки: так он не спорит с панелью.
     // Крестик ниже и левее: наверху справа стоит счётчик кадров, и они перекрывались.
@@ -3887,8 +4011,89 @@ void GameClient::renderCraft(){
 
     if(craftSelected_ >= kRecipeCount) craftSelected_ = kRecipeCount - 1;
     if(craftSelected_ < 0) craftSelected_ = 0;
+    if(shopSelected_ >= kShopCount) shopSelected_ = kShopCount - 1;
+    if(shopSelected_ < 0) shopSelected_ = 0;
 
     char buf[192];
+    if(shopMode_){
+        // ---- Магазин: те же квадратные плитки, но с ценой в монетах.
+        for(int i = 0; i < kShopCount; ++i){
+            float tx, ty;
+            craftTilePos(i, tx, ty);
+            const Good& g = kShop[i];
+            bool afford = adminMode_ || coins_ >= g.price;
+            const ItemDef& def = itemDef(g.item);
+            drawUIRect(tx, ty, tile, tile, 0, 0.78f, 0.77f, 0.73f, 0.34f, false);
+            GLuint icon = itemIcon(g.item);
+            float ip = tile * 0.12f;
+            if(icon) drawUIRect(tx + ip, ty + ip, tile - ip * 2.0f, tile - ip * 2.0f, icon,
+                                1, 1, 1, afford ? 1.0f : 0.35f, true);
+            else     drawUIRect(tx + ip, ty + ip, tile - ip * 2.0f, tile - ip * 2.0f, 0,
+                                def.r, def.g, def.b, afford ? 1.0f : 0.35f, false);
+            snprintf(buf, sizeof(buf), "x%d", g.count);
+            float fh = tile * 0.20f;
+            drawText(tx + tile - fh * 1.8f, ty + fh * 0.4f, fh, buf, 1, 1, 1, 0.9f);
+            float nameH = tile * 0.135f;
+            drawUIRect(tx, ty + tile - nameH * 1.7f, tile, nameH * 1.7f, 0,
+                       0.10f, 0.10f, 0.11f, 0.45f, false);
+            snprintf(buf, sizeof(buf), "%s  %d", def.nameRu, g.price);
+            drawTextCentered(tx + tile * 0.5f, ty + tile - nameH * 1.4f, nameH, buf,
+                             1, 1, 1, afford ? 0.9f : 0.45f);
+            if(i == shopSelected_){
+                float t = fmaxf(2.0f, tile * 0.045f);
+                drawUIRect(tx, ty, tile, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+                drawUIRect(tx, ty + tile - t, tile, t, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+                drawUIRect(tx, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+                drawUIRect(tx + tile - t, ty, t, tile, 0, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 0.95f, false);
+            } else {
+                uiThinFrame(tx, ty, tile, tile, UIColor{1.0f, 1.0f, 1.0f}, 0.30f);
+            }
+        }
+
+        // Панель справа: что покупаем, за сколько и кнопка.
+        const Good& g = kShop[shopSelected_];
+        const ItemDef& def = itemDef(g.item);
+        float dx, dy, dw, dh, notesY, tableY;
+        craftPanelGeometry(dx, dy, dw, dh, notesY, tableY);
+        drawUIRect(dx, dy, dw, dh, 0, 0.22f, 0.23f, 0.25f, 0.60f, false);
+        float bigIcon = tile * 0.50f;
+        GLuint gicon = itemIcon(g.item);
+        if(gicon) drawUIRect(dx + dw - bigIcon - 16.0f * s, dy + 12.0f * s, bigIcon, bigIcon,
+                             gicon, 1, 1, 1, 1.0f, true);
+        snprintf(buf, sizeof(buf), "%s x%d", def.nameRu, g.count);
+        drawText(dx + 18.0f * s, dy + 16.0f * s, 25.0f * s, buf, 1, 1, 1, 0.96f);
+        {
+            float noteH = 18.0f * s;
+            std::vector<std::string> lines = wrapText(g.note, noteH, dw - 36.0f * s);
+            float ny = notesY;
+            for(const std::string& line : lines){
+                drawText(dx + 18.0f * s, ny, noteH, line.c_str(), 0.90f, 0.90f, 0.88f, 0.95f);
+                ny += noteH * 1.35f;
+            }
+        }
+        drawUIRect(dx + 14.0f * s, tableY, dw - 28.0f * s, 26.0f * s, 0,
+                   0.85f, 0.84f, 0.80f, 0.28f, false);
+        drawText(dx + 22.0f * s, tableY + 3.0f * s, 16.0f * s, "ЦЕНА", 0.15f, 0.15f, 0.16f, 0.95f);
+        drawText(dx + dw - 120.0f * s, tableY + 3.0f * s, 16.0f * s, "В КОШЕЛЬКЕ",
+                 0.15f, 0.15f, 0.16f, 0.95f);
+        snprintf(buf, sizeof(buf), "%d", g.price);
+        drawText(dx + 22.0f * s, tableY + 34.0f * s, 20.0f * s, buf, 1, 1, 1, 0.9f);
+        bool afford = adminMode_ || coins_ >= g.price;
+        snprintf(buf, sizeof(buf), adminMode_ ? "∞" : "%d", coins_);
+        drawText(dx + dw - 120.0f * s, tableY + 34.0f * s, 20.0f * s, buf,
+                 afford ? 0.55f : 0.90f, afford ? 0.85f : 0.35f, 0.40f, 0.95f);
+
+        float bx, by, bw, bh;
+        craftButtonRect(bx, by, bw, bh);
+        drawUIRect(bx, by, bw, bh, 0, afford ? 0.24f : 0.20f, afford ? 0.34f : 0.20f,
+                   afford ? 0.24f : 0.21f, afford ? 0.72f : 0.55f, false);
+        uiThinFrame(bx, by, bw, bh, afford ? UI_ACCENT : UI_LINE, afford ? 0.9f : 0.4f);
+        drawTextCentered(bx + bw * 0.5f, by + bh * 0.28f, 23.0f * s, "КУПИТЬ",
+                         afford ? UI_ACCENT.r : UI_TEXT_DIM.r,
+                         afford ? UI_ACCENT.g : UI_TEXT_DIM.g,
+                         afford ? UI_ACCENT.b : UI_TEXT_DIM.b, afford ? 1.0f : 0.7f);
+        return;
+    }
     for(int i = 0; i < kRecipeCount; ++i){
         float tx, ty;
         craftTilePos(i, tx, ty);
@@ -4266,6 +4471,222 @@ void GameClient::inventoryCloseRect(float& x, float& y, float& w, float& h) cons
     if(x + w > (float)SCR_W - 8.0f * s) x = (float)SCR_W - w - 8.0f * s;
 }
 
+// Официальный сервер: он и держит аккаунты закрытого теста, и стоит первой строкой в
+// списке серверов.
+extern const char* OFFICIAL_SERVER;
+
+// Покупка выбранного товара за монеты. Админу теста бесплатно и без списания.
+void GameClient::buySelected(){
+    if(shopSelected_ < 0 || shopSelected_ >= kShopCount) return;
+    const Good& g = kShop[shopSelected_];
+    if(!adminMode_ && coins_ < g.price) return;
+    int left = inventory_.add(g.item, g.count);
+    if(left >= g.count) return;                 // рюкзак полон — деньги не берём
+    if(!adminMode_) coins_ -= g.price;
+    saveProfile();
+}
+
+// ==================== ВХОД В ИГРУ (ЗАКРЫТЫЙ ТЕСТ) ====================
+// Играть можно только под одним из четырёх ников. Список прошит и в клиенте, и на
+// сервере: в клиенте — чтобы отказ был мгновенным и понятным, на сервере — чтобы его
+// нельзя было обойти правкой клиента. Пароль хранится только на сервере, и только
+// хешем с солью (см. NetServer::handleAuth).
+namespace {
+const char* const BETA_NICKS[] = { "Tester0", "Tester5", "Tester6", "AdminTester" };
+const int BETA_NICK_COUNT = 4;
+} // namespace
+
+bool GameClient::nickAllowed(const std::string& nick){
+    for(int i = 0; i < BETA_NICK_COUNT; ++i) if(nick == BETA_NICKS[i]) return true;
+    return false;
+}
+
+void GameClient::loadProfile(){
+    // Профиль лежит рядом с настройками: ник, монеты и отметка, что этот ник уже
+    // успешно входил (по ней разрешается оффлайн-игра без связи с сервером).
+    std::string path = g_writableDir + "profile.txt";
+    FILE* f = fopen(path.c_str(), "rb");
+    if(!f) return;
+    char line[256];
+    while(fgets(line, sizeof(line), f)){
+        std::string a(line);
+        while(!a.empty() && (a.back() == '\n' || a.back() == '\r')) a.pop_back();
+        if(a.rfind("nick=", 0) == 0){ playerName_ = a.substr(5); authNick_ = playerName_; }
+        else if(a.rfind("coins=", 0) == 0) coins_ = atoi(a.c_str() + 6);
+    }
+    fclose(f);
+    adminMode_ = (playerName_ == "AdminTester");
+}
+
+void GameClient::saveProfile(){
+    std::string path = g_writableDir + "profile.txt";
+    FILE* f = fopen(path.c_str(), "wb");
+    if(!f) return;
+    fprintf(f, "nick=%s\ncoins=%d\n", playerName_.c_str(), coins_);
+    fclose(f);
+}
+
+void GameClient::authFieldRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    w = clampf((float)SCR_W * 0.42f, 320.0f, 560.0f);
+    h = 58.0f * s;
+    x = ((float)SCR_W - w) * 0.5f;
+    y = (float)SCR_H * 0.40f + (float)i * (h + 12.0f * s);
+}
+
+void GameClient::authButtonRect(int i, float& x, float& y, float& w, float& h) const {
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float fx, fy, fw, fh;
+    authFieldRect(1, fx, fy, fw, fh);
+    h = 54.0f * s;
+    w = (fw - 12.0f * s) * 0.5f;
+    x = fx + (i % 2) * (w + 12.0f * s);
+    y = fy + fh + 18.0f * s + (float)(i / 2) * (h + 10.0f * s);
+    if(i == 2){ w = fw; x = fx; }          // «играть оффлайн» во всю ширину
+}
+
+void GameClient::renderAuth(){
+    float s = clampf((float)SCR_H / 720.0f, 0.7f, 2.2f);
+    float cx = (float)SCR_W * 0.5f;
+    if(texMenuBg_){
+        drawMenuBackground();
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.62f, false);
+    } else {
+        drawUIRect(0, 0, (float)SCR_W, (float)SCR_H, 0, 0.02f, 0.03f, 0.03f, 0.85f, false);
+    }
+
+    drawTextCentered(cx, (float)SCR_H * 0.16f, clampf(54.0f * s, 34.0f, 92.0f), "O S I L",
+                     UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, 1.0f);
+    drawTextCentered(cx, (float)SCR_H * 0.26f, 22.0f * s, "ЗАКРЫТЫЙ БЕТА-ТЕСТ",
+                     1.0f, 0.96f, 0.90f, 0.9f);
+
+    const char* labels[2] = { "НИК", "ПАРОЛЬ" };
+    for(int i = 0; i < 2; ++i){
+        float x, y, w, h;
+        authFieldRect(i, x, y, w, h);
+        bool active = (authField_ == i);
+        drawUIRect(x, y, w, h, 0, 0.88f, 0.87f, 0.83f, active ? 0.20f : 0.10f, false);
+        uiThinFrame(x, y, w, h, active ? UI_ACCENT : UI_LINE, active ? 0.9f : 0.4f);
+        drawText(x + 12.0f * s, y + 6.0f * s, 15.0f * s, labels[i], 1, 1, 1, 0.5f);
+        // Пароль показывается точками: за спиной у тестера может стоять кто угодно.
+        std::string shown = (i == 0) ? authNick_ : std::string(authPassword_.size(), '*');
+        if(active) shown += "_";
+        drawText(x + 12.0f * s, y + 24.0f * s, 24.0f * s, shown, 1, 1, 1, 0.97f);
+    }
+
+    const char* buttons[3] = { "ВОЙТИ", "СОЗДАТЬ АККАУНТ", "ИГРАТЬ ОФФЛАЙН" };
+    for(int i = 0; i < 3; ++i){
+        float x, y, w, h;
+        authButtonRect(i, x, y, w, h);
+        bool primary = (i == 0);
+        drawUIRect(x, y, w, h, 0, 0.88f, 0.87f, 0.83f, primary ? 0.26f : 0.12f, false);
+        uiThinFrame(x, y, w, h, primary ? UI_ACCENT : UI_LINE, primary ? 0.9f : 0.4f);
+        drawTextCentered(x + w * 0.5f, y + h * 0.28f, h * 0.36f, buttons[i],
+                         primary ? UI_ACCENT.r : UI_TEXT.r,
+                         primary ? UI_ACCENT.g : UI_TEXT.g,
+                         primary ? UI_ACCENT.b : UI_TEXT.b, 1.0f);
+    }
+
+    if(!authNotice_.empty()){
+        float bx, by, bw, bh;
+        authButtonRect(2, bx, by, bw, bh);
+        drawTextCentered(cx, by + bh + 14.0f * s, 18.0f * s, authNotice_,
+                         0.95f, 0.75f, 0.45f, 0.95f);
+    }
+    drawTextCentered(cx, (float)SCR_H - 34.0f * s, 15.0f * s,
+                     "Ники теста: Tester0, Tester5, Tester6, AdminTester",
+                     1, 1, 1, 0.45f);
+}
+
+void GameClient::authSubmit(bool registerNew){
+    std::string nick = authNick_;
+    while(!nick.empty() && nick.back() == ' ') nick.pop_back();
+    if(!nickAllowed(nick)){
+        authNotice_ = "этот ник не в списке закрытого теста";
+        return;
+    }
+    if(authPassword_.size() < 3){
+        authNotice_ = "пароль от трёх символов";
+        return;
+    }
+
+    // Аккаунты живут на официальном сервере — он же проверяет ник по своему списку.
+    net::Url url;
+    if(!net::parseUrl(OFFICIAL_SERVER, url)){
+        authNotice_ = "адрес сервера входа неверен";
+        return;
+    }
+    std::string body = "{\"nick\":\"" + net::jsonEscape(nick) + "\",\"password\":\"" +
+                       net::jsonEscape(authPassword_) + "\"}";
+    std::string reply;
+    int status = 0;
+    authNotice_ = registerNew ? "создаём аккаунт..." : "входим...";
+    bool ok = net::request(url, "POST", registerNew ? "/auth/register" : "/auth/login",
+                           body, reply, status, 8000);
+    if(!ok){
+        authNotice_ = "сервер входа не отвечает";
+        return;
+    }
+    if(status != 200){
+        JsonValue root;
+        if(jsonParse(reply.c_str(), reply.size(), root) && !root["error"].isNull())
+            authNotice_ = root["error"].asString("сервер отказал");
+        else
+            authNotice_ = "сервер отказал во входе";
+        return;
+    }
+
+    playerName_ = nick;
+    adminMode_ = (nick == "AdminTester");
+    // Монеты на первый вход: тестеру есть на что купить сырьё, не гриндя его руками.
+    if(coins_ <= 0) coins_ = 500;
+    authNotice_.clear();
+    saveProfile();
+    saveServerList();
+    state_ = GameState::MainMenu;
+    SDL_StopTextInput();
+}
+
+// Оффлайн: одиночная игра без сети. Ник всё равно должен быть из списка теста и уже
+// входившим на этом устройстве — иначе оффлайн стал бы дырой в закрытом тесте.
+void GameClient::authPlayOffline(){
+    std::string nick = authNick_;
+    while(!nick.empty() && nick.back() == ' ') nick.pop_back();
+    if(!nickAllowed(nick)){
+        authNotice_ = "этот ник не в списке закрытого теста";
+        return;
+    }
+    playerName_ = nick;
+    adminMode_ = (nick == "AdminTester");
+    if(coins_ <= 0) coins_ = 500;
+    authNotice_.clear();
+    saveProfile();
+    state_ = GameState::MainMenu;
+    SDL_StopTextInput();
+}
+
+bool GameClient::handleAuthTouch(float x, float y){
+    for(int i = 0; i < 2; ++i){
+        float bx, by, bw, bh;
+        authFieldRect(i, bx, by, bw, bh);
+        if(x >= bx && x <= bx + bw && y >= by && y <= by + bh){
+            authField_ = i;
+            SDL_StartTextInput();
+            return true;
+        }
+    }
+    for(int i = 0; i < 3; ++i){
+        float bx, by, bw, bh;
+        authButtonRect(i, bx, by, bw, bh);
+        if(x < bx || x > bx + bw || y < by || y > by + bh) continue;
+        if(i == 0) authSubmit(false);
+        else if(i == 1) authSubmit(true);
+        else authPlayOffline();
+        return true;
+    }
+    return true;
+}
+
 // ==================== ГЛАВНОЕ МЕНЮ: БРАУЗЕР СЕРВЕРОВ ====================
 // Меню сделано как список серверов, а не как три кнопки: игра теперь и одиночная, и
 // сетевая, и выбирать надо именно сервер. Слева — вкладки, справа — список с игроками
@@ -4275,6 +4696,7 @@ void GameClient::inventoryCloseRect(float& x, float& y, float& w, float& h) cons
 // Официальный сервер: он всегда в списке первой строкой после одиночной игры, чтобы
 // игроку не приходилось никуда вписывать адрес — зашёл и играешь.
 const char* OFFICIAL_SERVER = "https://osil-survival1.onrender.com";
+
 
 void GameClient::loadServerList(){
     servers_.clear();
@@ -4346,6 +4768,7 @@ void GameClient::refreshServers(){
                 r.players = info.players;
                 r.max = info.max ? info.max : 100;
                 r.ping = info.ping;
+                r.protocol = info.protocol;
                 if(info.ok && !info.name.empty()) r.name = info.name;
                 if(info.ok && !info.map.empty()) r.map = info.map;
             }
@@ -4468,7 +4891,12 @@ void GameClient::renderMainMenu(){
         if(sel) uiThinFrame(x, y, w, h, UI_ACCENT, 0.9f);
         drawText(x + 44.0f * s, y + 7.0f * s, 21.0f * s, r.name, 1, 1, 1,
                  (r.online || r.local) ? 0.97f : 0.5f);
-        drawText(x + 44.0f * s, y + 32.0f * s, 15.0f * s, r.map, 1, 1, 1, 0.45f);
+        // Старый сервер честно помечаем: на нём не работают ни урон, ни дроп, ни
+        // упавшие деревья — он просто не знает про эти сообщения.
+        std::string sub = r.map;
+        if(r.online && r.protocol > 0 && r.protocol < 2) sub += "   • старая версия сервера";
+        drawText(x + 44.0f * s, y + 32.0f * s, 15.0f * s, sub, 1, 1, 1,
+                 (r.protocol > 0 && r.protocol < 2) ? 0.75f : 0.45f);
         // Звёздочка слева — как в образце; сейчас она просто метка строки.
         drawUIRect(x + 16.0f * s, y + h * 0.5f - 5.0f * s, 10.0f * s, 10.0f * s, 0,
                    1, 1, 1, sel ? 0.9f : 0.35f, false);
@@ -4540,6 +4968,9 @@ void GameClient::startSelectedServer(){
         if(net_.seed() != 0 && net_.seed() != mine)
             SDL_Log("сеть: сид сервера %llu не совпадает с сидом клиента %llu",
                     (unsigned long long)net_.seed(), mine);
+        if(net_.serverProtocol() < 2)
+            SDL_Log("сеть: сервер старой версии (протокол %d) — урон, дроп и деревья "
+                    "там не синхронизируются", net_.serverProtocol());
     } else {
         menuNotice_ = net_.statusText();
         menuNoticeAge_ = 0.0f;
@@ -4671,13 +5102,17 @@ void GameClient::render(){
         renderOverlay();
         renderHotbar();
     } else {
-        // В меню поверх сцены рисуем только само меню (и настройки, если открыты).
+        // Вне игры поверх сцены рисуем либо экран входа, либо меню (и настройки).
         glDisable(GL_DEPTH_TEST);
         Mat4 uiProjM = mat4Ortho(0, (float)SCR_W, (float)SCR_H, 0, -1, 1);
         glUseProgram(uiProg);
         glUniformMatrix4fv(uiProjLoc, 1, GL_FALSE, uiProjM.m);
-        renderMainMenu();
-        if(overlay_ == Overlay::Settings) renderSettings();
+        if(state_ == GameState::Auth){
+            renderAuth();
+        } else {
+            renderMainMenu();
+            if(overlay_ == Overlay::Settings) renderSettings();
+        }
     }
     SDL_GL_SwapWindow(win);
 }
@@ -4719,6 +5154,13 @@ int GameClient::run(int argc, char** argv){
             autoAttack_ = true;
         } else if(a == "--name" && i + 1 < argc){
             playerName_ = argv[++i];
+        } else if(a == "--shop"){
+            shopMode_ = true;          // отладка: открыть крафт сразу на магазине
+        } else if(a == "--admin"){
+            playerName_ = "AdminTester";
+            adminMode_ = true;
+        } else if(a == "--auth"){
+            forceAuthScreen_ = true;
         } else if(a == "--menu"){
             stayInMenu_ = true;    // снять главное меню на скриншот
         } else if(a == "--play"){
@@ -4756,6 +5198,11 @@ int GameClient::run(int argc, char** argv){
                     net_.statusText().c_str());
     }
     overlay_ = overlayOverride_;
+    // Игра начинается с экрана входа: закрытый тест. Отладочные ключи (--play,
+    // --screenshot, --server) его пропускают — иначе снимки и проверки не снять.
+    if(playerName_.empty() || playerName_ == "выживший") authNick_ = "Tester0";
+    if(forceAuthScreen_ || (screenshotPath_.empty() && !startInGame_ && joinOnStart_.empty()))
+        state_ = GameState::Auth;
     // Окна ящика и шкафа знают, ЧТО открыто: без выбранного объекта они пустые.
     if(overlay_ == Overlay::Box && !boxes_.empty()) openBox_ = 0;
     if(overlay_ == Overlay::Cupboard && !cupboards_.empty()) openCupboard_ = 0;

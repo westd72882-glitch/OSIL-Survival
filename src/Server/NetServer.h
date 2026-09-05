@@ -40,7 +40,23 @@ private:
     struct Slot {
         net::PlayerState state;
         float silence = 0.0f;    // сколько секунд от игрока ничего не приходило
+        // Урон, который игроку нанесли другие и который он ещё не забрал. Через журнал
+        // событий это было ненадёжно: событие могло не влезть в порцию и потеряться,
+        // а урон терять нельзя.
+        int pendingDamage = 0;
     };
+
+    // ---- Аккаунты закрытого теста. Ников ровно четыре, они прошиты в коде: сервер
+    // никого другого не регистрирует и не пускает.
+    struct Account {
+        std::string nick, salt, hash;
+    };
+    std::unordered_map<std::string, Account> accounts_;
+    std::string accountsPath_ = "accounts.txt";
+    bool  nickAllowed(const std::string& nick) const;
+    void  loadAccounts();
+    void  saveAccounts() const;
+    std::string handleAuth(const std::string& route, const std::string& body, int& status);
 
     mutable std::mutex mutex_;
     Config cfg_;

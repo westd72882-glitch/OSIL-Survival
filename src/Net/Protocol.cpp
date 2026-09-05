@@ -143,7 +143,7 @@ std::string encodeSyncResponse(const std::vector<PlayerState>& players,
                                const std::vector<Edit>& edits,
                                const std::vector<Event>& events,
                                long long headSeq, long long eventHeadSeq,
-                               float timeOfDay){
+                               float timeOfDay, int damage){
     std::string s = "{\"players\":[";
     for(size_t i = 0; i < players.size(); ++i){
         if(i) s += ",";
@@ -154,6 +154,9 @@ std::string encodeSyncResponse(const std::vector<PlayerState>& players,
     s += ",\"head\":" + std::to_string(headSeq);
     s += ",\"ehead\":" + std::to_string(eventHeadSeq);
     s += ",\"time\":" + num(timeOfDay);
+    // Урон, накопленный жертве: отдельным полем, а не событием — так он не теряется,
+    // даже если журнал событий не влез в порцию.
+    if(damage > 0) s += ",\"dmg\":" + std::to_string(damage);
     s += "}";
     return s;
 }
@@ -173,7 +176,8 @@ bool decodeSyncRequest(const std::string& json, PlayerState& out,
 
 bool decodeSyncResponse(const std::string& json, std::vector<PlayerState>& players,
                         std::vector<Edit>& edits, std::vector<Event>& events,
-                        long long& headSeq, long long& eventHeadSeq, float& timeOfDay){
+                        long long& headSeq, long long& eventHeadSeq, float& timeOfDay,
+                        int& damage){
     JsonValue root;
     if(!jsonParse(json.c_str(), json.size(), root)) return false;
     players.clear();
@@ -184,6 +188,7 @@ bool decodeSyncResponse(const std::string& json, std::vector<PlayerState>& playe
     headSeq = (long long)root["head"].asDouble(0.0);
     eventHeadSeq = (long long)root["ehead"].asDouble(0.0);
     timeOfDay = root["time"].asFloat(timeOfDay);
+    damage = root["dmg"].asInt(0);
     return true;
 }
 

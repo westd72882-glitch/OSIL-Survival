@@ -32,3 +32,6 @@ android/app/src/main/java/org/libsdl/
 
 # Кэш питоновских утилит
 __pycache__/
+
+# Аккаунты сервера: пароли и соли, в репозитории им не место
+accounts.txt

@@ -7,6 +7,7 @@
 #include "../src/Core/Math.h"
 #include "../src/Core/Noise.h"
 #include "../src/Core/Random.h"
+#include "../src/Core/Sha256.h"
 #include "../src/Core/Time.h"
 
 #include <cstdio>
@@ -143,4 +144,16 @@ TEST(тик_идёт_фиксированным_шагом){
     // За 120 мс при 30 Гц должно набежать 3-4 шага (планировщик ОС даёт разброс).
     CHECK(steps >= 2 && steps <= 5);
     CHECK(clock.totalTicks() == (uint64_t)steps);
+}
+
+TEST(sha256_совпадает_с_эталоном){
+    // Контрольные значения из спецификации FIPS 180-4 — если реализация где-то
+    // ошиблась, пароли аккаунтов будут хешироваться «во что-то своё», и вход перестанет
+    // работать после любой правки.
+    CHECK(sha256Hex("") ==
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(sha256Hex("abc") ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
+          "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
 }

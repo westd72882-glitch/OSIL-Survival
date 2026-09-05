@@ -43,15 +43,19 @@ public:
     std::vector<net::Edit> takeEdits();
     // То же самое для событий.
     std::vector<net::Event> takeEvents();
+    // Урон, который сервер насчитал нам от чужих ударов. Забирается один раз.
+    int  takeDamage();
     float serverTimeOfDay() const { return serverTime_.load(); }
     // Сколько миллисекунд занял последний обмен — это и есть пинг в списке серверов.
     int  pingMs() const { return ping_.load(); }
+    // Версия протокола сервера: если она младше нашей, часть механик там не работает.
+    int  serverProtocol() const { return protocol_.load(); }
 
     // Разовый опрос сервера для списка в меню: имя, игроки и пинг.
     struct Info {
         bool ok = false;
         std::string name, map;
-        int players = 0, max = 0, ping = 0;
+        int players = 0, max = 0, ping = 0, protocol = 0;
     };
     static Info query(const std::string& address);
     // Подбирает рабочий адрес: «host» без схемы сначала пробуется как игровой сервер на
@@ -69,6 +73,8 @@ private:
     std::atomic<int>  ping_{0};
     std::atomic<float> serverTime_{8.0f};
     std::atomic<int> maxPlayers_{100};
+    std::atomic<int> incomingDamage_{0};
+    std::atomic<int> protocol_{0};
     unsigned long long seed_ = 0;
 
     // Разобранный адрес: у него уже выбрана схема (http или https) и порт, поэтому

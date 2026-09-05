@@ -138,6 +138,8 @@ public:
     std::function<void(Block block, int x, int y, int z)> onOpenObject;
     // Поставил предмет-объект (печь, шкаф, ящик) — клиенту надо завести его хранилище.
     std::function<void(Block block, int x, int y, int z)> onObjectPlaced;
+    // Из ящика на заправке иногда выпадают монеты — валюта закрытого теста.
+    std::function<void(int)> onCoins;
     // Ударил топором по части постройки: прочность считает клиент, он же её и рисует.
     std::function<void(Block block, int x, int y, int z)> onHitBuild;
     // Удар дошёл до цели — клиент рисует метку попадания.

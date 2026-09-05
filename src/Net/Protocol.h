@@ -82,7 +82,7 @@ std::string encodeSyncResponse(const std::vector<PlayerState>& players,
                                const std::vector<Edit>& edits,
                                const std::vector<Event>& events,
                                long long headSeq, long long eventHeadSeq,
-                               float timeOfDay);
+                               float timeOfDay, int damage = 0);
 
 // Разбор. Возвращают false, если JSON битый (тогда выходные значения не трогаются).
 bool decodeSyncRequest(const std::string& json, PlayerState& out,
@@ -90,7 +90,8 @@ bool decodeSyncRequest(const std::string& json, PlayerState& out,
                        long long& sinceSeq, long long& sinceEventSeq);
 bool decodeSyncResponse(const std::string& json, std::vector<PlayerState>& players,
                         std::vector<Edit>& edits, std::vector<Event>& events,
-                        long long& headSeq, long long& eventHeadSeq, float& timeOfDay);
+                        long long& headSeq, long long& eventHeadSeq, float& timeOfDay,
+                        int& damage);
 
 // Экранирование строки для JSON (имена игроков приходят от людей).
 std::string jsonEscape(const std::string& text);

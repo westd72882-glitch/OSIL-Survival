@@ -40,6 +40,7 @@ add_library(osil_core STATIC
     src/Core/Noise.cpp
     src/Core/PngWriter.cpp
     src/Core/Random.cpp
+    src/Core/Sha256.cpp
     src/Core/Text.cpp
     src/Core/Time.cpp
     src/World/Biome.cpp
